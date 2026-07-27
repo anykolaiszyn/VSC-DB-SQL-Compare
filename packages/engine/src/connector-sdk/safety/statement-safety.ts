@@ -188,6 +188,72 @@ function leadingKeywordPattern(keyword: string): RegExp {
   return new RegExp(`^[\\s(]*${keyword}\\b`, "i");
 }
 
+const WITH_KEYWORD_PATTERN = /^\s*WITH\b/i;
+
+/**
+ * A statement that begins with `WITH` is a CTE-prefixed statement:
+ * `WITH cte AS (SELECT ...) [, cte2 AS (...)] <SELECT|INSERT|UPDATE|DELETE|MERGE ...>`.
+ * The leading token of such a statement is always `WITH`, regardless of what
+ * follows the CTE definitions — so checking only the leading token (as
+ * `leadingKeywordPattern` does for every other statement shape) would let a
+ * real mutating statement like `WITH cte AS (SELECT id FROM x) DELETE FROM x
+ * WHERE id IN (SELECT id FROM cte)` through undetected. This finds the
+ * statement's *effective* leading keyword by skipping past the `WITH` token,
+ * each `<name> AS ( ... )` CTE body (tracking paren depth so commas and
+ * keywords inside the CTE body don't confuse the scan), and the comma
+ * separators between multiple CTEs, then returns whatever keyword comes
+ * after the last CTE body — the keyword that actually determines whether
+ * this statement reads or mutates.
+ */
+function effectiveLeadingKeyword(statement: string): string {
+  if (!WITH_KEYWORD_PATTERN.test(statement)) {
+    return statement;
+  }
+
+  let i = statement.replace(WITH_KEYWORD_PATTERN, (m) => " ".repeat(m.length)).search(/\S/);
+  if (i < 0) return statement;
+
+  const n = statement.length;
+  for (;;) {
+    // Skip the CTE name and optional column list, up to "AS".
+    const asMatch = /\bAS\b/i.exec(statement.slice(i));
+    if (!asMatch) return statement.slice(i);
+    i += asMatch.index + asMatch[0].length;
+
+    // Skip whitespace to the opening paren of the CTE body.
+    while (i < n && /\s/.test(statement.charAt(i))) i++;
+    if (statement.charAt(i) !== "(") {
+      // Not the shape we expect (e.g. RECURSIVE keyword variants) — bail
+      // out conservatively and return the remainder from here so the
+      // caller's keyword scan still runs against it.
+      return statement.slice(i);
+    }
+
+    // Walk the balanced parenthesised CTE body.
+    let depth = 0;
+    do {
+      const c = statement.charAt(i);
+      if (c === "(") depth++;
+      else if (c === ")") depth--;
+      i++;
+    } while (i < n && depth > 0);
+
+    // Skip whitespace after the CTE body.
+    while (i < n && /\s/.test(statement.charAt(i))) i++;
+
+    if (statement.charAt(i) === ",") {
+      // Another CTE follows; skip the comma and continue the loop.
+      i++;
+      while (i < n && /\s/.test(statement.charAt(i))) i++;
+      continue;
+    }
+
+    // No more CTEs — whatever remains is the statement's effective leading
+    // keyword (SELECT, INSERT, UPDATE, DELETE, MERGE, ...).
+    return statement.slice(i);
+  }
+}
+
 /**
  * Throws `MutatingStatementError` if `sql` contains a mutating statement for
  * the given `dialect` — INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/MERGE or a
@@ -202,8 +268,13 @@ export function assertReadOnlyStatement(sql: string, dialect: SqlDialect): void 
   const keywords = mutatingKeywordsFor(dialect);
 
   for (const statement of statements) {
+    // For CTE-prefixed statements (`WITH cte AS (...) DELETE FROM ...`),
+    // check the keyword that actually follows the CTE definitions, not the
+    // literal leading `WITH` token — otherwise a CTE-wrapped mutation would
+    // never match any leading-keyword pattern below.
+    const effective = effectiveLeadingKeyword(statement);
     for (const keyword of keywords) {
-      if (leadingKeywordPattern(keyword).test(statement)) {
+      if (leadingKeywordPattern(keyword).test(effective)) {
         throw new MutatingStatementError(dialect, keyword, statement);
       }
     }

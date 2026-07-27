@@ -73,6 +73,35 @@ describe("assertReadOnlyStatement", () => {
         const sql = "SELECT 1; SELECT 2; SELECT * FROM x;";
         expect(() => assertReadOnlyStatement(sql, dialect)).not.toThrow();
       });
+
+      it("throws for a CTE-prefixed DELETE", () => {
+        const sql = "WITH cte AS (SELECT id FROM x) DELETE FROM x WHERE id IN (SELECT id FROM cte)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a CTE-prefixed UPDATE", () => {
+        const sql = "WITH cte AS (SELECT id FROM x) UPDATE x SET y = 1 WHERE id IN (SELECT id FROM cte)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a CTE-prefixed INSERT", () => {
+        const sql = "WITH cte AS (SELECT id FROM x) INSERT INTO y SELECT * FROM cte";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a multi-CTE-prefixed DELETE", () => {
+        const sql =
+          "WITH a AS (SELECT id FROM x), b AS (SELECT id FROM a WHERE id > 1) " +
+          "DELETE FROM x WHERE id IN (SELECT id FROM b)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("does not throw for a CTE-wrapped SELECT with a comma-separated CTE list", () => {
+        const sql =
+          "WITH a AS (SELECT id FROM x), b AS (SELECT id FROM a WHERE id > 1) " +
+          "SELECT * FROM b";
+        expect(() => assertReadOnlyStatement(sql, dialect)).not.toThrow();
+      });
     });
   }
 
