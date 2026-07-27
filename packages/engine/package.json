@@ -1,0 +1,14 @@
+{
+  "name": "@paritylens/engine",
+  "private": true,
+  "version": "0.0.1",
+  "description": "ParityLens comparison engine, connector SDK, and orchestration",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paritylens/shared": "*"
+  }
+}

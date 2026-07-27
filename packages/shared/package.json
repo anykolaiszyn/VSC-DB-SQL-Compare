@@ -1,0 +1,11 @@
+{
+  "name": "@paritylens/shared",
+  "private": true,
+  "version": "0.0.1",
+  "description": "ParityLens shared types and canonical interfaces",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  }
+}

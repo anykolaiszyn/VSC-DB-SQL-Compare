@@ -1,0 +1,37 @@
+{
+  "name": "Multi-Agent Idea-to-App Starter Kit",
+  "version": "1.0.0",
+  "required_files": [
+    "HANDBOOK.md",
+    "QUICKSTART.md",
+    "prompts/01-discovery.md",
+    "prompts/02-design.md",
+    "prompts/03-implementation-plan.md",
+    "prompts/04-task-implementation.md",
+    "prompts/05-task-review.md",
+    "prompts/06-integration.md",
+    "prompts/07-release.md",
+    "prompts/08-handoff-and-resume.md",
+    "templates/AGENTS.md",
+    "templates/PROJECT-BRIEF.md",
+    "templates/DESIGN-SPEC.md",
+    "templates/IMPLEMENTATION-PLAN.md",
+    "templates/TASK-BRIEF.md",
+    "templates/IMPLEMENTATION-REPORT.md",
+    "templates/REVIEW-REPORT.md",
+    "templates/PROGRESS-LEDGER.md",
+    "templates/RELEASE-CHECKLIST.md",
+    "adapters/CODEX.md",
+    "adapters/CLAUDE-CODE.md",
+    "adapters/OLLAMA.md",
+    "adapters/GENERIC-AGENT.md",
+    "examples/idea-to-app-example.md"
+  ],
+  "forbidden_markers": [
+    "TBD",
+    "TODO",
+    "FILL THIS IN",
+    "implement later",
+    "similar to the previous"
+  ]
+}

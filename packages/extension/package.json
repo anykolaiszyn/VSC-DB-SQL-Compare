@@ -1,0 +1,15 @@
+{
+  "name": "@paritylens/extension",
+  "private": true,
+  "version": "0.0.1",
+  "description": "ParityLens VS Code extension host",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "scripts": {
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paritylens/engine": "*",
+    "@paritylens/shared": "*"
+  }
+}
