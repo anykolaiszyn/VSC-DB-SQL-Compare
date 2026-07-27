@@ -9,6 +9,7 @@
     "test": "vitest run"
   },
   "dependencies": {
+    "@duckdb/node-api": "^1.5.5-r.2",
     "@paritylens/shared": "*"
   }
 }
