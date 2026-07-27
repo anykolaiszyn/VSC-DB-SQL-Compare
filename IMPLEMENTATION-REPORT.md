@@ -1,178 +1,152 @@
-# ParityLens — Implementation Report T-02
+# ParityLens — Implementation Report T-03
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence for this task's scope only; not independently reviewed; not self-approved)
-- **Objective:** Define the canonical shared TypeScript types in
-  `packages/shared`: the `DataPlatformConnector` interface,
-  `ConnectorCapabilities`, `ColumnDefinition`, `QueryInput`,
-  `ExecutionOptions`, `RecordBatch`, the canonical type-category enum
-  (Integer, Decimal, FloatingPoint, Boolean, String, Binary, Date, Time,
-  Timestamp, TimestampWithTimezone, JSON, Array, Object, Geospatial,
-  Unknown), and the `ComparisonResult` shape (and its sub-shapes:
-  schema/profile/aggregate/row differences, execution timing, and summary
-  counts). No runtime logic — types and interfaces only.
-
-## Module structure chosen
-
-All files live under `packages/shared/src/` (the only path this task owns):
-
-- `types.ts` — `CanonicalTypeCategory` (15-value union), `ColumnDefinition`,
-  `QueryInput`, `ExecutionOptions`, `RecordBatch`.
-- `connector.ts` — `DataPlatformConnector`, `ConnectorCapabilities`, and the
-  connector-facing supporting types the interface's method signatures
-  require: `ConnectionTestResult`, `CatalogInfo`, `SchemaInfo`,
-  `ObjectScope`, `DataObjectKind`, `DataObjectInfo`, `ProfileOptions`,
-  `GeneratedQuery`.
-- `result.ts` — `ComparisonResult` and its sub-shapes: `Severity`,
-  `DifferenceItem` (shared placeholder shape for the four difference
-  arrays), `SchemaDifference`/`ProfileDifference`/`AggregateDifference`/
-  `RowDifference` (all currently aliases of `DifferenceItem`),
-  `ComparisonStatus`, `ComparisonSummary`, `RowCounts`, `ExecutionTiming`.
-- `index.ts` — re-exports the public surface only (`export * from` each of
-  the three modules above); no logic, matching the T-01 placeholder's role
-  as the package entry point.
-- `types.test.ts` — the focused Vitest shape/type-check test required by
-  the task brief; imports every type above and constructs minimal
-  conforming object literals, including a full structural implementation
-  of `DataPlatformConnector`.
-
-This mirrors the submodule split suggested in the task brief
-(`connector.ts`, `types.ts`, `result.ts`, `index.ts`).
+- **Objective:** Implement the statement-safety parser in the Connector SDK:
+  given a raw SQL statement and a target dialect, reject the statement if it
+  contains INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, MERGE, or an
+  equivalent platform-specific mutating construct, before any statement
+  reaches a database driver. Implements the approved "hard block + parse
+  check" decision in `DESIGN-SPEC.md`'s Security section.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/shared/src/types.ts` | New | Canonical type enum + `ColumnDefinition`/`QueryInput`/`ExecutionOptions`/`RecordBatch` |
-| `packages/shared/src/connector.ts` | New | `DataPlatformConnector` + `ConnectorCapabilities` + supporting connector types |
-| `packages/shared/src/result.ts` | New | `ComparisonResult` + sub-shapes |
-| `packages/shared/src/index.ts` | Modified | Replaced T-01 placeholder export with `export * from` re-exports of the three new modules |
-| `packages/shared/src/types.test.ts` | New | Focused Vitest shape/type-check test covering every deliverable interface |
+| `packages/engine/src/connector-sdk/safety/statement-safety.ts` | New. Implements `SqlDialect`, `MutatingStatementError`, and `assertReadOnlyStatement(sql, dialect): void`. | Task's produced interface per `TASK-BRIEF.md` T-03. |
+| `packages/engine/src/connector-sdk/safety/statement-safety.test.ts` | New. Focused Vitest suite: mutating-statement matrix × 4 dialects, comment/batch/CTE evasion cases, safe-statement matrix, case-insensitivity check. | Red/green evidence per `TASK-BRIEF.md` T-03 red-state requirement. |
 
-No files outside `packages/shared/src/**` were touched. `packages/engine/**`,
-`packages/extension/**`, and all T-01-owned root config files
-(`package.json`, `tsconfig*.json`, `eslint.config.mjs`, `vitest.config.ts`,
-`.gitignore`) are unmodified — verified before starting that
-`packages/shared` was already a wired workspace member (it was, from T-01),
-so no re-scaffolding was needed.
+`packages/engine/src/index.ts` (T-01 placeholder) was **not** modified — the
+task brief allows updating it only "if needed" to re-export this module's
+public API, and nothing in this task's scope requires that yet (T-04/T-17/
+T-18/T-19 will import directly from
+`connector-sdk/safety/statement-safety.js` once they exist). Recorded here
+per the brief's instruction to note if this file is touched — it was not.
+
+No files under `packages/shared/**`, `packages/extension/**`, or any other
+`packages/engine/**` path were touched. No database driver dependency was
+added.
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** `@paritylens/shared` now exports the full set of
-  types/interfaces named in the task brief. No runtime logic exists in the
-  package; the only executable code is the test file's minimal object
-  literals used purely to exercise the shapes under `tsc` and Vitest.
-- **Interfaces consumed:** `npm run verify` contract from T-01 (unmodified
-  in meaning; still runs `tsc -b --force`, `eslint .`, `vitest run` across
-  all three workspaces).
+- **Behavior delivered:** `assertReadOnlyStatement(sql: string, dialect: SqlDialect): void`
+  throws a `MutatingStatementError` (subclass of `Error`, carrying `dialect`,
+  `keyword`, and `statement` fields for UI surfacing per `DESIGN-SPEC.md`'s
+  "Mutating statement detected" error-behavior row) if `sql` contains a
+  mutating statement for the given dialect; returns normally (`undefined`)
+  for safe statements. Detection survives comment-based, multi-statement
+  batch, and CTE-prefix evasion (see "Evasion-resistance approach" below).
+- **Interfaces consumed:** No `@paritylens/shared` type is imported at
+  runtime — this function's own signature (`sql: string`, not
+  `QueryInput`) is exactly what the task brief's Interfaces table specifies
+  as the produced interface. `QueryInput` is the type a connector uses to
+  decide what raw SQL string to pass in (its `"query"` variant's `sql`
+  field, or the resolved contents of a `"sqlFile"` variant) — that
+  extraction happens in the connector, not in this module, so no shared
+  import was needed here. No shared types were modified.
 - **Interfaces produced:**
-  - `DataPlatformConnector` — matches Idea Prompt.md section 9 method-for-method: `testConnection()`, `getCatalogs()`, `getSchemas(catalog?)`, `getObjects(scope)`, `getSchema(input)`, `executeQuery(input, options): AsyncIterable<RecordBatch>`, `getCapabilities()`, `quoteIdentifier(identifier)`, `buildProfileQuery(input, columns, profileOptions)`.
-  - `ConnectorCapabilities` — matches Idea Prompt.md section 9 field-for-field, including optional `maximumParameters`.
-  - `CanonicalTypeCategory` — exactly the 15 values from Idea Prompt.md section 2, in the order listed there.
-  - `ColumnDefinition` — `name`, `ordinalPosition`, `nativeType`, `canonicalType`, `nullable`, `isPrimaryKeyCandidate`, plus optional `length`/`precision`/`scale`.
-  - `QueryInput`, `ExecutionOptions`, `RecordBatch` — see judgment calls below.
-  - `ComparisonResult` — matches the Idea Prompt.md section 11 JSON example field-for-field (`comparison`, `runId`, `status`, `summary{passed,warnings,failed}`, `rowCounts{source,target,difference}`, `schemaDifferences`, `profileDifferences`, `aggregateDifferences`, `rowDifferences`, `execution{sourceDurationMs,targetDurationMs,comparisonDurationMs}`).
+  - `SqlDialect = "sqlserver" | "snowflake" | "postgres" | "duckdb"`
+  - `MutatingStatementError extends Error` with `dialect`, `keyword`, `statement` fields
+  - `assertReadOnlyStatement(sql: string, dialect: SqlDialect): void`
 
-## Judgment calls on unspecified shapes
+## Evasion-resistance approach
 
-- **`QueryInput`:** Modeled as a discriminated union on a `kind` field —
-  `{ kind: "table"; object: string }`, `{ kind: "query"; sql: string }`, or
-  `{ kind: "sqlFile"; filePath: string }` — directly mirroring the three
-  MVP input types from Idea Prompt.md section 14 ("Table versus table",
-  "Query versus query", "SQL file versus SQL file"). A discriminated union
-  lets downstream consumers (T-03's statement-safety parser, T-04/T-17-19
-  connectors) exhaustively switch on `kind` with type narrowing instead of
-  guessing which optional fields are populated.
-- **`ExecutionOptions`:** Kept to `maxRows`, `timeoutMs`, and an optional
-  `signal?: AbortSignal`, directly reflecting the two safety limits
-  DESIGN-SPEC.md calls out by name ("a configurable maximum row cap...and
-  query timeout") plus a cancellation hook consistent with
-  `ConnectorCapabilities.supportsQueryCancellation`. Did not add
-  fetch-size/isolation-level/etc. since no consumer in this plan currently
-  needs them.
-- **`RecordBatch`:** Modeled as row-oriented columnar data — a shared
-  `columns: string[]` name list plus `rows: unknown[][]` and a `rowCount`
-  — rather than a true Apache Arrow `RecordBatch`. Idea Prompt.md section 8
-  recommends Arrow as "the preferred internal transfer format where drivers
-  support it," but that's a connector-level optimization a connector can
-  opt into and advertise via `ConnectorCapabilities.supportsArrowResults`;
-  pulling an `apache-arrow` dependency into `packages/shared` for a
-  types-only package felt like the wrong layer for that decision. This
-  keeps `packages/shared` dependency-free. Documented the tradeoff inline
-  in `types.ts`.
-- **`ColumnDefinition`:** Used the exact minimum field set named in the
-  task brief (native type, canonical type, length, precision, scale,
-  nullability, name, ordinal position, primary-key-candidate flag).
-  Idea Prompt.md section 2's structural-parity list also mentions partition
-  columns, default values, and collation/case-sensitivity behavior; those
-  were deliberately left out since T-06 (schema diff) is scoped to add
-  fields it actually needs rather than this task guessing at a schema-diff
-  shape it doesn't consume.
-- **Difference-array item shapes (`SchemaDifference`, `ProfileDifference`,
-  `AggregateDifference`, `RowDifference`):** All four are currently type
-  aliases of one shared `DifferenceItem = { severity: Severity; message:
-  string }` shape. `Severity` uses the exact six values from
-  DESIGN-SPEC.md's severity model (Pass / Informational / Warning /
-  Failure / Error / Skipped). This is intentionally minimal per the task
-  brief's explicit instruction not to over-design these — their full shape
-  is refined by T-06, T-07, T-13, and T-14 respectively. Because each is a
-  separate named type alias (not all four collapsed into one type), a later
-  task can widen its specific alias (e.g. `SchemaDifference extends
-  DifferenceItem { columnName: string; ... }`) without touching the other
-  three or breaking `ComparisonResult`'s field types.
-- **`ComparisonStatus`:** Idea Prompt.md's example uses the literal string
-  `"failed"`. Modeled as a union (`"passed" | "warning" | "failed" |
-  "error"`) covering the plausible top-level run outcomes implied by the
-  summary/severity model, rather than an unconstrained `string`, so
-  consumers get type safety on the status field.
+A full SQL parser/AST was judged out of scope (per the brief: "doesn't need
+to be a full SQL parser"). Instead, `assertReadOnlyStatement` does a bounded
+lexical pass in three stages before any keyword check runs:
+
+1. **Strip comments and literals first, unconditionally.** `stripCommentsAndLiterals`
+   walks the raw string character-by-character and removes `--` line
+   comments (to end of line), `/* ... */` block comments (including
+   multi-line), single-quoted string literals (with `''` escape handling),
+   double-quoted identifiers, and `[bracketed]` identifiers — replacing each
+   with a single space so token/statement boundaries are preserved. This
+   defeats the `-- comment\nDROP TABLE x` evasion directly: a naive
+   implementation that only regex-matches raw text can be fooled if it
+   treats the first line as "the statement" and stops, or conversely can
+   produce a false positive if a comment merely *mentions* a keyword (tested
+   explicitly: `-- note: do not DROP TABLE in prod\nSELECT * FROM x` must
+   NOT throw, and does not, because the comment content is stripped away
+   before scanning).
+2. **Split what remains on top-level `;` boundaries and check every
+   statement independently, not just the first.** Because comments and
+   string/identifier literals are already stripped, every remaining `;` is a
+   genuine statement separator for the dialects in scope. This defeats the
+   `SELECT 1; DROP TABLE x;` evasion: a naive implementation that only
+   checks the first statement (or the first line) would miss a mutation
+   batched after a leading SELECT.
+3. **Resolve each statement's *effective* leading keyword, walking past any
+   CTE prefix.** Every check is anchored to a statement's leading token
+   (`^[\s(]*KEYWORD\b`, case-insensitive) rather than a bare substring
+   search, so a mutating keyword only trips the check when it is the
+   statement's own leading construct — this avoids false positives like a
+   column named `delete_flag`. But a bare "leading token" check is itself
+   defeated by `WITH cte AS (SELECT ...) DELETE FROM x WHERE id IN (SELECT
+   id FROM cte)`, whose literal leading token is always `WITH` no matter
+   what mutating clause follows the CTE body. **This bypass was found during
+   this task's own testing** (see "Judgment call" below) and closed by
+   `effectiveLeadingKeyword()`, which walks past `WITH`, each `<name> AS
+   ( ... )` CTE body (tracking parenthesis depth so content inside the CTE
+   body can't confuse the scan, and handling multiple comma-separated CTEs),
+   and returns whatever keyword follows the last CTE body — the keyword that
+   actually determines whether the statement reads or mutates. That
+   effective keyword, not the literal `WITH` token, is what gets checked
+   against the mutating-keyword list.
+
+Per-dialect keyword lists: a common set (`INSERT, UPDATE, DELETE, DROP,
+ALTER, TRUNCATE, MERGE, GRANT, REVOKE, CREATE, EXEC, EXECUTE, CALL`) plus
+dialect-specific additions (SQL Server: `EXEC, SP_EXECUTESQL`; Snowflake:
+`COPY, PUT, GET, UNLOAD`; PostgreSQL: `COPY, VACUUM, REINDEX`; DuckDB: `COPY,
+PRAGMA, ATTACH, DETACH, EXPORT, IMPORT`) covering session/DDL/data-movement
+constructs beyond the seven keywords named explicitly in the brief.
+
+## Judgment call: CTE-prefixed mutation bypass found and fixed mid-task
+
+`IMPLEMENTATION-PLAN.md`'s T-03 review-gate column names "CTE-wrapped
+mutations" as a bypass class the reviewer should check. Before writing the
+implementation report, I wrote a throwaway probe test
+(`WITH cte AS (SELECT id FROM x) DELETE FROM x WHERE id IN (SELECT id FROM
+cte)` against a first version of the parser that only checked each split
+statement's literal leading token) and confirmed it did **not** throw — a
+real, working bypass, not a hypothetical one. I treated this as a defect to
+fix within this task's scope (it's the same file, same function, same
+acceptance criterion — "must not be naively fooled by trivial evasions" —
+rather than a scope expansion), added `effectiveLeadingKeyword()` to resolve
+past CTE prefixes, added four new test cases (single-CTE DELETE/UPDATE/
+INSERT and multi-CTE DELETE, all must throw, plus a multi-CTE SELECT that
+must not throw), and reran full verification. This raised the focused suite
+from 69 to 89 tests and is included in the final commit, not left as an open
+finding for the reviewer to catch.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0 — typecheck/lint/test all pass; test step reports "No test files found, exiting with code 0" (confirms T-01's green baseline before any T-02 change) | Captured in this session's transcript |
-| Red state | `npm run verify` | Exit 2 at the `typecheck` step (`tsc -b --force`) — 8 `TS2305` errors ("Module './index.js' has no exported member '...'") for every type named in the new test file, plus 4 `TS7006` implicit-any errors on then-untyped test params. Lint/test steps did not run. | Captured in this session's transcript, reproduced below |
-| Focused green state | `npx vitest run packages/shared` | Exit 0 — `types.test.ts`: 11 tests, 11 passed | Captured in this session's transcript |
-| Full verification | `npm run verify` | Exit 0 — `tsc -b --force` clean, `eslint .` clean, `vitest run`: 1 test file, 11 tests, all passed | Captured in this session's transcript, reproduced below |
+| Baseline (pre-change) | `npm run verify` | Exit 0 — `packages/shared/src/types.test.ts`: 11 tests passed; no engine tests existed yet. | This session's transcript. |
+| Red state | `npx vitest run packages/engine` | 1 failed suite, 0 tests run: `Error: Failed to load url ./statement-safety.js ... Does the file exist?` — confirms `assertReadOnlyStatement` did not exist yet. Vitest process itself exits 0 (it reports the failed run without a non-zero process exit under this invocation), but the suite result is unambiguously failing/red. | This session's transcript (see raw output below). |
+| Focused green state (first pass, pre-CTE-fix) | `npx vitest run packages/engine` | `Test Files 1 passed (1)`, `Tests 69 passed (69)`. | This session's transcript. |
+| CTE bypass probe (throwaway, not committed) | ad hoc Vitest probe file | Confirmed `WITH cte AS (SELECT id FROM x) DELETE FROM x ...` did NOT throw under the first-pass implementation — a real bypass, fixed before finalizing (see Judgment call above). Probe file deleted; its cases are now permanent tests in `statement-safety.test.ts`. | This session's transcript. |
+| Focused green state (final) | `npx vitest run packages/engine` | `Test Files 1 passed (1)`, `Tests 89 passed (89)`. | This session's transcript (see raw output below). |
+| Full verification | `npm run verify` (runs `tsc -b --force`, `eslint .`, `vitest run`) | Exit 0. Typecheck clean (after fixing 3 `TS2345`/`noUncheckedIndexedAccess` strict-mode errors in `effectiveLeadingKeyword` by switching raw index access to `String.charAt`), lint clean, `Test Files 2 passed (2)`, `Tests 100 passed (100)` (11 pre-existing `packages/shared` tests + 89 engine tests). | This session's transcript (see raw output below). |
 
-Note on the red-state command: `npx vitest run packages/shared` alone did
-**not** fail before implementation (Vitest's esbuild transpile-only
-pipeline does not type-check `.ts` imports, so a missing named export is
-not caught at that layer). The true red state — and the one the task brief
-explicitly allows ("or a more focused `npx vitest run packages/shared` if
-the implementer wants a narrower focused command before the full one —
-record whichever is used") — was captured via `npm run verify`, whose
-`typecheck` step (`tsc -b --force`) is what actually fails on missing
-exports. This is recorded above as the red-state command actually used.
+### Red state — raw output
 
-### Full verify — red-state raw output
+```text
+ ❯ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (0 test)
 
-```
-> paritylens@0.0.1 verify
-> npm run typecheck && npm run lint && npm run test
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
 
-> paritylens@0.0.1 typecheck
-> tsc -b --force
+ FAIL  packages/engine/src/connector-sdk/safety/statement-safety.test.ts [ packages/engine/src/connector-sdk/safety/statement-safety.test.ts ]
+Error: Failed to load url ./statement-safety.js (resolved id: ./statement-safety.js) in .../statement-safety.test.ts. Does the file exist?
 
-packages/shared/src/types.test.ts(10,3): error TS2305: Module '"./index.js"' has no exported member 'CanonicalTypeCategory'.
-packages/shared/src/types.test.ts(11,3): error TS2305: Module '"./index.js"' has no exported member 'ColumnDefinition'.
-packages/shared/src/types.test.ts(12,3): error TS2305: Module '"./index.js"' has no exported member 'ComparisonResult'.
-packages/shared/src/types.test.ts(13,3): error TS2305: Module '"./index.js"' has no exported member 'ConnectorCapabilities'.
-packages/shared/src/types.test.ts(14,3): error TS2305: Module '"./index.js"' has no exported member 'DataPlatformConnector'.
-packages/shared/src/types.test.ts(15,3): error TS2305: Module '"./index.js"' has no exported member 'ExecutionOptions'.
-packages/shared/src/types.test.ts(16,3): error TS2305: Module '"./index.js"' has no exported member 'QueryInput'.
-packages/shared/src/types.test.ts(17,3): error TS2305: Module '"./index.js"' has no exported member 'RecordBatch'.
-packages/shared/src/types.test.ts(139,24): error TS7006: Parameter '_scope' implicitly has an 'any' type.
-packages/shared/src/types.test.ts(167,25): error TS7006: Parameter '_input' implicitly has an 'any' type.
-packages/shared/src/types.test.ts(167,33): error TS7006: Parameter '_columns' implicitly has an 'any' type.
-packages/shared/src/types.test.ts(167,43): error TS7006: Parameter '_profileOptions' implicitly has an 'any' type.
-EXIT_CODE=2
+ Test Files  1 failed (1)
+      Tests  no tests
 ```
 
-### Full verify — final green-state raw output
+### Final full verify — raw output
 
-```
+```text
 > paritylens@0.0.1 verify
 > npm run typecheck && npm run lint && npm run test
 
@@ -188,74 +162,277 @@ EXIT_CODE=2
  RUN  v2.1.9 V:/Secret Projects/VSC-DB-SQL-Compare
 
  ✓ packages/shared/src/types.test.ts (11 tests) 4ms
+ ✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (89 tests) 16ms
 
- Test Files  1 passed (1)
-      Tests  11 passed (11)
-EXIT_CODE=0
+ Test Files  2 passed (2)
+      Tests  100 passed (100)
 ```
-
-An intermediate full-verify run also caught a lint-only failure (8
-`@typescript-eslint/no-unused-vars` errors on intentionally-unused
-interface-implementation parameters in `types.test.ts`, since this repo's
-`eslint.config.mjs` — a T-01-owned file this task must not modify — has no
-`argsIgnorePattern` for a `_`-prefix convention). Fixed by referencing each
-parameter with a no-op `void param;` statement inside the function body
-instead of relying on an underscore-prefix naming convention, avoiding any
-change to root ESLint configuration.
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - `packages/shared` was already a correctly wired npm workspace member
-    from T-01 (confirmed: root `package.json` lists `"packages/*"` as a
-    workspace, `packages/shared/package.json`/`tsconfig.json` already
-    existed and needed no changes).
-  - The four difference-array item shapes are intentionally deferred to
-    their owning tasks (T-06, T-07, T-13, T-14) per the task brief's
-    explicit instruction; this task does not attempt to anticipate their
-    final field sets beyond the shared `severity`/`message` placeholder.
-  - `RecordBatch`'s row-oriented (non-Arrow) representation is a reasonable
-    interim shape; if a later task determines Arrow's actual
-    `RecordBatch`/`Table` types are needed at the shared-types layer, that
-    would be a scoped interface-change task per `IMPLEMENTATION-PLAN.md`'s
-    "Interface change control" section, not a silent extension.
-- **Risks or limitations:**
-  - Because the four difference-array types are currently identical
-    aliases of `DifferenceItem`, nothing today prevents assigning a
-    `RowDifference` value into `schemaDifferences` at the type level (they
-    are structurally the same type). This is an accepted, documented
-    tradeoff for this task's scope (deliberately not over-designed) — T-06/
-    T-07/T-13/T-14 introducing distinct discriminated fields will close this
-    gap naturally as they extend each alias.
-  - `ComparisonStatus` and `DataObjectKind` are judgment-call unions not
-    given verbatim in the idea doc; a later task may need to widen them
-    (e.g. add a `"skipped"` status) — that would be a normal, backward-
-    compatible union extension, not a breaking change to already-consumed
-    fields.
+  - The seven keywords named in `AGENTS.md`/`DESIGN-SPEC.md`
+    (INSERT/UPDATE/DELETE/DROP/ALTER/TRUNCATE/MERGE) are the mandatory
+    floor; additional keywords (GRANT/REVOKE/CREATE/EXEC/EXECUTE/CALL, plus
+    dialect-specific data-movement/session commands) were added as a
+    reasonable reading of "equivalent platform-specific mutating construct"
+    but were a judgment call, not explicitly enumerated in the brief.
+  - `QueryInput` of kind `"sqlFile"` resolves to a `sql: string` before
+    reaching this function (file-reading is a connector/orchestration
+    concern, not this module's) — consistent with the brief's contract
+    table, which specifies the function signature as `(sql: string,
+    dialect: SqlDialect)`, not `(input: QueryInput, ...)`.
+  - This module has zero runtime dependencies (no database driver, no
+    external SQL-parsing library), consistent with "Do not add a database
+    driver dependency" and keeping this a lightweight primitive every future
+    connector can call cheaply and synchronously.
+
+- **Risks or limitations (security-sensitive — flagging explicitly for
+  reviewer):**
+  - **This is a lexical scanner, not a real SQL parser.** It has no concept
+    of SQL grammar beyond comment/string/identifier stripping, `;`
+    splitting, and CTE-prefix resolution. The threat model per
+    `DESIGN-SPEC.md`'s stated rationale is defense against user error /
+    accidental writable-credential misuse, not a hardened defense against a
+    malicious user who already has DB access — but listing known gaps for
+    completeness since the brief asks the reviewer to hunt for bypasses:
+    - **Stored-procedure or function calls that mutate internally.** A
+      `SELECT` that invokes a UDF/stored function with a side effect (e.g.
+      `SELECT some_mutating_udf()`) is not caught — this scanner only
+      recognizes mutating *leading statement keywords* (now including
+      CTE-resolved ones), not arbitrary function-call side effects reachable
+      from a SELECT's expression list. `CALL` and `EXEC` themselves are
+      blocked as leading keywords.
+    - **SQL Server's `GO` batch separator is not a recognized statement
+      boundary.** `GO` is a client-tool (`sqlcmd`/SSMS) convention, not a
+      T-SQL keyword, so it is not stripped or split on by this scanner. I
+      verified this with an ad hoc probe: `SELECT 1\nGO\nDROP TABLE x`
+      against the `sqlserver` dialect does **not** throw, because the whole
+      string is treated as one statement whose effective leading keyword is
+      `SELECT`. This is a real, confirmed gap specific to the `sqlserver`
+      dialect. Whether it is exploitable in practice depends on T-17 (SQL
+      Server connector): most driver-level execution paths (`mssql`/Tedious)
+      do not interpret `GO` either and will send the literal text to the
+      server as-is, so the actual behavior depends on what SQL Server itself
+      does with an un-batched multi-statement string containing `GO` as
+      plain text (likely a syntax error, not silent execution of the DROP,
+      since `GO` is not valid mid-statement T-SQL) — but this has not been
+      verified against a real driver/server and should not be assumed safe.
+      Recommend T-17 either handle `GO`-splitting explicitly or confirm via
+      a live/documented test that the driver layer rejects such input before
+      it can execute.
+    - **PostgreSQL dollar-quoted strings (`$$...$$` or `$tag$...$tag$`) are
+      not recognized as literals.** The stripper handles `'...'`, `"..."`,
+      and `[...]` but not `$$...$$`. A payload embedding a `;` inside a
+      dollar-quoted string could in principle alter statement splitting in
+      an untested way. This did not surface as a false negative in the
+      tested cases (no test payload used dollar-quoting) but is an
+      unverified gap, not a confirmed-safe case — flagging for the reviewer
+      to probe specifically, since PostgreSQL is one of the four in-scope
+      dialects.
+  - **No length/complexity limits.** Very large SQL strings are scanned in
+    O(n) but there is no upper bound enforced by this module itself (row
+    caps/timeouts are a separate, already-planned control per
+    `DESIGN-SPEC.md`, not this task's scope).
+
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** `ffa6accfb64821132200a65b3e1f6449b392b444`
-- **Branch or workspace:** `task/T-02-shared-types`
-- **Commit message:** "T-02: define canonical shared types in packages/shared"
-- **Files committed:** `packages/shared/src/connector.ts`,
-  `packages/shared/src/index.ts` (modified), `packages/shared/src/result.ts`,
-  `packages/shared/src/types.test.ts`, `packages/shared/src/types.ts` — all
-  within this task's owned path (`packages/shared/src/**`) only.
-- **Note:** `PROGRESS-LEDGER.md` and `TASK-BRIEF.md` had pre-existing
-  working-tree modifications (made by the Lead Orchestrator to activate
-  T-02) present before this task started; per this task's ownership scope
-  and the rule against touching `PROGRESS-LEDGER.md`, those files were left
-  unstaged/uncommitted by this task and are the Lead Orchestrator's to
-  commit.
+- **Patch or commit:** `a4fb5c440ea2f831fa1d40ff5a9a1cec5be0b754`
+  ("Close CTE-prefixed mutation bypass in statement safety parser"), on top
+  of `36f0e025f21ffad3da95f03aa3b42ebec4fea047` ("Add statement-safety parser
+  (T-03)"). Both commits are on the task branch.
+- **Branch or workspace:** `task/T-03-statement-safety` (branched from
+  `main` at a clean tree containing T-01+T-02; `PROGRESS-LEDGER.md` and
+  `TASK-BRIEF.md` had pre-existing working-tree modifications made by the
+  Lead Orchestrator to activate T-03 before this task started — per this
+  task's ownership scope and the rule against touching
+  `PROGRESS-LEDGER.md`, those files were left unstaged/uncommitted by this
+  task and are the Lead Orchestrator's to commit).
 
-## Recommended next step
+## Recommended next step (superseded — see I-01 fix section below)
 
-Independent review required. A separate Claude Code subagent instance,
-distinct from this implementer, should review this change against
-`DESIGN-SPEC.md`'s Architecture and component contracts section and
-`Idea Prompt.md` sections 2/9/11, confirming every interface named there
-exists with matching field-level contracts, before T-03/T-04 (which depend
-on T-02's interfaces) or any merge to `main` proceeds. This implementer
-does not have authority to approve or mark this task complete/reviewed.
+Independent review required, by a separate Claude Code subagent instance
+distinct from this implementer, per `TASK-BRIEF.md`'s handoff section.
+Given this is a security control (primary defense against accidental data
+mutation per `AGENTS.md`), the reviewer must specifically attempt to find a
+bypass the test matrix missed — the CTE-prefix class was found and closed
+during this task, so the reviewer's marginal value is highest checking the
+two gaps disclosed above and left open: (1) the `sqlserver`-specific `GO`
+batch-separator gap, and (2) PostgreSQL dollar-quoted string handling. Do
+not merge to `main` or start a dependent task (T-04, T-17, T-18, T-19) until
+review findings (if any Critical/Important) are resolved, per `AGENTS.md`
+verification rules. This implementer does not have authority to approve or
+mark this task complete/reviewed.
+
+This section documented the state as of commit `a4fb5c4`, before the
+independent review pass (see `REVIEW-REPORT.md`). That review found finding
+I-01, an Important/blocking bypass distinct from the two gaps disclosed
+above. See the next section for the fix.
+
+## I-01 regression fix (post-review)
+
+- **Status:** COMPLETE (fix and evidence for finding I-01 only; not
+  independently re-reviewed; not self-approved).
+- **Finding being fixed:** `REVIEW-REPORT.md` I-01 (Important, blocking
+  approval): a CTE-prefixed mutating statement wrapped in a single pair of
+  outer parentheses, e.g. `(WITH cte AS (SELECT 1) DELETE FROM x)`, evaded
+  `assertReadOnlyStatement` on all four in-scope dialects (`sqlserver`,
+  `snowflake`, `postgres`, `duckdb`).
+
+### What was broken
+
+`WITH_KEYWORD_PATTERN` was `/^\s*WITH\b/i` — it required `WITH` to be the
+literal first token after only whitespace, with no tolerance for a leading
+`(`. `leadingKeywordPattern` (used for every ordinary mutating keyword)
+already tolerates `^[\s(]*KEYWORD\b`, but the CTE-detection gate in
+`effectiveLeadingKeyword()` did not extend the same tolerance to `WITH`.
+When the statement was `(WITH cte AS (SELECT 1) DELETE FROM x)`,
+`WITH_KEYWORD_PATTERN.test(...)` was `false`, so `effectiveLeadingKeyword()`
+returned the statement unchanged (still starting with `(WITH...`), and
+`assertReadOnlyStatement`'s keyword scan then tested `leadingKeywordPattern`
+for each mutating keyword against that whole string — none matched, because
+the statement's literal leading token sequence is `( WITH`, not any mutating
+keyword, and `DELETE` is buried after the CTE body, not at the front. Net
+effect: the statement was treated as safe and no error was thrown, across
+all four dialects — a near-total regression of the CTE-bypass fix already
+committed in `a4fb5c4`, defeated by one extra pair of parentheses around the
+exact payload shape the existing test suite already asserted must throw.
+
+Root cause confirmed to be scoped narrowly to the CTE-detection gate: the
+already-existing "paren-wrapped plain mutation, no CTE" case (e.g.
+`(DELETE FROM x)`) was **not** affected — `leadingKeywordPattern`'s own
+`[\s(]*` tolerance already caught that shape correctly (confirmed by writing
+it as a test case; it passed both before and after this fix, so it was
+added as a permanent regression guard rather than left unverified).
+
+### Red-state evidence (regression test written first, confirmed failing)
+
+Five new test cases were added per dialect (20 total across `sqlserver`,
+`snowflake`, `postgres`, `duckdb`) to
+`packages/engine/src/connector-sdk/safety/statement-safety.test.ts`:
+
+1. `(WITH cte AS (SELECT 1) DELETE FROM x)` — single paren wrap, must throw.
+2. `(\n  WITH cte AS (SELECT 1)\n  DELETE FROM x\n)` — paren wrap with
+   internal whitespace/newlines, must throw (rules out a fix that only
+   special-cases the exact reviewer payload string).
+3. `( ( WITH cte AS (SELECT 1) DELETE FROM x ) )` — doubly-paren-wrapped,
+   must throw (rules out a fix that only tolerates exactly one `(`).
+4. `(DELETE FROM x)` — plain paren-wrapped mutation, no CTE, must throw
+   (same class of bug per the task instructions; confirms this path was
+   already correctly handled and stays handled).
+5. `(WITH cte AS (SELECT id FROM x) SELECT * FROM cte)` — paren-wrapped
+   CTE-wrapped **SELECT**, must NOT throw (false-positive guard).
+
+Ran `npx vitest run packages/engine` against the pre-fix code (statement
+tested at that point: only the test file had changed, `statement-safety.ts`
+was still the reviewed `a4fb5c4` version). Result: **12 of the 20 new tests
+failed** (the 3 "must throw" CTE-paren variants × 4 dialects; the
+plain-paren-wrap and negative-SELECT cases passed even before the fix,
+confirming the bug is specifically in CTE resolution, not paren-tolerance in
+general):
+
+```text
+ × assertReadOnlyStatement > dialect: sqlserver > throws for a paren-wrapped CTE-prefixed DELETE
+   → expected function to throw an error, but it didn't
+ × assertReadOnlyStatement > dialect: sqlserver > throws for a paren-wrapped CTE-prefixed DELETE with internal whitespace/newlines
+   → expected function to throw an error, but it didn't
+ × assertReadOnlyStatement > dialect: sqlserver > throws for a doubly-paren-wrapped CTE-prefixed DELETE
+   → expected function to throw an error, but it didn't
+ (same 3 failures repeated for dialect: snowflake, postgres, duckdb)
+
+ Test Files  1 failed (1)
+      Tests  12 failed | 97 passed (109)
+```
+
+This reproduces I-01 exactly as described by the reviewer, across all four
+dialects, confirming the bug before any fix was applied.
+
+### The fix
+
+In `packages/engine/src/connector-sdk/safety/statement-safety.ts`, changed:
+
+```ts
+const WITH_KEYWORD_PATTERN = /^\s*WITH\b/i;
+```
+
+to:
+
+```ts
+const WITH_KEYWORD_PATTERN = /^[\s(]*WITH\b/i;
+```
+
+This is the same `[\s(]*` leading-paren tolerance `leadingKeywordPattern`
+already grants ordinary mutating keywords, applied to the CTE-detection
+gate. No other logic in `effectiveLeadingKeyword()` needed to change: once
+the gate recognizes the paren-wrapped `WITH`, the existing skip-past-`WITH`
+and skip-past-CTE-body walk (which already starts its scan from
+`.search(/\S/)` after stripping the matched prefix) correctly resolves past
+the CTE to the real trailing keyword (`DELETE`), and the outer closing `)`
+after it is then within `leadingKeywordPattern`'s existing trailing-content
+tolerance (that pattern only anchors the *start* of the string, so trailing
+characters after the matched keyword — including a closing paren — do not
+prevent a match).
+
+Checked whether outer parens wrapping a non-CTE mutation (`(DELETE FROM
+x)`) were already handled: yes — `leadingKeywordPattern`'s own `[\s(]*`
+prefix tolerance already covers that case directly (it never goes through
+`effectiveLeadingKeyword`'s CTE branch at all, since `WITH_KEYWORD_PATTERN`
+doesn't match), confirmed by test case 4 above passing both before and
+after this change.
+
+### Green-state evidence (regression test now passes, no prior test broke)
+
+`npx vitest run packages/engine` after the fix:
+
+```text
+ ✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests) 18ms
+
+ Test Files  1 passed (1)
+      Tests  109 passed (109)
+```
+
+All 109 tests pass: the 89 pre-existing tests (unchanged, none modified)
+plus the 20 new I-01 regression tests, including the 12 that were
+previously red.
+
+`npm run verify` (`tsc -b --force && eslint . && vitest run`):
+
+```text
+> paritylens@0.0.1 verify
+> npm run typecheck && npm run lint && npm run test
+...
+ ✓ packages/shared/src/types.test.ts (11 tests) 4ms
+ ✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests) 19ms
+
+ Test Files  2 passed (2)
+      Tests  120 passed (120)
+```
+
+Exit code: `0`. Typecheck and lint both clean, no changes required beyond
+the one-line regex fix. No prior test (of the 89 original or the 11 in
+`packages/shared`) regressed.
+
+### Scope
+
+Only `packages/engine/src/connector-sdk/safety/statement-safety.ts` (1 line
+changed) and `packages/engine/src/connector-sdk/safety/statement-safety.test.ts`
+(20 new test cases appended) were touched, consistent with `TASK-BRIEF.md`'s
+file-ownership boundary for T-03. `PROGRESS-LEDGER.md` and
+`REVIEW-REPORT.md` were not modified by this fix (reviewer/orchestrator
+owned).
+
+### Patch or commit identity
+
+- **Commit:** `afae34f` ("Fix I-01: paren-wrapped CTE mutation bypass in
+  statement safety"), on branch `task/T-03-statement-safety`, on top of
+  `a4fb5c4` / `36f0e02`.
+
+### Recommended next step
+
+A fresh independent review pass is required to confirm I-01 is resolved and
+that this fix does not introduce a new bypass, per `AGENTS.md`'s rule
+against self-approval. M-05 (`GO` separator) and M-06 (dollar-quoting) were
+explicitly out of scope for this fix per the reviewer's and orchestrator's
+disposition (tracked for T-17/T-19) and were not touched.
