@@ -102,6 +102,36 @@ describe("assertReadOnlyStatement", () => {
           "SELECT * FROM b";
         expect(() => assertReadOnlyStatement(sql, dialect)).not.toThrow();
       });
+
+      // I-01 regression: a CTE-prefixed mutating statement wrapped in outer
+      // parentheses must still be caught. Prior to the fix, the paren wrapper
+      // defeated WITH_KEYWORD_PATTERN's `^\s*WITH\b` check, so
+      // effectiveLeadingKeyword() never resolved past the CTE and the
+      // mutating tail was never scanned.
+      it("throws for a paren-wrapped CTE-prefixed DELETE", () => {
+        const sql = "(WITH cte AS (SELECT 1) DELETE FROM x)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a paren-wrapped CTE-prefixed DELETE with internal whitespace/newlines", () => {
+        const sql = "(\n  WITH cte AS (SELECT 1)\n  DELETE FROM x\n)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a doubly-paren-wrapped CTE-prefixed DELETE", () => {
+        const sql = "( ( WITH cte AS (SELECT 1) DELETE FROM x ) )";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("throws for a paren-wrapped plain DELETE with no CTE (same paren-tolerance class)", () => {
+        const sql = "(DELETE FROM x)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).toThrow(MutatingStatementError);
+      });
+
+      it("does not throw for a paren-wrapped CTE-wrapped SELECT", () => {
+        const sql = "(WITH cte AS (SELECT id FROM x) SELECT * FROM cte)";
+        expect(() => assertReadOnlyStatement(sql, dialect)).not.toThrow();
+      });
     });
   }
 

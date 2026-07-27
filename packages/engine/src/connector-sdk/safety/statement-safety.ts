@@ -188,22 +188,30 @@ function leadingKeywordPattern(keyword: string): RegExp {
   return new RegExp(`^[\\s(]*${keyword}\\b`, "i");
 }
 
-const WITH_KEYWORD_PATTERN = /^\s*WITH\b/i;
+// Tolerates the same leading `(` allowance (any number of opening parens,
+// with whitespace around them) that `leadingKeywordPattern` already grants
+// ordinary mutating keywords — otherwise a CTE wrapped in redundant outer
+// parentheses, e.g. `(WITH cte AS (SELECT 1) DELETE FROM x)`, never matches
+// this pattern, `effectiveLeadingKeyword` returns the statement unchanged,
+// and the mutating tail after the CTE is never checked (I-01).
+const WITH_KEYWORD_PATTERN = /^[\s(]*WITH\b/i;
 
 /**
- * A statement that begins with `WITH` is a CTE-prefixed statement:
+ * A statement that begins with `WITH` (optionally behind leading whitespace
+ * and/or opening parentheses — see `WITH_KEYWORD_PATTERN`) is a CTE-prefixed
+ * statement:
  * `WITH cte AS (SELECT ...) [, cte2 AS (...)] <SELECT|INSERT|UPDATE|DELETE|MERGE ...>`.
  * The leading token of such a statement is always `WITH`, regardless of what
  * follows the CTE definitions — so checking only the leading token (as
  * `leadingKeywordPattern` does for every other statement shape) would let a
  * real mutating statement like `WITH cte AS (SELECT id FROM x) DELETE FROM x
  * WHERE id IN (SELECT id FROM cte)` through undetected. This finds the
- * statement's *effective* leading keyword by skipping past the `WITH` token,
- * each `<name> AS ( ... )` CTE body (tracking paren depth so commas and
- * keywords inside the CTE body don't confuse the scan), and the comma
- * separators between multiple CTEs, then returns whatever keyword comes
- * after the last CTE body — the keyword that actually determines whether
- * this statement reads or mutates.
+ * statement's *effective* leading keyword by skipping past any leading
+ * parens/whitespace and the `WITH` token, each `<name> AS ( ... )` CTE body
+ * (tracking paren depth so commas and keywords inside the CTE body don't
+ * confuse the scan), and the comma separators between multiple CTEs, then
+ * returns whatever keyword comes after the last CTE body — the keyword that
+ * actually determines whether this statement reads or mutates.
  */
 function effectiveLeadingKeyword(statement: string): string {
   if (!WITH_KEYWORD_PATTERN.test(statement)) {
