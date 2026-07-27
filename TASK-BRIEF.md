@@ -1,79 +1,87 @@
-# ParityLens — Task Brief T-01
+# ParityLens — Task Brief T-02
 
 ## Objective
 
-Scaffold the npm workspaces monorepo (`packages/shared`, `packages/engine`,
-`packages/extension`) with TypeScript strict configuration, ESLint, Vitest,
-and a working `npm run verify` script (tsc --noEmit + eslint + vitest across
-all workspaces), establishing the tooling contract every later task depends
-on.
+Define the canonical shared TypeScript types in `packages/shared`: the
+`DataPlatformConnector` interface, `ConnectorCapabilities`,
+`ColumnDefinition`, `QueryInput`, `ExecutionOptions`, `RecordBatch`, the
+canonical type-category enum (Integer, Decimal, FloatingPoint, Boolean,
+String, Binary, Date, Time, Timestamp, TimestampWithTimezone, JSON, Array,
+Object, Geospatial, Unknown), and the `ComparisonResult` shape (and its
+sub-shapes: schema/profile/aggregate/row differences, execution timing, and
+summary counts). No runtime logic — types and interfaces only.
 
 ## Dependencies
 
-- **Required completed tasks:** NONE
+- **Required completed tasks:** T-01 (npm workspaces monorepo, TypeScript
+  strict, `npm run verify`) — COMPLETE and APPROVED (see
+  `PROGRESS-LEDGER.md`).
 - **Required decisions or approvals:** `IMPLEMENTATION-PLAN.md` approved
-  2026-07-27 (tooling decision: Vitest + ESLint + TypeScript strict, npm
-  workspaces monorepo).
+  2026-07-27, T-02 row. `DESIGN-SPEC.md` Architecture and component
+  contracts section (approved) defines which components consume/produce
+  these types.
 
 ## Files owned
 
-- `package.json` (root)
-- `tsconfig.json`, `tsconfig.base.json` (root-level shared TS config)
-- `.eslintrc.cjs` (or `.eslintrc.json` — implementer's choice, record which)
-- `vitest.config.ts` (root workspace test config)
-- `.gitignore` (create if absent; must exclude `node_modules`, build output)
-- `packages/shared/package.json`, `packages/shared/tsconfig.json`, `packages/shared/src/index.ts`
-- `packages/engine/package.json`, `packages/engine/tsconfig.json`, `packages/engine/src/index.ts`
-- `packages/extension/package.json`, `packages/extension/tsconfig.json`, `packages/extension/src/index.ts`
+- `packages/shared/src/**` (all files under this path; may organize into
+  submodules, e.g. `connector.ts`, `types.ts`, `result.ts`, `index.ts`
+  re-exporting the public surface — implementer's choice, record the
+  structure chosen in the implementation report)
 
-`src/index.ts` in each package is a placeholder only (e.g. a single exported
-constant or empty module) — no real logic. Real logic starts in T-02 onward.
+Do not touch `packages/engine/**`, `packages/extension/**`, or any root
+config file from T-01.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Produced | `npm run verify` | Runs `tsc --noEmit` across all workspaces, then `eslint .`, then `vitest run` across all workspaces; exits non-zero if any step fails | Consumed by every subsequent task (T-02 through T-21) as their full-verification command |
-| Produced | npm workspaces structure | Three packages (`@paritylens/shared`, `@paritylens/engine`, `@paritylens/extension`) resolvable via workspace protocol, each independently buildable/testable | Consumed by T-02 (populates `packages/shared`) and all later tasks |
+| Consumed | `npm run verify` (T-01) | Must continue to pass unmodified in meaning after this task's changes | Root tooling from T-01 |
+| Produced | `DataPlatformConnector` interface | Matches `Idea Prompt.md` section 9 exactly: `testConnection()`, `getCatalogs()`, `getSchemas()`, `getObjects()`, `getSchema()`, `executeQuery()` returning `AsyncIterable<RecordBatch>`, `getCapabilities()`, `quoteIdentifier()`, `buildProfileQuery()` | Consumed by T-03 (safety parser wraps `executeQuery`), T-04 (Fixture connector implements it), T-17/T-18/T-19 (real connectors implement it) |
+| Produced | `ConnectorCapabilities` interface | Matches `Idea Prompt.md` section 9: `supportsApproximateDistinct`, `supportsNativeHashing`, `supportsTableSampling`, `supportsQueryCancellation`, `supportsArrowResults`, `supportsInformationSchema`, `supportsTemporaryTables`, `supportsServerSideProfiling`, optional `maximumParameters` | Consumed by every connector implementation (T-04, T-17, T-18, T-19) |
+| Produced | Canonical type-category enum | The 15 categories listed in the Objective above, matching `Idea Prompt.md` section 2 | Consumed by T-05 (type-mapping layer) |
+| Produced | `ColumnDefinition` | Native type, normalized/canonical type, length, precision, scale, nullability, name, ordinal position, primary-key-candidate flag | Consumed by T-05, T-06, T-07, T-08, T-12 |
+| Produced | `QueryInput`, `ExecutionOptions`, `RecordBatch` | Shapes needed by `DataPlatformConnector.executeQuery` and `buildProfileQuery` | Consumed by T-03, T-04, T-07, T-17, T-18, T-19 |
+| Produced | `ComparisonResult` and sub-shapes | Matches `Idea Prompt.md` section 11 exactly: `comparison`, `runId`, `status`, `summary` (passed/warnings/failed), `rowCounts`, `schemaDifferences`, `profileDifferences`, `aggregateDifferences`, `rowDifferences`, `execution` (durations) | Consumed by T-09 (planner assembles it), T-11/T-16 (webview renders it) |
 
 ## Prohibited changes
 
-- Do not write any real business logic, connector code, or UI code — this
-  task is scaffolding only. Placeholder exports in `src/index.ts` are the
-  only content permitted beyond configuration files.
-- Do not modify `AGENTS.md`, `PROJECT-BRIEF.md`, `DESIGN-SPEC.md`, or
-  `IMPLEMENTATION-PLAN.md`.
-- Do not install or reference any database driver (`mssql`, `snowflake-sdk`,
-  `pg`, `duckdb`) — those are introduced in later tasks (T-04, T-17–T-19).
+- Do not implement any connector, parser, or comparison logic — types and
+  interfaces only. A type-check test may exercise the shapes, but no
+  business logic belongs in `packages/shared`.
+- Do not modify `packages/engine/**` or `packages/extension/**`.
+- Do not modify any T-01-owned root config file (`package.json`,
+  `tsconfig*.json`, `eslint.config.mjs`, `vitest.config.ts`, `.gitignore`)
+  except to add `packages/shared` as a normal workspace member if not
+  already wired (it already is, from T-01 — verify, don't re-scaffold).
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused check confirming `npm run verify` does
-  not exist yet as a working command in a clean checkout.
-- **Command:** `npm run verify`
-- **Expected failure reason:** No root `package.json`/`verify` script exists
-  yet in the repository — command fails with "npm error Missing script:
-  verify" (or equivalent, since no `package.json` exists at all before this
-  task starts).
-- **Captured output:** Exact console output and exit code, pasted into
+- **Test or check to add:** A focused Vitest test file in
+  `packages/shared/src/**.test.ts` that imports `DataPlatformConnector`,
+  `ConnectorCapabilities`, `ColumnDefinition`, the canonical type enum, and
+  `ComparisonResult`, and asserts on their shape (e.g. constructs a minimal
+  conforming object literal for each and checks required fields exist).
+- **Command:** `npm run verify` (or a more focused `npx vitest run packages/shared` if the implementer wants a narrower focused command before the full one — record whichever is used)
+- **Expected failure reason:** The types do not exist yet in
+  `packages/shared/src` (only the T-01 placeholder `index.ts` exists) — the
+  test fails to compile / import errors.
+- **Captured output:** Exact command output and exit code, pasted into
   `IMPLEMENTATION-REPORT.md`.
 
 ## Green-state and full verification
 
-- **Focused command:** `npm run verify` (this task defines the very command
-  it is tested against; "focused" and "full" are the same command for T-01
-  specifically, since there is no narrower unit yet)
+- **Focused command:** `npx vitest run packages/shared` (or equivalent
+  workspace-scoped invocation)
 - **Full command:** `npm run verify`
-- **Expected evidence:** Exit code 0; output shows `tsc --noEmit` passing
-  with zero errors across all three packages, `eslint .` passing with zero
-  errors, and `vitest run` reporting 0 failed / 0 or more passed (an empty
-  test suite passing is acceptable at this stage since no real logic
-  exists yet — but the command must complete successfully end-to-end).
+- **Expected evidence:** Focused command passes with the new shape tests
+  green; full command passes with exit code 0 across all three workspaces
+  (unchanged behavior for `engine`/`extension`, which still only have
+  placeholder content from T-01).
 
 ## Handoff
 
-- **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the implementer subagent
-- **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-01-scaffold`
+- **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root — overwrites T-01's; prior report content is preserved in git history on `main`)
+- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-02 implementer subagent
+- **Review report location:** `REVIEW-REPORT.md` (project root — overwrites T-01's; prior report content is preserved in git history on `main`)
+- **Commit or patch checkpoint:** Branch `task/T-02-shared-types`
