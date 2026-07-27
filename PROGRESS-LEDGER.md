@@ -3,7 +3,7 @@
 ## Current lifecycle state
 
 - **Phase:** IMPLEMENTATION (task loop active)
-- **Exactly one task may be active:** T-01
+- **Exactly one task may be active:** NONE (T-01 complete and approved; T-02 or T-10 may activate next)
 - **Last updated:** 2026-07-27, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
@@ -11,7 +11,7 @@
 
 | Task ID | Objective | Dependencies | Agent or tool | Files owned | Status | Review state | Latest verification |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| T-01 | Scaffold npm workspaces monorepo, TypeScript strict config, ESLint, Vitest, `npm run verify` | NONE | Claude Code Implementer subagent | `package.json`, `tsconfig*.json`, `.eslintrc*`, `vitest.config.*`, `packages/*/package.json`, `packages/*/tsconfig.json`, empty `packages/*/src/index.ts` | ACTIVE | NOT REQUESTED | Pending |
+| T-01 | Scaffold npm workspaces monorepo, TypeScript strict config, ESLint, Vitest, `npm run verify` | NONE | Claude Code Implementer subagent | `package.json`, `tsconfig*.json`, `eslint.config.mjs`, `vitest.config.*`, `packages/*/package.json`, `packages/*/tsconfig.json`, `packages/*/src/index.ts` | COMPLETE | APPROVED | `npm run verify` exit 0, 2026-07-27, reviewed independently by a separate subagent |
 | T-02 | Define canonical shared types (`DataPlatformConnector`, `ComparisonResult`, etc.) | T-01 | Not yet assigned | `packages/shared/src/**` | NOT STARTED | NOT REQUESTED | NONE |
 | T-03 | Statement-safety parser (reject mutating SQL) | T-02 | Not yet assigned | `packages/engine/src/connector-sdk/safety/**` | NOT STARTED | NOT REQUESTED | NONE |
 | T-04 | DuckDB-backed Fixture connector + seed fixture datasets | T-02 | Not yet assigned | `packages/engine/src/connector-sdk/fixture/**`, `packages/engine/fixtures/**` | NOT STARTED | NOT REQUESTED | NONE |
@@ -37,14 +37,15 @@
 
 | ID | Severity | Source task or review | Owner | Required resolution | Status |
 | --- | --- | --- | --- | --- | --- |
-| NONE | — | — | — | — | — |
+| M-01 | MINOR | T-01 review | alex.nykolaiszyn@gmail.com | 10 transitive devDependency vulnerabilities (ESLint/minimatch, Vite/esbuild chains) — dev-tooling only, not shipped; revisit if/when a non-breaking fix becomes available | OPEN (accepted, non-blocking) |
+| M-02 | MINOR | T-01 review | N/A | `tsc -b --force` used instead of literal `tsc --noEmit`, since project-references composite builds don't support `--noEmit`; reviewer confirmed this satisfies the actual verification contract | RESOLVED (no action needed) |
 
 ## Blockers and dependencies
 
 | Item | Blocking effect | Owner | Needed action | Date recorded |
 | --- | --- | --- | --- | --- |
 | No real SQL Server/Snowflake/PostgreSQL instances or sample data available | T-17/T-18/T-19 integration tests will need a documented environment-conditional strategy (test containers / trial accounts) before they can run to completion | alex.nykolaiszyn@gmail.com | Identify real test instances or containerized targets before T-17/T-18/T-19 start | 2026-07-27 |
-| No agent/tool assigned yet to any task | Blocks starting T-01 | alex.nykolaiszyn@gmail.com | Assign an implementer for T-01 and record it in the task register | 2026-07-27 |
+| No agent/tool assigned yet to T-02 or T-10 | Both are now unblocked (T-01 approved) but need an implementer assigned before activating | alex.nykolaiszyn@gmail.com | Choose which task to activate next and assign an implementer | 2026-07-27 |
 
 ## Decisions and approvals
 
@@ -62,9 +63,12 @@
 | 2026-07-27 | `DESIGN-SPEC.md` approved section by section (scope, architecture, data flow, security, testing/release, acceptance criteria) | Owner confirmed the recommended option at each material decision point | Project owner | Unblocked Implementation Planning phase |
 | 2026-07-27 | Repo tooling: Vitest + ESLint + TypeScript strict, npm workspaces monorepo (`packages/shared`, `packages/engine`, `packages/extension`) | Recommended option; enforces the module boundary from `DESIGN-SPEC.md` at the package level | Project owner | T-01 and all subsequent tasks' verification commands |
 | 2026-07-27 | `IMPLEMENTATION-PLAN.md` approved: 21 tasks (T-01 through T-21) across Foundation, Phase 1 (schema/profile), Phase 2 (keyed/row-level), and Phase 3 (real connectors, hash, sampling) | Owner approved the full dependency-ordered plan with no changes requested | Project owner | Unblocks starting T-01; sets T-01 as next active task |
+| 2026-07-27 | T-01 implemented by a Claude Code Implementer subagent, independently reviewed by a separate Claude Code Reviewer subagent, approved with 0 Critical, 0 Important, 2 Minor findings (transitive dev-dependency audit warnings; `tsc -b --force` used in place of `tsc --noEmit` for project-references composite builds) | Reviewer independently re-ran `npm install`/`npm run verify`/`npm audit` and confirmed the implementer's claimed evidence byte-for-byte; scope stayed within TASK-BRIEF.md's owned files | Claude Code Independent Reviewer subagent (recommendation); Lead Orchestrator reconciled | T-01 complete; unblocks T-02 and T-10 |
+| 2026-07-27 | Established `main` as the trunk by renaming `task/T-01-scaffold` (the repo's only commit) rather than merging into a separate `main` | Repo had no prior commits and no divergent history to merge; renaming is equivalent and simpler | Project owner (confirmed via question) | Sets the branch policy baseline for all future tasks in `IMPLEMENTATION-PLAN.md` |
 
 ## Cost notes
 
 | Date | Activity | Time or spend | Value or trade-off | Owner |
 | --- | --- | --- | --- | --- |
 | 2026-07-27 | Initial project setup: seeded control files from idea document | Single session, file creation only | Gives Discovery a running start instead of a blank brief | Claude Code |
+| 2026-07-27 | T-01 implementer + reviewer subagents (2 dispatches) | Two subagent runs, ~187s + ~111s | Enforced implementer/reviewer independence per `AGENTS.md`; caught nothing needing rework but validated the process | Claude Code Lead Orchestrator |
