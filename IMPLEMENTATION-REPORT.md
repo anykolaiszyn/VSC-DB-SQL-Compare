@@ -1,300 +1,204 @@
-# ParityLens — Implementation Report T-04
+# ParityLens — Implementation Report T-05
 
 ## Status and objective
 
 - **Status:** COMPLETE
-- **Objective:** Implement the DuckDB-backed Fixture connector implementing
-  `DataPlatformConnector` (from `@paritylens/shared`), including seed fixture
-  datasets with deliberately mismatched schema, volume, and row-level cases
-  standing in for SQL Server-shaped, Snowflake-shaped, and PostgreSQL-shaped
-  data, per `TASK-BRIEF.md` T-04.
-
-## DuckDB binding choice
-
-**Chosen: `@duckdb/node-api` (DuckDB Labs' official "Neo" Node client),
-installed as a dependency of `packages/engine` only** (`npm install
-@duckdb/node-api --workspace=@paritylens/engine`), not the legacy `duckdb`
-npm package. Rationale:
-
-- **Promise-native API.** `DuckDBInstance.create()`, `connection.run()`,
-  `connection.runAndReadAll()` all return Promises directly. The legacy
-  `duckdb` package's API is callback/EventEmitter-based and would need manual
-  promisification to fit `DataPlatformConnector.executeQuery`'s
-  `AsyncIterable<RecordBatch>` contract — `@duckdb/node-api` maps onto that
-  contract with no adapter layer.
-- **Actively maintained forward path.** `@duckdb/node-api` is DuckDB Labs'
-  current recommended Node client; the legacy `duckdb` package is in
-  maintenance mode upstream.
-- **JS-native value extraction.** `DuckDBResultReader.getRowsJS()` returns
-  plain JavaScript values (not DuckDB's internal value-wrapper types), and
-  `columnNames()`/`columnTypes()` give exactly the metadata needed to build
-  `RecordBatch.columns`/`RecordBatch.rows` and `ColumnDefinition[]` without an
-  extra conversion step.
-- **No added native-toolchain requirement.** Ships prebuilt native binaries
-  per-platform via `@duckdb/node-bindings`, the same distribution model as
-  the legacy package — no new build dependency for CI or contributors.
-- **Version installed:** `@duckdb/node-api@^1.5.5-r.2` (resolved via `npm
-  install`, recorded in `packages/engine/package.json` and the root
-  `package-lock.json`).
-
-Each `FixtureConnector` instance opens its own **in-memory** DuckDB database
-(`DuckDBInstance.create(":memory:")`) and seeds exactly one side (source or
-target) of one named fixture pair into it on first use. Nothing is ever
-persisted to disk — the fixture data is disposable, test-only state that
-disappears when the process/connector instance ends.
-
-## Fixture data design
-
-Fixture datasets are **generated in code** as TypeScript modules under
-`packages/engine/fixtures/` — each module exports a `FixtureTableDefinition`
-(`{ createTableSql, insertRowsSql }`) per side. This was chosen over
-embedded CSV/SQL files because: (1) it keeps the mismatch documentation
-directly adjacent to the data that encodes it (a comment block per file,
-explicit and diffable), (2) it needs zero file-I/O or CSV-parsing code in
-the connector itself — `FixtureConnector` just runs the SQL strings via
-DuckDB, and (3) TypeScript catches shape mistakes (e.g. a typo'd column
-list) at compile time. `packages/engine/fixtures/index.ts` is the registry
-mapping a `FixtureSetId` (`"sqlserver-customer" | "snowflake-orders" |
-"postgres-products"`) and `FixtureSide` (`"source" | "target"`) to the table
-name and definition `FixtureConnector` should seed.
-
-### Pair 1 — `sqlserver-customer` (SQL Server-shaped source → Snowflake-shaped target)
-
-Mirrors `Idea Prompt.md` section 2's own worked example (SQL Server
-`dbo.Customer` → Snowflake `ANALYTICS.CUSTOMER`). Source table
-`customer_source`, target table `customer_target`.
-
-- **Schema mismatch:** `CreditLimit` (`DECIMAL(19,4)`, standing in for SQL
-  Server `MONEY`) exists on the source and is **entirely absent** from the
-  target — a dropped/renamed column. Also `CreatedDate` (source) vs
-  `CREATED_AT` (target) mirror the idea doc's own `DATETIME` vs
-  `TIMESTAMP_NTZ` "Review"-severity example (both modeled here as
-  `TIMESTAMP` since DuckDB has no native `MONEY`/`TIMESTAMP_NTZ` types, but
-  the column presence/absence mismatch is the load-bearing, verifiable part).
-  Verify: `source.getSchema(...)` contains `"CreditLimit"`;
-  `target.getSchema(...)` does not.
-- **Volume mismatch:** source has **6** rows, target has **7** rows. Verify:
-  `collectRows(source, "customer_source").length === 6` and
-  `collectRows(target, "customer_target").length === 7`.
-- **Row-level mismatch (missing-target):** `CustomerID` 4 ("Grace Hopper")
-  exists in source, has no corresponding row in target.
-- **Row-level mismatch (differing value):** `CustomerID` 2's name differs —
-  source `"Jane Roe"` vs target `"Jane R. Doe"`.
-- **Row-level mismatch (duplicate-target):** `CustomerID` 5 ("Ada Lovelace")
-  appears **twice** in target, with the second copy's `IS_ACTIVE` flipped to
-  `false` (source has it once, `IsActive = true`).
-- (Bonus, not required by the brief but present: `CustomerID` 7 exists in
-  target only — a missing-source row.)
-
-Source: `packages/engine/fixtures/sqlserver-customer.ts`.
-
-### Pair 2 — `snowflake-orders` (Snowflake-shaped dev vs prod)
-
-Models a same-platform dev-vs-prod `ORDERS` reconciliation (`Idea
-Prompt.md` section 1's "Development versus production comparisons" use
-case), using Snowflake-flavored native types (`DECIMAL(p,s)`, `VARCHAR`,
-`DOUBLE`). Source table `orders_source`, target table `orders_target`.
-
-- **Schema mismatch:** `DISCOUNT_PCT` (`DOUBLE`) exists on source, absent
-  from target entirely. Also `ORDER_TOTAL` precision narrows from
-  `DECIMAL(12,2)` (source) to `DECIMAL(10,2)` (target) — a
-  compatible-but-different declared-precision mismatch.
-- **Volume mismatch:** source has **5** rows, target has **4** rows.
-- **Row-level mismatch (missing-target):** `ORDER_ID` 103 (`PENDING`) exists
-  in source, absent from target.
-- **Row-level mismatch (differing value):** `ORDER_ID` 101's `ORDER_TOTAL`
-  differs — source `250.00` vs target `199.99`.
-
-Source: `packages/engine/fixtures/snowflake-orders.ts`.
-
-### Pair 3 — `postgres-products` (PostgreSQL-shaped source vs target)
-
-Models a `PRODUCTS` catalog reconciliation (replication/ETL regression
-scenario), using Postgres-flavored types (`NUMERIC`/`DECIMAL`, `VARCHAR`
-with differing declared lengths, `BOOLEAN`). Source table
-`products_source`, target table `products_target`.
-
-- **Schema mismatch:** `sku` narrows from `VARCHAR(20)` (source) to
-  `VARCHAR(10)` (target) — a declared-length mismatch. Also `description`
-  (`VARCHAR(500)`) exists on source, absent from target entirely.
-- **Volume mismatch:** source has **5** rows, target has **6** rows.
-- **Row-level mismatch (missing-target):** `product_id` 3 exists in source,
-  absent from target.
-- **Row-level mismatch (missing-source):** `product_id` 6 exists in target,
-  absent from source.
-- **Row-level mismatch (duplicate-target):** `product_id` 2 appears
-  **twice** in target, with a differing `price` on the second copy
-  (`19.99` vs `24.99`); source has it once at `19.99`.
-
-Source: `packages/engine/fixtures/postgres-products.ts`.
-
-All three pairs' mismatches are additionally asserted directly by dedicated
-tests in the "deliberate mismatch verification" `describe` block of
-`packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts`, so a
-reviewer (or a later task like T-06/T-14) can re-run
-`npx vitest run packages/engine` and see each mismatch independently
-confirmed against live `FixtureConnector` output, not just asserted in this
-report's prose.
+- **Objective:** Implement the canonical type-mapping layer — map native
+  database types (from the T-04 fixture connector's `ColumnDefinition.nativeType`
+  values and declared real-platform type catalogs) into the canonical
+  `CanonicalTypeCategory` enum (T-02), plus a `Compatible`/`Review`/`Risk`
+  pairwise classification, per `Idea Prompt.md` section 2's worked example.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/engine/src/connector-sdk/fixture/fixture-connector.ts` | New | `FixtureConnector` class implementing `DataPlatformConnector` against in-memory DuckDB |
-| `packages/engine/src/connector-sdk/fixture/type-mapping.ts` | New | Best-effort DuckDB native-type-string → `CanonicalTypeCategory` mapping so `getSchema()` populates `canonicalType` without depending on T-05 |
-| `packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts` | New | Focused Vitest suite: red-state test, full 3-pair/2-side coverage, statement-safety integration proof, deliberate-mismatch verification |
-| `packages/engine/fixtures/sqlserver-customer.ts` | New | Fixture pair 1 seed data (SQL Server-shaped source → Snowflake-shaped target) |
-| `packages/engine/fixtures/snowflake-orders.ts` | New | Fixture pair 2 seed data (Snowflake-shaped dev vs prod) |
-| `packages/engine/fixtures/postgres-products.ts` | New | Fixture pair 3 seed data (PostgreSQL-shaped source vs target) |
-| `packages/engine/fixtures/index.ts` | New | Fixture-set registry: `FixtureSetId`/`FixtureSide` → table name + definition |
-| `packages/engine/package.json` | Modified | Added `@duckdb/node-api` dependency, scoped to `packages/engine` |
-| `packages/engine/tsconfig.json` | Modified | `rootDir` widened from `src` to `.` and `include` extended to `["src", "fixtures"]` so `packages/engine/fixtures/**` (owned by this task per `TASK-BRIEF.md`) type-checks as part of the engine project; `outDir` unchanged (still `dist`) |
-| `package-lock.json` | Modified | Lockfile update from installing `@duckdb/node-api` |
+| `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` | New | Implements `mapNativeType(nativeType, platform)` and `compareCanonicalTypes(source, target)`, the two interfaces T-05's task brief requires |
+| `packages/engine/src/comparison-core/type-mapping/type-mapping.test.ts` | New | 69 focused Vitest tests: the 5 `Idea Prompt.md` worked examples verbatim, native types observed in/implied by the T-04 fixtures across all three platforms, an Unknown-fallback contract check, and additional compatibility-matrix cases |
 
-No files under `packages/shared/**` or
-`packages/engine/src/connector-sdk/safety/**` were modified — T-03's
-`assertReadOnlyStatement` is consumed via its existing public export only.
+No other files were modified. `packages/shared/**` and
+`packages/engine/src/connector-sdk/**` were read-only inputs, never edited.
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** `FixtureConnector` (constructed with a
-  `FixtureSetId` and `FixtureSide`) implements every method of
-  `DataPlatformConnector`: `testConnection`, `getCatalogs`, `getSchemas`,
-  `getObjects`, `getSchema`, `executeQuery`, `getCapabilities`,
-  `quoteIdentifier`, `buildProfileQuery`. `executeQuery` calls
-  `assertReadOnlyStatement` on every SQL string — both caller-supplied
-  (`{ kind: "query" }`) and connector-generated (`{ kind: "table" }` →
-  `SELECT * FROM <table>`) — before it reaches DuckDB, and `getSchema`'s
-  `DESCRIBE` statement is routed through the same gate for consistency.
-- **Interfaces consumed:** `DataPlatformConnector` and its supporting types
-  (`packages/shared/src/connector.ts`), `ColumnDefinition`/`QueryInput`/
-  `ExecutionOptions`/`RecordBatch`/`CanonicalTypeCategory`
-  (`packages/shared/src/types.ts`), `assertReadOnlyStatement`/
-  `MutatingStatementError`/`SqlDialect`
-  (`packages/engine/src/connector-sdk/safety/statement-safety.ts`).
-- **Interfaces produced:** `FixtureConnector` class (constructible with
-  `new FixtureConnector(fixtureSetId, side)`); the fixture-set registry
-  (`getFixtureSet`, `fixtureTableName`, `FIXTURE_SET_IDS`,
-  `FixtureSetId`, `FixtureSide`) for later tasks (T-05, T-06, T-14, etc.) to
-  construct connectors against named, documented fixture pairs.
+- **Behavior delivered:**
+  - `mapNativeType(nativeType: string, platform: SqlDialect): CanonicalTypeCategory`
+    parses a native type string and returns exactly one of the 15 canonical
+    categories from `packages/shared/src/types.ts`. It never throws — any
+    unrecognized type string returns `"Unknown"` (documented fallback
+    contract, exercised by dedicated tests).
+  - `compareCanonicalTypes(source: CanonicalTypeCategory, target: CanonicalTypeCategory): 'Compatible' | 'Review' | 'Risk'`
+    classifies a pair of canonical categories.
+- **Interfaces consumed:** `CanonicalTypeCategory` and `ColumnDefinition`
+  from `@paritylens/shared` (read-only); `SqlDialect` from
+  `packages/engine/src/connector-sdk/safety/statement-safety.ts` (read-only,
+  reused as the `platform` parameter type rather than inventing a
+  parallel type). Fixture files
+  (`packages/engine/fixtures/sqlserver-customer.ts`,
+  `snowflake-orders.ts`, `postgres-products.ts`) were read to derive
+  realistic native-type test cases; not modified.
+- **Interfaces produced:** `mapNativeType`, `compareCanonicalTypes`, and the
+  `TypeCompatibility` type alias, all exported from
+  `packages/engine/src/comparison-core/type-mapping/type-mapping.ts`, for
+  T-06 (schema diff) and T-07 (profiling) to consume.
+
+## mapNativeType classification logic
+
+Recognizes, per platform-agnostic pattern matching on the uppercased native
+type string (platform parameter reserved for future disambiguation; every
+currently-recognized type name means the same canonical thing on every MVP
+platform):
+
+- **Integer:** `TINYINT/SMALLINT/INT/INTEGER/BIGINT/...`, plus Snowflake
+  `NUMBER(p,s)` with `s` absent or `0`.
+- **Decimal:** `DECIMAL/NUMERIC` (bare or with any precision/scale,
+  including scale 0 — standard SQL DECIMAL/NUMERIC is decimal-family *by
+  declaration*, unlike Snowflake's generic `NUMBER`), `MONEY/SMALLMONEY`,
+  and Snowflake `NUMBER(p,s)` with `s > 0`.
+- **FloatingPoint:** `FLOAT/REAL/DOUBLE/DOUBLE PRECISION` variants.
+- **Boolean:** `BIT/BOOLEAN/BOOL`.
+- **String:** `VARCHAR/NVARCHAR/CHAR/NCHAR/TEXT/STRING/CLOB/BPCHAR`, with or
+  without a length modifier.
+- **Binary:** `BINARY/VARBINARY/BYTEA/BLOB/IMAGE/RAW`, including SQL
+  Server's `VARBINARY(MAX)`.
+- **JSON:** `JSON/JSONB/VARIANT`.
+- **Array:** `ARRAY`, or any type ending in `[]`.
+- **Object:** `OBJECT/STRUCT/RECORD`.
+- **Geospatial:** `GEOGRAPHY/GEOMETRY/POINT/POLYGON/LINESTRING/...`.
+- **TimestampWithTimezone:** `TIMESTAMPTZ/TIMESTAMP_TZ/TIMESTAMP WITH TIME ZONE/DATETIMEOFFSET`
+  (checked before the plain-timestamp patterns since they share the
+  `TIMESTAMP` prefix).
+- **Date:** `DATE`.
+- **Time:** `TIME`, with optional precision.
+- **Timestamp:** `TIMESTAMP/TIMESTAMP_NTZ/TIMESTAMP WITHOUT TIME ZONE/DATETIME/DATETIME2/SMALLDATETIME`.
+- **Unknown:** anything else (documented fallback, never throws).
+
+## compareCanonicalTypes compatibility matrix
+
+| Pair | Result | Reasoning |
+| --- | --- | --- |
+| Same category (general case) | Compatible | Same kind of value; length/precision-level severity is T-06's concern, not this pairwise primitive's |
+| Timestamp / Timestamp (identical) | **Review** (not Compatible) | Reproduces the idea doc's own worked example verbatim: SQL Server `DATETIME` and Snowflake `TIMESTAMP_NTZ` both canonicalize to `Timestamp`, yet the doc classifies that exact pair as Review. Naive/timezone-less timestamp types carry an implicit timezone assumption from their source system that is not guaranteed to match across platforms — see idea doc section 17 ("DATETIME2 and TIMESTAMP_NTZ **may** be compatible") and section 4's explicit timezone-normalization rules |
+| Time / Time (identical) | **Review** | Same implicit-timezone ambiguity as Timestamp/Timestamp; downgraded for consistency |
+| Decimal / FloatingPoint | Risk | Reproduces `MONEY`/`FLOAT` → Risk. Decimal/Money is exact fixed-point; Float/Double is inexact binary. Converting between them can silently change the value |
+| Integer / FloatingPoint | Risk | Same underlying risk as Decimal/FloatingPoint: integers beyond 2^53 are not exactly representable as IEEE-754 doubles |
+| String / Binary | Risk | Different byte representation/encoding; direct comparison is essentially never correct without an explicit conversion rule — closer to "wrong to compare" than "understand a tradeoff", so Risk rather than Review |
+| Integer / Decimal | Review | Direction-dependent: int→decimal is exact, decimal→int truncates. Category pair alone doesn't reveal direction, so flagged for a human |
+| Date / Timestamp, Date / TimestampWithTimezone, Time / Timestamp, Time / TimestampWithTimezone | Review | Structurally related (Date is a Timestamp with the time component dropped) but needs confirmation of intended normalization — matches idea doc section 4's explicit "ignore time component" / "treat midnight timestamps as dates" rules, which exist precisely because this pairing needs configuration |
+| Timestamp / TimestampWithTimezone | Review | Reproduces idea doc section 17's framing exactly; adding/dropping timezone awareness needs a documented timezone assumption (section 4's `timezone: source/target` rule), not a silent pass |
+| JSON / String, JSON / Array, JSON / Object, Array / String, Array / Object, Object / String | Review | Semi-structured data is frequently represented as JSON-encoded text on one platform and a native semi-structured type on another (e.g. SQL Server `NVARCHAR` holding JSON vs Snowflake `VARIANT`) — a common, often-intentional migration pattern, so flagged for confirmation rather than treated as automatic Risk |
+| Geospatial paired with anything | Review | Geospatial encoding compatibility (WKT/WKB/native) cannot be determined from the canonical category alone |
+| Unknown paired with anything (including Unknown/Unknown) | Review | This primitive cannot make an informed judgment about an unrecognized type; silently passing would hide a real gap, silently failing would false-alarm on types that may be fine — Review correctly routes to a human |
+| Every other cross-category pair (e.g. String/Integer, Boolean/Integer, Date/Boolean) | Risk | No meaningful value-space overlap; almost certainly a mapping error or genuine incompatibility, so the stricter default is safer |
+
+Full reasoning for every rule above is also documented inline as a doc
+comment directly above `compareCanonicalTypes` in `type-mapping.ts`.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0. 120/120 tests (`packages/shared/src/types.test.ts`: 11; `statement-safety.test.ts`: 109) | Captured in this session's transcript before any T-04 file was written |
-| Red state | `npx vitest run packages/engine` (with only `fixture-connector.test.ts` importing the not-yet-created `FixtureConnector`) | 1 test file failed to load: `Error: Failed to load url ./fixture-connector.js ... Does the file exist?`; 109 pre-existing tests still passed; 0 new tests ran | Captured in this session's transcript |
-| Focused green state | `npx vitest run packages/engine` | Exit 0. 2 test files passed, **149/149** tests (109 pre-existing statement-safety + 40 new fixture-connector tests, 0 skipped) | Captured in this session's transcript |
-| Full verification | `npm run verify` (`tsc -b --force` && `eslint .` && `vitest run`) | Exit 0. `tsc -b --force`: no errors. `eslint .`: no errors. `vitest run`: 3 test files passed, **160/160** tests (11 shared + 109 statement-safety + 40 fixture-connector) | Captured in this session's transcript |
+| Red state | `npx vitest run packages/engine` | 1 test file failed to load (`Failed to load url ./type-mapping.js ... Does the file exist?`); 149 pre-existing tests still passed, 0 new tests ran | Captured in this session's transcript before implementation; reproduced by deleting `type-mapping.ts` |
+| Focused green state | `npx vitest run packages/engine` | **3 test files passed, 218 tests passed** (149 pre-existing + 69 new), 0 failed | Session transcript; also re-confirmed as part of `npm run verify` below |
+| Full verification | `npm run verify` | **Exit code 0.** `tsc -b --force` clean, `eslint .` clean, `vitest run`: **4 test files passed, 229 tests passed** (160 pre-existing baseline + 69 new), 0 failed | Session transcript |
 
-Full verification command's final run output (representative excerpt):
+Exact focused-green output:
 
 ```text
-> paritylens@0.0.1 verify
-> npm run typecheck && npm run lint && npm run test
-
-> tsc -b --force
-(no output — success)
-
-> eslint .
-(no output — success)
-
-> vitest run
- ✓ packages/shared/src/types.test.ts (11 tests)
- ✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests)
- ✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests)
+✓ packages/engine/src/comparison-core/type-mapping/type-mapping.test.ts (69 tests)
+✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests)
+✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests)
 
  Test Files  3 passed (3)
-      Tests  160 passed (160)
+      Tests  218 passed (218)
 ```
 
-The 40 new tests cover: `testConnection`/`getSchema`/`executeQuery` for all
-3 fixture pairs × 2 sides (source and target) = 6 connector instances, both
-`{ kind: "table" }` and `{ kind: "query" }` input shapes, an
-`executeQuery`-level rejection of a mutating statement
-(`DELETE FROM customer_source`) proving `MutatingStatementError` propagates
-through the async generator (integration proof T-03's parser is actually
-wired into `executeQuery`, not just imported and unused), a second rejection
-case for a comment-hidden mutation, a test confirming the rejected `DELETE`
-never actually reduced the row count (no silent partial execution), and one
-dedicated assertion per documented mismatch above (11 mismatch-verification
-tests total, at least one schema/volume/row-level assertion per fixture
-pair).
+Exact full-verification output (test portion):
+
+```text
+✓ packages/shared/src/types.test.ts (11 tests)
+✓ packages/engine/src/comparison-core/type-mapping/type-mapping.test.ts (69 tests)
+✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests)
+✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests)
+
+ Test Files  4 passed (4)
+      Tests  229 passed (229)
+```
+
+`EXIT_CODE=0` confirmed by capturing `$?` immediately after the `npm run verify` invocation.
+
+All five `Idea Prompt.md` section 2 worked examples pass exactly as given:
+
+- `mapNativeType("INT","sqlserver")` → `Integer`, `mapNativeType("NUMBER(38,0)","snowflake")` → `Integer`, `compareCanonicalTypes("Integer","Integer")` → `Compatible`
+- `mapNativeType("VARCHAR(100)","sqlserver")` → `String`, `mapNativeType("VARCHAR(255)","snowflake")` → `String`, → `Compatible`
+- `mapNativeType("DATETIME","sqlserver")` → `Timestamp`, `mapNativeType("TIMESTAMP_NTZ","snowflake")` → `Timestamp`, → `Review`
+- `mapNativeType("BIT","sqlserver")` → `Boolean`, `mapNativeType("BOOLEAN","postgres")` → `Boolean`, → `Compatible`
+- `mapNativeType("MONEY","sqlserver")` → `Decimal`, `mapNativeType("FLOAT","snowflake")` → `FloatingPoint`, → `Risk`
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - `packages/engine/tsconfig.json`'s `rootDir`/`include` needed to widen
-    from `src`-only to also cover `fixtures/` because the task brief assigns
-    `packages/engine/fixtures/**` as owned files consumed by TypeScript
-    imports from `src/`; this is a config change within `packages/engine`'s
-    own tsconfig (not `packages/shared` or the safety module), so it was
-    made directly rather than treated as an out-of-scope interface change.
-    `outDir` remains `dist`, so compiled output layout is unaffected beyond
-    now also including a `dist/fixtures/` subtree.
-  - `ExecutionOptions.signal` (typed as ambient `AbortSignal` in
-    `@paritylens/shared`) resolves, under this workspace's `lib: ["ES2022"]`
-    combined with no `@types/node`/DOM-lib configuration, to an ambient interface with
-    zero accessible members (confirmed via a `keyof AbortSignal` probe
-    resolving to `never`). `FixtureConnector.executeQuery` reads
-    `options.signal?.aborted` through an `unknown` cast with an inline
-    comment explaining why, rather than assuming a richer shape. This is a
-    pre-existing characteristic of the shared type as declared by T-02, not
-    something this task could fix without touching `packages/shared`.
-  - DuckDB has no native `MONEY` or `TIMESTAMP_NTZ` types, so the
-    SQL-Server-shaped and Snowflake-shaped fixture pairs use DuckDB
-    `DECIMAL`/`TIMESTAMP` as realistic stand-ins; the *documented* mismatch
-    (column presence/absence, declared precision/length) is what's
-    load-bearing and verifiable, consistent with `DESIGN-SPEC.md`'s own
-    acknowledged risk that "fixture behavior may not perfectly reflect every
-    real-platform quirk."
-  - `QueryInput.kind === "sqlFile"` is not implemented (throws a descriptive
-    `Error` directing the caller to pass file contents via
-    `{ kind: "query" }` instead) — no file-system access was added to keep
-    this connector's footprint minimal and because no consumer in this
-    task's scope needs it; a later task can extend this if a real need
-    arises.
+  - The `platform: SqlDialect` parameter is accepted per the interface
+    contract but does not currently branch any classification decision,
+    because every native type name recognized by this mapping table means
+    the same canonical thing on every MVP platform (`sqlserver`,
+    `snowflake`, `postgres`, `duckdb`). It is kept as a required parameter
+    (not dropped) so a future platform-specific exception can be added
+    without an interface-breaking change.
+  - `NUMBER(p,s)` with `s` absent or `0` is treated as Integer (Snowflake
+    convention), while `DECIMAL(p,0)`/`NUMERIC(p,0)` (standard SQL,
+    SQL Server/PostgreSQL) is treated as Decimal by declaration, not
+    reinterpreted as Integer even at scale 0. This distinction was
+    discovered via a genuine test failure during implementation (an
+    earlier version of the regex applied the Snowflake scale-0-means-integer
+    rule to DECIMAL/NUMERIC generally, which is wrong for standard SQL) and
+    is now covered by a dedicated regression test
+    (`NUMBER(38,0)` (Snowflake) is Integer but `DECIMAL(38,0)` (standard SQL) is Decimal).
+  - Timestamp/Timestamp and Time/Time same-category pairs are deliberately
+    downgraded from the general "same category = Compatible" rule to
+    Review, to reproduce the idea doc's own DATETIME/TIMESTAMP_NTZ worked
+    example exactly. This is a judgment call beyond the five given
+    examples, documented inline in `compareCanonicalTypes`'s doc comment.
 - **Risks or limitations:**
-  - `type-mapping.ts`'s DuckDB-type → `CanonicalTypeCategory` mapping is
-    intentionally narrow (a full native-type catalog per real platform is
-    T-05's concern per `IMPLEMENTATION-PLAN.md`); it is sufficient for
-    `FixtureConnector.getSchema()` to satisfy its own contract but should
-    not be treated as T-05's deliverable.
-  - Two stray build-artifact files were briefly generated directly inside
-    `packages/engine/fixtures/` (`*.js`/`*.d.ts` alongside the `.ts`
-    sources) during iteration on the `tsconfig.json` fix, before `outDir`
-    was confirmed to route all build output to `dist/` correctly; these were
-    deleted before commit and are not present in the committed tree (verify:
-    `packages/engine/fixtures/` contains only `.ts` files in the commit).
+  - The compatibility matrix built here goes beyond the five worked
+    examples with reasoned judgment calls (see table above); an independent
+    reviewer should specifically scrutinize the non-obvious classifications
+    (Integer/Decimal → Review, JSON-family cross-pairs → Review,
+    Unknown-paired-with-anything → Review) since `Idea Prompt.md` does not
+    give worked examples for these.
+  - `mapNativeType` does not currently use the `platform` argument to
+    disambiguate any type name. If a future real-platform type catalog
+    (T-17/T-18/T-19) surfaces a genuinely platform-ambiguous native type
+    name (same spelling, different canonical meaning on two platforms),
+    this function will need a platform-specific branch added — no such
+    case was found in the T-04 fixtures or the idea doc's worked examples,
+    so none was speculatively added.
+  - Length/precision/scale-aware severity (e.g. "target VARCHAR is shorter
+    than source → truncation risk") is explicitly out of scope for this
+    pairwise category-only primitive; per the task brief, that is T-06
+    schema diff's responsibility, which will consume `ColumnDefinition`'s
+    `length`/`precision`/`scale` fields directly alongside this module's
+    category comparison.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** `8e2e07b`
-- **Branch or workspace:** `task/T-04-fixture-connector` (created from
-  `main` at commit `0af3b14`)
+- **Patch or commit:** `c1ba63bce4665b03aaa6fb20b681790b59ab53dc`
+- **Branch or workspace:** `task/T-05-type-mapping` (branched from `main`
+  at the T-01–T-04-merged, 160/160-green baseline)
 
 ## Recommended next step
 
 Independent review by a separate Claude Code subagent instance, distinct
-from this implementer, per `TASK-BRIEF.md`'s handoff section. The reviewer
-should specifically:
-
-1. Confirm at least one deliberate mismatch per fixture pair is real and
-   independently verifiable — re-run `npx vitest run packages/engine` and
-   inspect the "deliberate mismatch verification" test block's output, and
-   optionally query the fixture data directly via a throwaway script using
-   `FixtureConnector` to hand-verify a couple of the documented mismatches
-   (e.g. `CustomerID` 5's duplication in `sqlserver-customer`/target,
-   `product_id` 2's differing price in `postgres-products`/target).
-2. Confirm the statement-safety integration test
-   (`"rejects a mutating statement supplied as query input, via T-03's
-   parser, before it reaches DuckDB"`) genuinely exercises
-   `assertReadOnlyStatement` inside `executeQuery` and is not vacuously
-   passing.
-3. Confirm no file under `packages/shared/**` or
-   `packages/engine/src/connector-sdk/safety/**` was modified.
-4. Record findings in `REVIEW-REPORT.md` per `TASK-BRIEF.md`'s handoff
-   contract. Required owner for any Critical/Important finding: the T-04
-   implementer (a new implementation pass), not self-resolved by the
-   reviewer.
+from this implementer, per `TASK-BRIEF.md`'s handoff contract. The reviewer
+must **independently re-derive** at least the five `Idea Prompt.md` section
+2 worked examples (not just trust this report's claim that they pass) by
+running `npx vitest run packages/engine/src/comparison-core/type-mapping`
+and/or calling `mapNativeType`/`compareCanonicalTypes` directly, and should
+specifically scrutinize the non-obvious compatibility-matrix judgment calls
+listed above (Integer/Decimal, Timestamp/Timestamp downgrade,
+JSON-family pairs, Unknown handling) since those go beyond what
+`Idea Prompt.md` explicitly specifies. Required owner: independent reviewer
+subagent dispatched by the Lead Orchestrator; findings recorded in
+`REVIEW-REPORT.md`. This task must not be marked complete/approved by the
+implementer.
