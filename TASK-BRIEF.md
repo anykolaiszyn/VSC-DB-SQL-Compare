@@ -1,61 +1,60 @@
-# ParityLens — Task Brief T-03
+# ParityLens — Task Brief T-04
 
 ## Objective
 
-Implement the statement-safety parser in the Connector SDK: given a raw SQL
-statement and a target dialect, reject the statement if it contains
-INSERT, UPDATE, DELETE, DROP, ALTER, TRUNCATE, MERGE, or an equivalent
-platform-specific mutating construct, before any statement reaches a
-database driver.
+Implement the DuckDB-backed Fixture connector implementing
+`DataPlatformConnector` (from `@paritylens/shared`), including seed fixture
+datasets with deliberately mismatched schema, volume, profile, and row-level
+cases standing in for SQL Server-shaped, Snowflake-shaped, and
+PostgreSQL-shaped data. This is the primary development/testing target for
+every later engine task, since no real database instances are available
+(per `PROJECT-BRIEF.md`).
 
 ## Dependencies
 
 - **Required completed tasks:** T-02 (canonical shared types) — COMPLETE and
-  APPROVED.
-- **Required decisions or approvals:** `DESIGN-SPEC.md` security section
-  (approved): "hard block + parse check" query-safety posture. This task
-  implements that approved decision; it does not revisit it.
+  APPROVED. T-03 (statement-safety parser) — COMPLETE and APPROVED; the
+  Fixture connector's `executeQuery` must call `assertReadOnlyStatement`
+  before executing anything, per `DESIGN-SPEC.md`'s read-only enforcement.
+- **Required decisions or approvals:** `DESIGN-SPEC.md` "DuckDB-backed
+  fixture connectors" decision (approved 2026-07-27): fixtures implement the
+  same interface real connectors will implement, so no rework is needed
+  when real connectors are validated later.
 
 ## Files owned
 
-- `packages/engine/src/connector-sdk/safety/**`
+- `packages/engine/src/connector-sdk/fixture/**`
+- `packages/engine/fixtures/**`
 
-Do not touch `packages/shared/**`, `packages/extension/**`, or any other
-`packages/engine/**` path. `packages/engine/src/index.ts` (the T-01
-placeholder) may be updated only to re-export this module's public API if
-needed — record if you do this.
+Do not touch `packages/shared/**` or
+`packages/engine/src/connector-sdk/safety/**` (T-03's files — consume via
+its public API, do not modify).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `QueryInput` (from `@paritylens/shared`) | Discriminated union on `kind`: `table` / `query` / `sqlFile`, as defined in T-02 | `packages/shared/src/types.ts` |
-| Produced | `assertReadOnlyStatement(sql: string, dialect: SqlDialect): void` | Throws a typed error (e.g. `MutatingStatementError`) if `sql` contains a mutating statement for the given dialect; returns normally otherwise. Must handle SQL comments and multi-statement batches (a mutating statement hidden after a `--` comment or inside a later batched statement must still be caught). | Consumed by T-04 (Fixture connector), T-17/T-18/T-19 (real connectors) — every connector's `executeQuery` must call this before executing |
-| Produced | `SqlDialect` type | At minimum covers `'sqlserver' \| 'snowflake' \| 'postgres' \| 'duckdb'` (the four platforms in scope per `DESIGN-SPEC.md`) | Consumed by connector implementations |
+| Consumed | `DataPlatformConnector` interface (T-02) | Must implement every method: `testConnection`, `getCatalogs`, `getSchemas`, `getObjects`, `getSchema`, `executeQuery`, `getCapabilities`, `quoteIdentifier`, `buildProfileQuery` | `packages/shared/src/connector.ts` |
+| Consumed | `assertReadOnlyStatement` (T-03) | `FixtureConnector.executeQuery` must call this before running any generated SQL against DuckDB | `packages/engine/src/connector-sdk/safety/statement-safety.ts` |
+| Produced | `FixtureConnector` class | A working, installable DuckDB-backed connector; constructible with a path to a seeded fixture dataset or a named fixture-set identifier | Consumed by every later engine task's tests (T-05 through T-09, T-12 through T-16, T-20, T-21) as the standard test double for a "real" platform |
+| Produced | Seed fixture datasets | At minimum three named fixture pairs (one per platform shape: SQL Server-like, Snowflake-like, PostgreSQL-like), each with a "source" and "target" side containing at least one deliberate schema mismatch, one deliberate row-count/volume mismatch, and one deliberate row-level mismatch (missing row, duplicate row, differing value) | Consumed by T-05 (type-mapping test cases), T-06 (schema-diff acceptance criterion 1), T-14 (row-level acceptance criterion 2) |
 
 ## Prohibited changes
 
-- Do not implement any actual connector (SQL Server, Snowflake, PostgreSQL,
-  or the DuckDB fixture connector) — this task is the safety-parsing
-  primitive only, to be consumed by T-04/T-17/T-18/T-19.
-- Do not modify `packages/shared/**` (if a shape gap is found, request a
-  revised task brief rather than editing T-02's files directly).
-- Do not add a database driver dependency.
+- Do not implement any real platform connector (SQL Server, Snowflake,
+  PostgreSQL) — those are T-17/T-18/T-19.
+- Do not modify `packages/shared/**` or T-03's safety module.
+- Do not add a real database driver dependency (`mssql`, `snowflake-sdk`,
+  `pg`) — DuckDB bindings only.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused Vitest test file asserting that
-  `assertReadOnlyStatement` throws for a representative matrix of mutating
-  statements across all four dialects (`DROP TABLE x`, `DELETE FROM x`,
-  `UPDATE x SET y = 1`, `INSERT INTO x VALUES (1)`, `TRUNCATE TABLE x`,
-  `ALTER TABLE x ADD y INT`, `MERGE INTO x ...`), plus at least one evasion
-  attempt (a mutating statement preceded by a `--` line comment, and a
-  multi-statement batch where the mutating statement is not first), and
-  asserts it does NOT throw for representative safe statements (`SELECT * FROM x`, a CTE-wrapped `SELECT`, a `SHOW`/`DESCRIBE`-style
-  statement).
+- **Test or check to add:** A focused Vitest test asserting
+  `FixtureConnector.testConnection()` succeeds and `getSchema()` returns a
+  non-empty `ColumnDefinition[]` for a seeded fixture.
 - **Command:** `npx vitest run packages/engine`
-- **Expected failure reason:** `assertReadOnlyStatement` does not exist yet.
+- **Expected failure reason:** `FixtureConnector` does not exist yet.
 - **Captured output:** Exact command output and exit code, pasted into
   `IMPLEMENTATION-REPORT.md`.
 
@@ -63,13 +62,15 @@ needed — record if you do this.
 
 - **Focused command:** `npx vitest run packages/engine`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Focused command passes with every matrix case
-  (including the evasion attempts) correctly classified; full command
-  passes with exit code 0 across all workspaces.
+- **Expected evidence:** Focused command passes: `testConnection`,
+  `getSchema`, and `executeQuery` all work against seeded fixture data for
+  all three platform-shaped fixture pairs, and at least one attempted
+  mutating statement against a fixture is rejected via T-03's parser. Full
+  command passes with exit code 0 across all workspaces.
 
 ## Handoff
 
 - **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-03 implementer subagent. Given this task's security-sensitive nature (it is the primary defense against accidental data mutation), the reviewer must specifically attempt to find a bypass the test matrix missed.
+- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-04 implementer subagent. The reviewer must confirm at least one deliberate mismatch per fixture pair actually exists and is verifiable (this fixture data is load-bearing evidence for acceptance criteria 1 and 2 in `DESIGN-SPEC.md`).
 - **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-03-statement-safety`
+- **Commit or patch checkpoint:** Branch `task/T-04-fixture-connector`
