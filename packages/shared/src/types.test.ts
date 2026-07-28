@@ -215,7 +215,9 @@ describe("T-02 canonical shared types", () => {
       status: "warning",
       summary: { passed: 1, warnings: 1, failed: 0 },
       rowCounts: { source: 1, target: 1, difference: 0 },
-      schemaDifferences: [{ severity: "Warning", message: "column order differs" }],
+      schemaDifferences: [
+        { severity: "Warning", message: "column order differs", columnName: "CustomerID", kind: "order-mismatch" }
+      ],
       profileDifferences: [{ severity: "Informational", message: "distinct count differs" }],
       aggregateDifferences: [{ severity: "Failure", message: "sum(order_amount) differs" }],
       rowDifferences: [{ severity: "Pass", message: "no differences" }],

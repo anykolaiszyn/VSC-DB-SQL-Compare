@@ -31,8 +31,48 @@ export interface DifferenceItem {
   message: string;
 }
 
-/** Placeholder item shape for `ComparisonResult.schemaDifferences`; refined by T-06. */
-export type SchemaDifference = DifferenceItem;
+/**
+ * The specific kind of structural mismatch a `SchemaDifference` finding
+ * reports, per `Idea Prompt.md` section 2 ("Layer 2: Structural Parity")
+ * and section 12's severity-model example (`missing_target_column`, etc.).
+ */
+export type SchemaDifferenceKind =
+  | "missing-in-target"
+  | "missing-in-source"
+  | "type-mismatch"
+  | "length-mismatch"
+  | "precision-mismatch"
+  | "scale-mismatch"
+  | "nullability-mismatch"
+  | "order-mismatch";
+
+/**
+ * Refined shape for `ComparisonResult.schemaDifferences`, owned by T-06 (see
+ * `DifferenceItem`'s doc comment above: T-06 is the designated task that
+ * refines this specific placeholder). Extends `DifferenceItem` so the
+ * `severity`/`message` fields every difference-array item carries are
+ * preserved, and adds the column-level detail a schema diff finding needs
+ * to be independently useful (e.g. rendered as a table row in the results
+ * webview per `DESIGN-SPEC.md`'s Layer 2 worked example) without requiring
+ * the consumer to re-parse `message`.
+ *
+ * Judgment call: `columnName` is always populated (a schema-diff finding is
+ * always about exactly one column, even for order/count-shaped findings —
+ * a missing column, an out-of-order column, etc. are all reported per
+ * affected column, not as one run-level item), while `sourceType`/
+ * `targetType` are optional because a `missing-in-target`/`missing-in-source`
+ * finding only has a native type on the side where the column exists.
+ */
+export interface SchemaDifference extends DifferenceItem {
+  /** Name of the affected column (source-side name, or target-side name for a missing-in-source finding). */
+  columnName: string;
+  /** The specific category of structural mismatch this finding reports. */
+  kind: SchemaDifferenceKind;
+  /** Source-side platform-native type string (e.g. "MONEY"), where the column exists on the source. */
+  sourceType?: string;
+  /** Target-side platform-native type string (e.g. "FLOAT"), where the column exists on the target. */
+  targetType?: string;
+}
 /** Placeholder item shape for `ComparisonResult.profileDifferences`; refined by T-07. */
 export type ProfileDifference = DifferenceItem;
 /** Placeholder item shape for `ComparisonResult.aggregateDifferences`; refined by T-13. */
