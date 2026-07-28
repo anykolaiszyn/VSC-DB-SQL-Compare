@@ -3,13 +3,40 @@
   "private": true,
   "version": "0.0.1",
   "description": "ParityLens VS Code extension host",
-  "main": "src/index.ts",
+  "main": "./dist/index.js",
   "types": "src/index.ts",
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "activationEvents": [
+    "onView:paritylens.dataParityView"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "paritylens",
+          "title": "Data Parity"
+        }
+      ]
+    },
+    "views": {
+      "paritylens": [
+        {
+          "id": "paritylens.dataParityView",
+          "name": "Data Parity"
+        }
+      ]
+    }
+  },
   "scripts": {
     "test": "vitest run"
   },
   "dependencies": {
     "@paritylens/engine": "*",
     "@paritylens/shared": "*"
+  },
+  "devDependencies": {
+    "@types/vscode": "^1.85.0"
   }
 }
