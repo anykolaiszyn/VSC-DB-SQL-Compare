@@ -1,98 +1,103 @@
-# ParityLens — Review Report T-05
+# ParityLens — Review Report T-06
 
 ## Review independence
 
-This review was performed by a Claude Code Independent Reviewer subagent
-distinct from the T-05 implementer subagent. No implementation file
-(`packages/engine/src/comparison-core/type-mapping/type-mapping.ts` or
-`type-mapping.test.ts`), `TASK-BRIEF.md`, or `IMPLEMENTATION-REPORT.md` was
-edited during this review. A temporary reviewer-authored test file
-(`__reviewer_scratch.test.ts`) was created solely to independently re-derive
-the worked examples, run, and then deleted before this report was written;
-`git status` confirms it left no residue (only pre-existing, unrelated
-working-tree changes to `PROGRESS-LEDGER.md`/`TASK-BRIEF.md` remain, present
-before this review began).
+This review was performed by a separate Claude Code subagent instance,
+distinct from the T-06 implementer. No implementation files, `TASK-BRIEF.md`,
+or `IMPLEMENTATION-REPORT.md` were edited as part of this review. Only this
+file (`REVIEW-REPORT.md`) was written. A throwaway probe test file
+(`_probe.test.ts`) was created under `packages/engine/src/comparison-core/schema-diff/`
+solely to independently exercise an edge case not covered by the
+implementer's own test suite; it was run once and deleted before this report
+was finalized — `git status` confirms no residue. All verification commands
+below were re-run fresh in this review session, not copied from the
+implementation report. (This file previously held the stale T-05 review
+report; it has been fully replaced with the T-06 review below.)
 
 ## Review scope
 
-- **Task objective:** Implement the canonical type-mapping layer —
-  `mapNativeType(nativeType, platform): CanonicalTypeCategory` and
-  `compareCanonicalTypes(source, target): 'Compatible' | 'Review' | 'Risk'`,
-  satisfying `Idea Prompt.md` section 2's worked example and the T-04 fixture
-  native types.
+- **Task objective:** Implement `compareSchemas(source, target, expectations?)`
+  comparing two `ColumnDefinition[]` sets across column count, name, order,
+  native type, normalized/canonical type, length, precision, scale, and
+  nullability, producing severity-scored `SchemaDifference[]` findings per
+  `Idea Prompt.md` section 2's worked example, and mandatorily resolve open
+  finding M-07 from the T-05 review.
 - **Files and interfaces reviewed:**
-  `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` (317
-  lines), `type-mapping.test.ts` (209 lines, 69 tests);
-  `packages/shared/src/types.ts` (`CanonicalTypeCategory`, `ColumnDefinition`);
-  `packages/engine/fixtures/sqlserver-customer.ts`,
-  `snowflake-orders.ts`, `postgres-products.ts`; commits `c1ba63b` and
-  `429b251` on `task/T-05-type-mapping`.
-- **Evidence reviewed:** `TASK-BRIEF.md`, `IMPLEMENTATION-REPORT.md`,
-  `Idea Prompt.md` section 2 and section 17, `AGENTS.md`, `PROGRESS-LEDGER.md`
-  (prior findings section), fresh command output from this review's own
-  execution (see below).
+  - `packages/engine/src/comparison-core/schema-diff/schema-diff.ts`
+  - `packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts`
+  - `packages/shared/src/result.ts` (`SchemaDifference` refinement, explicitly
+    authorized by `TASK-BRIEF.md`)
+  - `packages/shared/src/types.test.ts` (one literal touched — scope-checked)
+  - `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` (T-05,
+    consumed as-is via `compareCanonicalTypes`, confirmed not modified)
+  - `packages/engine/fixtures/sqlserver-customer.ts` (T-04, read as
+    independent ground truth for acceptance criterion 1)
+- **Evidence reviewed:** `git show --stat 67ea4f7`, `git show 67ea4f7 --
+  packages/shared/src/result.ts`, `git show 67ea4f7 --
+  packages/shared/src/types.test.ts`, `git diff main...67ea4f7 --stat`,
+  `git log --oneline -5`, direct reading of all new/changed source and the
+  `sqlserver-customer` fixture, an independent throwaway probe test, fresh
+  `npx vitest run packages/engine`, fresh `npx vitest run packages/shared`,
+  fresh `npm run verify`.
 
 ## Critical findings
 
 | ID | Finding | Evidence | Required resolution |
 | --- | --- | --- | --- |
-| NONE | — | — | — |
+| NONE | | | |
 
 ## Important findings
 
 | ID | Finding | Evidence | Required resolution |
 | --- | --- | --- | --- |
-| NONE | — | — | — |
+| NONE | | | |
 
 ## Minor findings
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| M-07 | The Timestamp/Timestamp (and Time/Time) same-category special-case downgrade to `Review` is necessary to reproduce the idea doc's DATETIME/TIMESTAMP_NTZ example, but it is a blunt instrument: it also flags two **genuinely identical** timestamp types (e.g. `DATETIME2` vs `DATETIME2` on both sides of a real SQL Server-to-SQL Server or same-platform comparison) as Review, not Compatible, even though no timezone ambiguity exists in that case. Confirmed by reviewer's own probe: `compareCanonicalTypes(mapNativeType("DATETIME2","sqlserver"), mapNativeType("DATETIME2","sqlserver"))` → `"Review"`. | `type-mapping.ts` lines 267–274; reviewer's independent test run (see Verification below), test named "regression probe: identical DATETIME2/DATETIME2 on both sides" | Non-blocking for T-05, since `Idea Prompt.md` gives no worked example that requires distinguishing "same exact native type" from "same canonical category, different native spelling" at this pairwise-category-only layer, and the task brief explicitly scopes finer-grained severity to T-06. Recommend T-06 (schema diff) either (a) special-case same-native-type pairs as Compatible before falling back to `compareCanonicalTypes`, or (b) revisit whether `CanonicalTypeCategory` should split `Timestamp` into a naive/local variant and a distinct "explicitly timezone-agnostic" variant so the category system itself carries the distinction this special case currently papers over. Track as a follow-up decision for the T-06 implementer/reviewer, not a T-05 blocker. |
-| M-08 | `VARCHAR(255) COLLATE SQL_Latin1_General_CP1_CI_AS` (a real, common SQL Server column-definition suffix) falls through to `Unknown` rather than `String`, because the string-variant regex is anchored (`^...(\(\d+\))?$`) and does not tolerate a trailing collation clause. This is consistent with the documented "never throw, fall back to Unknown" contract (so it is not a correctness bug), but it means a realistic SQL Server type string that includes collation metadata will silently route to Unknown → Review at the compatibility layer rather than being correctly recognized as String. | Reviewer's independent test: `mapNativeType("VARCHAR(255) COLLATE SQL_Latin1_General_CP1_CI_AS", "sqlserver")` → `"Unknown"` (confirmed passing, i.e., matches the fallback contract, but flagged as a coverage gap) | Non-blocking: `nativeType` as consumed here is expected to be the connector-reported bare type string (per `ColumnDefinition.nativeType`'s doc comment and its usage in `mapNativeType`'s own examples, e.g. `"NUMBER(38,0)"`, `"VARCHAR(255)"`), not a full column DDL fragment with collation. No evidence any T-04 fixture or real-platform connector (T-17) actually reports collation-suffixed strings through `nativeType`. Worth a one-line doc-comment note or a future test once T-17 (SQL Server connector) is implemented and its actual `nativeType` reporting format is known. |
+| NONE | | | |
 
 ## Verification performed
 
 | Check | Exact command or inspection | Result |
 | --- | --- | --- |
-| Independent re-derivation of the 5 worked examples | Reviewer wrote a fresh, throwaway Vitest file (`__reviewer_scratch.test.ts`, not copied from the implementer's test file) importing `mapNativeType`/`compareCanonicalTypes` directly and asserting each of the 5 `Idea Prompt.md` section 2 rows independently; ran `npx vitest run packages/engine/src/comparison-core/type-mapping/__reviewer_scratch.test.ts --reporter=verbose`; deleted the file afterward | All 5 pass exactly: INT/NUMBER(38,0)→Integer/Integer→Compatible; VARCHAR(100)/VARCHAR(255)→String/String→Compatible; DATETIME/TIMESTAMP_NTZ→Timestamp/Timestamp→Review; BIT/BOOLEAN→Boolean/Boolean→Compatible; MONEY/FLOAT→Decimal/FloatingPoint→Risk. 14/14 reviewer tests passed (5 worked examples + 9 edge-case probes) |
-| Focused engine test suite (fresh run) | `npx vitest run packages/engine` | 3 test files passed, **218 tests passed**, matches `IMPLEMENTATION-REPORT.md`'s claim exactly |
-| Full verification (fresh run) | `npm run verify` | `tsc -b --force` clean, `eslint .` clean, `vitest run`: 4 test files passed, **229 tests passed**, `EXIT_CODE=0` — matches claim exactly |
-| Isolated typecheck | `npx tsc -b --force` | Clean, exit 0 |
-| Scope check | `git show --stat c1ba63b` and `git show --stat 429b251` | `c1ba63b` touches only `type-mapping.ts` (new, 316 lines) and `type-mapping.test.ts` (new, 209 lines) under the owned `packages/engine/src/comparison-core/type-mapping/**` path; `429b251` touches only `IMPLEMENTATION-REPORT.md`. No files outside T-05's declared ownership were touched; `packages/shared/**` and `packages/engine/src/connector-sdk/**` untouched |
-| Snowflake NUMBER(p,0) vs standard DECIMAL(p,0)/NUMERIC(p,0) distinction | Read `type-mapping.ts` lines 49–80 directly; reviewer probe `mapNativeType("NUMBER(38,0)","snowflake")` → `Integer`, `mapNativeType("DECIMAL(38,0)","sqlserver")` → `Decimal`, `mapNativeType("NUMERIC(38,0)","sqlserver")` → `Decimal` | Implemented exactly as the report claims. This is a defensible real-world judgment call: Snowflake's `NUMBER` is genuinely its single generic numeric type (integer-by-convention at scale 0), while SQL Server/PostgreSQL's `DECIMAL`/`NUMERIC` are decimal-family types by declaration regardless of scale — the two platforms' type systems are not symmetric, so this asymmetric handling is correct rather than inconsistent |
-| Unknown fallback / never-throws contract | Reviewer probes: empty string, whitespace-only string, lowercase `int`, mixed-case `VarChar(50)`, `VARCHAR(255) COLLATE ...`, bare `NUMBER`, bare `DECIMAL`, unrecognized `FROBNICATE_TYPE` | Never throws in any case (all wrapped in `expect(() => ...).not.toThrow()` where tested). Empty/whitespace-only and unrecognized strings correctly fall back to `Unknown`. Case-insensitivity works correctly (`.toUpperCase()` normalization). Collation-suffixed VARCHAR falls to `Unknown` rather than `String` — flagged as M-08 above, non-blocking |
-| T-04 fixture native-type cross-check | Read `packages/engine/fixtures/sqlserver-customer.ts`, `snowflake-orders.ts`, `postgres-products.ts` directly | Fixtures are seeded through DuckDB (per T-04's design), so their actual DDL uses DuckDB-compatible type spellings (`TIMESTAMP`, `BOOLEAN`, `DECIMAL(19,4)`, `VARCHAR(n)`) even where the fixture's authoring comments describe the "real platform" type being modeled (SQL Server `MONEY`, `DATETIME`; Snowflake `NUMBER(p,s)`). This is a T-04 characteristic (DuckDB is the actual storage/schema-report engine), not a T-05 defect — `type-mapping.test.ts`'s "native types observed in/implied by T-04 fixtures" section correctly tests against the *real-platform* type strings the fixtures document in comments (e.g. `MONEY`, `DATETIMEOFFSET`, `TIMESTAMP_NTZ`, `NUMBER(38,0)`), which is the right target since T-17/T-18/T-19's real connectors (not yet built) are what will actually report these native strings. All such types map sensibly, none fall through to Unknown unexpectedly |
+| Scope — commit file list | `git show --stat 67ea4f7` | Exactly 5 files changed: `IMPLEMENTATION-REPORT.md`, `packages/engine/src/comparison-core/schema-diff/schema-diff.ts` (new), `packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts` (new), `packages/shared/src/result.ts`, `packages/shared/src/types.test.ts`. No files under `packages/engine/src/connector-sdk/**` or `packages/engine/src/comparison-core/type-mapping/**` touched. |
+| Scope — full-branch diff vs `main` | `git diff main...67ea4f7 --stat` | Same 5 files, confirming no additional changes elsewhere on the branch. |
+| Scope — `result.ts` diff content | `git show 67ea4f7 -- packages/shared/src/result.ts` | Only the `SchemaDifference` placeholder alias was replaced with a real interface (`columnName`, `kind: SchemaDifferenceKind`, `sourceType?`, `targetType?`, inherited `severity`/`message`), plus the new `SchemaDifferenceKind` export. `ProfileDifference`, `AggregateDifference`, `RowDifference` (still `DifferenceItem` aliases) and the `Severity` union are byte-for-byte unchanged — confirmed by direct diff inspection, not just report claims. |
+| Scope — `types.test.ts` diff content and assessment | `git show 67ea4f7 -- packages/shared/src/types.test.ts` | Single 4-line change: one existing `schemaDifferences` literal (around line 218) gains `columnName: "CustomerID"` and `kind: "order-mismatch"` fields. No other line in the file touched; no assertion logic, describe/it structure, or test intent changed — the test still verifies the same `ComparisonResult` shape end-to-end, just with a literal that now satisfies the widened `SchemaDifference` interface. This is judged a trivial, mechanically-forced consequence of the authorized `result.ts` change (the literal would fail `tsc` otherwise), directly analogous to the T-04 precedent (reviewer-approved minimal `tsconfig.json`/`package.json` edits required by that task's own authorized change). Not out-of-bounds; does not warrant a revised brief. |
+| Acceptance criterion 1 — fixture ground truth | Direct read of `packages/engine/fixtures/sqlserver-customer.ts` | `customer_target`'s `CREATE TABLE` (lines 56-63) has no `CreditLimit`/`CREDIT_LIMIT` column; `customer_source`'s (lines 31-39) has `CreditLimit DECIMAL(19,4)`. Independently confirms the documented drop, not just trusted from comments. |
+| Acceptance criterion 1 — test correctness | Direct read of `schema-diff.test.ts` lines 34-50 | Fetches both schemas live via `FixtureConnector.getSchema` (not hand-built), calls `compareSchemas`, asserts a `missing-in-target` finding for `columnName === "CreditLimit"` with `severity === "Failure"`. Traced against `compareSchemas`'s logic (lines 92-104 of `schema-diff.ts`): `CreditLimit` exists in `source`, `targetByName.get("CreditLimit")` is `undefined` (confirmed by the fixture), so the `missing-in-target` branch fires with `expectations?.missingTargetColumnSeverity ?? DEFAULT_MISSING_SEVERITY` where `DEFAULT_MISSING_SEVERITY = "Failure"` and no `expectations` argument is passed in this test — correctly resolves to `Failure`. |
+| M-07 — identical native-type short-circuit | Direct read of `compareType` (`schema-diff.ts` lines 171-196) | `if (source.nativeType === target.nativeType) return undefined;` executes before `compareCanonicalTypes` is called at all — confirmed by reading the function body, not inferred from the test name. `compareCanonicalTypes` is genuinely unreachable for identical native-type strings. |
+| M-07 — original DATETIME/TIMESTAMP_NTZ behavior preserved | Direct read of `schema-diff.test.ts` lines 63-72, traced against `compareType`/`compareCanonicalTypes` | `DATETIME` ≠ `TIMESTAMP_NTZ` as strings, so execution falls through to `compareCanonicalTypes("Timestamp", "Timestamp")`, which (per `type-mapping.ts` lines 267-274, unmodified) returns `"Review"` because `source === target === "Timestamp"` hits the documented same-category-downgrade branch. `TYPE_COMPATIBILITY_SEVERITY["Review"] = "Warning"` — matches the test's expectation and confirms T-05's original documented behavior was not broken. |
+| M-07 — same-category, different-string, non-Timestamp/Time edge case (not in implementer's suite) | Independent throwaway probe: `compareSchemas([{name:"ID",nativeType:"INT",canonicalType:"Integer"}], [{name:"ID",nativeType:"INTEGER",canonicalType:"Integer"}])` | Native strings differ (`"INT"` ≠ `"INTEGER"`), so the short-circuit does *not* fire and execution correctly falls through to `compareCanonicalTypes("Integer","Integer")`, which returns `"Compatible"` (same category, not Timestamp/Time) per `type-mapping.ts`'s logic — `compareType` returns `undefined`. Probe run via `npx vitest run` confirmed `typeFindings` has length 0, matching the traced expectation. Probe file deleted immediately after use; `git status` confirms no residue. This closes the specific gap the task brief asked the reviewer to probe: the identical-string short-circuit is an *additional* fast path for the Timestamp/Time-only false positive, not a replacement for or interference with `compareCanonicalTypes`'s pre-existing correct same-category handling for every other type family. M-07's fix is complete, not just a fix for the literal test case. |
+| Severity default — missing-target-column | Direct read of `schema-diff.ts` lines 59, 96-104 and `schema-diff.test.ts`'s acceptance-criterion-1 test | `DEFAULT_MISSING_SEVERITY: Severity = "Failure"` is applied whenever no `expectations.missingTargetColumnSeverity` override is supplied, matching `Idea Prompt.md` section 12's `missing_target_column: fail` example. A second test (lines 148-154) confirms the override path works (`Warning` when explicitly configured), proving the default is a real default, not a hardcoded value. |
+| Fresh focused test run (engine) | `npx vitest run packages/engine` (re-run by this reviewer) | Exit 0. 4 test files, **229/229 tests** passed (69 type-mapping + 109 statement-safety + 11 new schema-diff + 40 fixture-connector). Matches the implementation report's claim exactly. |
+| Fresh focused test run (shared) | `npx vitest run packages/shared` (re-run by this reviewer) | Exit 0. 1 test file, **11/11 tests** passed — no regression from the `SchemaDifference` refinement. |
+| Fresh full verification | `npm run verify` (re-run by this reviewer) | Exit 0. `tsc -b --force`: no errors. `eslint .`: no errors. `vitest run`: 5 test files, **240/240 tests** passed (11 shared + 69 type-mapping + 109 statement-safety + 11 schema-diff + 40 fixture-connector). Matches the implementation report's claim exactly, no regressions. |
 
 ## Prior-finding disposition
 
 | Finding ID | Disposition | Evidence of resolution |
 | --- | --- | --- |
-| M-01 (T-01, transitive devDependency audit warnings) | NOT APPLICABLE | T-05 added no dependencies; `package.json` files for `packages/engine` unchanged aside from source files under review |
-| M-02 (T-01, `tsc -b --force` usage) | NOT APPLICABLE | Same verification convention reused consistently in T-05's evidence; already resolved at T-01 |
-| M-03 (T-02, citation correction) | NOT APPLICABLE | Documentation-only finding on T-02's report; not touched by T-05 |
-| M-04 (T-02, thin `DifferenceItem` shape shared across Schema/Profile/Aggregate/Row differences) | NOT APPLICABLE | T-05 does not touch `packages/shared/**` or produce any `DifferenceItem`; remains tracked for T-06/T-07/T-13/T-14 |
-| I-01 (T-03, paren-wrapped CTE mutation bypass) | NOT APPLICABLE | Resolved at T-03; T-05 does not touch the statement-safety parser (only imports its `SqlDialect` type, read-only) |
-| M-05 (T-03, SQL Server `GO` batch separator not recognized) | NOT APPLICABLE | Tracked for T-17; unrelated to type mapping |
-| M-06 (T-03, PostgreSQL dollar-quoting scanner desync) | NOT APPLICABLE | Tracked for T-19; unrelated to type mapping |
-| (T-04 review) | NOT APPLICABLE | T-04 review returned 0 findings; T-05 consumed T-04's fixtures read-only, no regression found |
+| M-01 (T-01, transitive devDependency audit warnings) | NOT APPLICABLE | T-06 added no dependencies; unrelated to schema-diff scope. |
+| M-04 (T-02, thin `DifferenceItem` alias shared across Schema/Profile/Aggregate/Row differences, tracked for T-06 to refine the schema-diff shape specifically) | RESOLVED (for `SchemaDifference` only) | `packages/shared/src/result.ts`'s `SchemaDifference` is now a real interface (`columnName`, `kind: SchemaDifferenceKind`, `sourceType?`, `targetType?`) extending `DifferenceItem`, confirmed by direct diff read. `ProfileDifference`/`AggregateDifference`/`RowDifference` remain thin aliases, correctly left open and tracked for T-07/T-13/T-14 per the brief's explicit scope boundary — this is the expected partial resolution, not a gap. |
+| M-05 (T-03, SQL Server `GO` batch separator not recognized) | NOT APPLICABLE | Tracked for T-17; unrelated to schema-diff. |
+| M-06 (T-03, PostgreSQL dollar-quoting scanner desync) | NOT APPLICABLE | Tracked for T-19; unrelated to schema-diff. |
+| M-07 (T-05, `compareCanonicalTypes` downgrades identical Timestamp/Timestamp and Time/Time native-type pairs to `Review` instead of `Compatible`, explicitly assigned to T-06 to resolve) | RESOLVED | `compareType`'s identical-native-type-string short-circuit (`schema-diff.ts` lines 171-179) bypasses `compareCanonicalTypes` entirely for identical native strings, confirmed by direct code trace (not just the passing test). Original `DATETIME`/`TIMESTAMP_NTZ` → `Warning` behavior confirmed preserved by trace and fresh test run. Independent probe of the same-category/different-string/non-Timestamp edge case (`INT` vs `INTEGER`) confirms `compareCanonicalTypes`'s pre-existing same-category-is-Compatible logic is untouched and still reachable — the fix is additive and complete, not a narrow patch for the literal test case. `type-mapping.ts` itself confirmed unmodified (`git show --stat 67ea4f7` and full-branch diff both show 0 changes to that file). |
+| M-08 (T-05, collation-suffixed native type strings like `VARCHAR(255) COLLATE ...` fall to `Unknown`) | NOT APPLICABLE | Tracked for T-17 (real SQL Server connector); `nativeType` as consumed by `compareType`/`mapNativeType` is unrelated to schema-diff's own logic — T-06 does not alter `mapNativeType`'s parsing. |
 
 ## Approval status
 
 - **Status:** APPROVED
 - **Reviewer:** Claude Code Independent Reviewer subagent
 - **Date:** 2026-07-27
-- **Release or dependency impact:** T-05 is complete and unblocks T-06
-  (schema diff) and T-07 (profiling), both of which consume `mapNativeType`
-  and `compareCanonicalTypes`. Two Minor findings are recorded, neither
-  blocking: M-07 (Timestamp/Timestamp same-category downgrade to Review is a
-  sound, conservative-by-design interpretation of the idea doc's own worked
-  example, but it will also flag genuinely identical timestamp types as
-  Review when both sides of a real comparison use the exact same native
-  type — the T-06 implementer/reviewer should decide whether to special-case
-  identical-native-type pairs at the schema-diff layer, or revisit the
-  canonical category split, rather than silently inheriting this over-flagging
-  behavior) and M-08 (collation-suffixed native type strings fall to Unknown
-  rather than String — track for T-17 once real SQL Server `nativeType`
-  reporting format is known). Neither finding requires code changes before
-  merge; both are forward-looking notes for downstream tasks.
+- **Release or dependency impact:** T-06 delivers `compareSchemas` and the
+  refined `SchemaDifference` shape (`columnName`, `kind`, `sourceType?`,
+  `targetType?`) that T-09 (orchestration planner) is expected to consume.
+  `DESIGN-SPEC.md` acceptance criterion 1 is independently verified against
+  the actual `sqlserver-customer` fixture (not a hand-built substitute). M-07
+  is genuinely resolved with no discovered gap. No Critical or Important
+  findings block downstream work. `ProfileDifference`, `AggregateDifference`,
+  `RowDifference`, and `Severity` remain untouched and available for
+  T-07/T-13/T-14 as designed. No other pending findings block progression.
