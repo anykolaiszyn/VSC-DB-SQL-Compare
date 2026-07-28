@@ -247,3 +247,111 @@ directly against `packages/engine/fixtures/sqlserver-customer.ts` or
 arithmetic — before approving, and confirm `ProfileDifference`'s refined
 shape and `compareProfiles`'s meaningful-change filtering satisfy
 `DESIGN-SPEC.md`/`Idea Prompt.md`'s Layer 4 STATUS worked example.
+
+## Addendum: I-02 fix (median/stddev, post-review)
+
+**What was missing.** The independent review (`REVIEW-REPORT.md`, finding
+I-02, Important severity) found that `NumericMetrics` omitted `median` and
+`stddev`, and that this omission was justified — in both this report
+(original lines 73-74, 208) and in `profiling.ts`'s `NumericMetrics` doc
+comment — by a quote attributed to the task brief: *"median/stddev are
+nice-to-have but not required if time-constrained — note if omitted"*. The
+reviewer ran `grep -in "nice-to-have\|time-constrained\|note if omitted"
+TASK-BRIEF.md IMPLEMENTATION-PLAN.md DESIGN-SPEC.md PROJECT-BRIEF.md` and got
+no matches in any control file. That quote does not exist anywhere in this
+project's documents. It was fabricated, not paraphrased.
+
+**Corrected understanding of what TASK-BRIEF.md actually requires.**
+`TASK-BRIEF.md` line 44, the `profileColumn` interfaces-table row (quoted
+here verbatim), explicitly requires median and stddev as part of the
+required numeric-metrics output:
+
+> "General metrics (row count, populated count, null count/percentage,
+> distinct count, duplicate count) for every column; branches into string
+> metrics (empty/whitespace-only counts, min/max/avg length, case
+> distribution) for String-category columns, numeric metrics
+> (min/max/mean/median/stddev, zero/negative/positive counts) for
+> Integer/Decimal/FloatingPoint-category columns, date/timestamp metrics
+> (earliest/latest, future-date count, null count) for
+> Date/Time/Timestamp-category columns, and boolean/categorical metrics
+> (count/percentage by value, cardinality) for Boolean-category columns"
+
+There is no "nice to have if time-constrained" language anywhere in this
+file, and no such language exists in any control document. The original
+justification for omitting median/stddev was incorrect — it cited brief
+language that was never there. The omission was never actually authorized.
+
+**Fix.** DuckDB (the platform every `FixtureConnector` test in this task
+runs against) natively supports single-pass aggregate functions for both
+metrics: `MEDIAN(col)` (quantile-continuous at p=0.5) and `STDDEV_SAMP(col)`
+(sample standard deviation, n-1 denominator). Both were added to the same
+`SELECT` query `computeNumericMetrics` already issues for min/max/mean/
+zero/negative/positive counts — no second query pass, no per-platform
+availability assumption beyond what this task's Fixture/DuckDB connector
+scope already targets. `NumericMetrics` now includes `median: number` and
+`stddev: number`.
+
+**Hand-computed expected values (red-state test fixture: `price` column,
+`postgres-products` source, from `packages/engine/fixtures/postgres-products.ts`
+lines 35-39): 9.99, 19.99, 49.99, 14.50, 89.00.**
+
+Median: sorted = [9.99, 14.50, 19.99, 49.99, 89.00]; n = 5 (odd); median =
+middle value = **19.99**.
+
+Stddev (sample, n-1 denominator, matching `STDDEV_SAMP`): mean = 183.47 / 5
+= 36.694. Deviations from mean and their squares:
+
+| value | deviation | squared |
+| --- | --- | --- |
+| 9.99 | -26.704 | 713.103616 |
+| 19.99 | -16.704 | 279.023616 |
+| 49.99 | 13.296 | 176.783616 |
+| 14.50 | -22.194 | 492.573636 |
+| 89.00 | 52.306 | 2735.917636 |
+
+Sum of squared deviations = 713.103616 + 279.023616 + 176.783616 +
+492.573636 + 2735.917636 = 4397.40212. Sample variance (n-1 = 4) =
+4397.40212 / 4 = 1099.35053. Sample stddev = sqrt(1099.35053) =
+**33.156455329241695**.
+
+Cross-checked independently with Python: `statistics.median([9.99, 19.99,
+49.99, 14.50, 89.00])` = `19.99`; `statistics.stdev([9.99, 19.99, 49.99,
+14.50, 89.00])` = `33.156455329241695` — exact match with the hand
+arithmetic above.
+
+**Red-state evidence.** A new test was added to `profiling.test.ts`
+("computes median and stddev for price (postgres-products source), matching
+hand-computed values (I-02)") asserting `profile.numericMetrics?.median`
+and `profile.numericMetrics?.stddev` against the hand-computed values above,
+*before* `profiling.ts` was changed. `npx vitest run packages/engine -t
+"I-02"` failed as expected:
+
+```text
+× profileColumn > computes median and stddev for price (postgres-products source), matching hand-computed values (I-02)
+  → expected undefined to be close to 19.99, received difference is NaN, but expected 5e-7
+```
+
+confirming `median`/`stddev` were genuinely absent from `NumericMetrics`'s
+computed output prior to the fix (1 failed, 237 skipped).
+
+**Green-state evidence, after the fix.** `npx vitest run packages/engine`:
+`Test Files 5 passed (5)`, `Tests 238 passed (238)` (237 pre-existing + 1
+new I-02 test, 0 regressions). `npm run verify`: exit 0 — `tsc -b --force`
+clean, `eslint .` clean, `vitest run`: `Test Files 6 passed (6)`, `Tests 249
+passed (249)` (248 pre-existing baseline + 1 new test).
+
+**Confirmation of no regressions.** All 237 pre-existing `packages/engine`
+tests and all 11 pre-existing `packages/shared` tests continued to pass
+unchanged; only the one new I-02 regression test was added. No other file
+under `packages/engine/src/comparison-core/profiling/**` or
+`packages/shared/src/result.ts` required a shape change — `median`/`stddev`
+are fields on `NumericMetrics`, not on `ProfileDifference`, so
+`packages/shared/src/result.ts` was not touched by this fix.
+
+**Scope.** This fix touched only `packages/engine/src/comparison-core/
+profiling/profiling.ts` (the `NumericMetrics` interface, its doc comment,
+the module-level doc comment, and `computeNumericMetrics`'s SQL/return
+shape) and `packages/engine/src/comparison-core/profiling/profiling.test.ts`
+(one new test), on the same branch (`task/T-07-profiling`). No other I-02-
+unrelated change was made. This fix does not self-approve; it still requires
+a fresh independent review pass before T-07 can be marked complete.

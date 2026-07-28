@@ -12,9 +12,9 @@
 // canonical type category (via T-05's `mapNativeType`):
 //   - String: empty-string/whitespace-only counts, min/max/avg length, case
 //     distribution.
-//   - Integer/Decimal/FloatingPoint: min/max/mean, zero/negative/positive
-//     counts. Median/standard deviation are DELIBERATELY OMITTED -- see the
-//     doc comment on `NumericMetrics` below.
+//   - Integer/Decimal/FloatingPoint: min/max/mean/median/stddev,
+//     zero/negative/positive counts (see the doc comment on `NumericMetrics`
+//     below for the DuckDB aggregate functions used).
 //   - Date/Time/Timestamp/TimestampWithTimezone: earliest/latest value,
 //     future-date count (relative to `options.now`, defaulting to the
 //     current wall-clock time, so tests can supply a fixed reference date).
@@ -45,28 +45,24 @@ export interface StringMetrics {
 
 /**
  * Numeric-category-specific metrics (Integer/Decimal/FloatingPoint), per
- * Idea Prompt.md's "Numeric-specific metrics".
- *
- * Judgment call: `median` and `standardDeviation` are DELIBERATELY OMITTED.
- * Idea Prompt.md's own general-metrics list marks median as "where
- * supported", and the task brief explicitly allows treating both as
- * nice-to-have, not required, "if time-constrained -- note if omitted". This
- * task's Fixture-connector query path (straightforward SQL aggregates: MIN,
- * MAX, AVG, COUNT/CASE WHEN) has no simple single-pass SQL aggregate for
- * median (it requires a percentile/window function whose availability and
- * exact syntax vary per platform -- exactly the kind of pushdown-
- * optimization work the task brief says is explicitly out of scope: "You do
- * NOT need to implement query pushdown optimization") or for standard
- * deviation without either a second query pass or per-platform STDDEV
- * function availability assumptions this task's straightforward-SQL scope
- * does not want to bake in prematurely. Both are legitimate follow-up work
- * for a later task/iteration once a specific connector's aggregate-function
- * support is confirmed.
+ * Idea Prompt.md's "Numeric-specific metrics" and TASK-BRIEF.md line 44's
+ * `profileColumn` interface contract, which explicitly names both `median`
+ * and `stddev` as required output: "numeric metrics (min/max/mean/
+ * median/stddev, zero/negative/positive counts) for Integer/Decimal/
+ * FloatingPoint-category columns". `median` and `stddev` are computed via
+ * DuckDB's native `MEDIAN(col)` (quantile-continuous at p=0.5) and
+ * `STDDEV_SAMP(col)` (sample standard deviation, n-1 denominator) aggregate
+ * functions -- both single-pass, read-only aggregates on the same query as
+ * the other numeric metrics, requiring no percentile/window-function
+ * workaround and no per-platform availability assumption beyond what this
+ * task's Fixture/DuckDB connector already targets.
  */
 export interface NumericMetrics {
   min: number;
   max: number;
   mean: number;
+  median: number;
+  stddev: number;
   zeroCount: number;
   negativeCount: number;
   positiveCount: number;
@@ -272,6 +268,8 @@ async function computeNumericMetrics(
       `MIN(${quotedColumn}) AS min_value, ` +
       `MAX(${quotedColumn}) AS max_value, ` +
       `AVG(${quotedColumn}) AS mean_value, ` +
+      `MEDIAN(${quotedColumn}) AS median_value, ` +
+      `STDDEV_SAMP(${quotedColumn}) AS stddev_value, ` +
       `SUM(CASE WHEN ${quotedColumn} = 0 THEN 1 ELSE 0 END) AS zero_count, ` +
       `SUM(CASE WHEN ${quotedColumn} < 0 THEN 1 ELSE 0 END) AS negative_count, ` +
       `SUM(CASE WHEN ${quotedColumn} > 0 THEN 1 ELSE 0 END) AS positive_count ` +
@@ -283,6 +281,8 @@ async function computeNumericMetrics(
     min: toNumber(row.min_value),
     max: toNumber(row.max_value),
     mean: toNumber(row.mean_value),
+    median: toNumber(row.median_value),
+    stddev: toNumber(row.stddev_value),
     zeroCount: toNumber(row.zero_count),
     negativeCount: toNumber(row.negative_count),
     positiveCount: toNumber(row.positive_count),

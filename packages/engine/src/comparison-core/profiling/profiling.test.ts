@@ -154,6 +154,37 @@ describe("profileColumn", () => {
     expect(profile.booleanMetrics).toBeUndefined();
   });
 
+  // I-02 regression test: TASK-BRIEF.md line 44's interface contract for
+  // profileColumn explicitly requires "numeric metrics (min/max/mean/
+  // median/stddev, ...)" for Integer/Decimal/FloatingPoint columns. Hand-
+  // computed expected values from postgres-products.ts's price column
+  // (source rows): 9.99, 19.99, 49.99, 14.50, 89.00.
+  //
+  //   sorted = [9.99, 14.50, 19.99, 49.99, 89.00], n = 5 (odd)
+  //   median = middle value = 19.99
+  //
+  //   mean = 183.47 / 5 = 36.694
+  //   deviations from mean: 9.99-36.694=-26.704, 19.99-36.694=-16.704,
+  //     49.99-36.694=13.296, 14.50-36.694=-22.194, 89.00-36.694=52.306
+  //   squared deviations: 713.103616, 279.023616, 176.783616, 492.573636,
+  //     2735.917636
+  //   sum of squared deviations = 4397.40212
+  //   sample variance (n-1 = 4) = 4397.40212 / 4 = 1099.35053
+  //   sample stddev = sqrt(1099.35053) = 33.156455329241695
+  //
+  // (Cross-checked with Python's statistics.stdev([9.99,19.99,49.99,14.50,89.00])
+  // = 33.156455329241695, statistics.median(...) = 19.99.)
+  it("computes median and stddev for price (postgres-products source), matching hand-computed values (I-02)", async () => {
+    const connector = new FixtureConnector("postgres-products", "source");
+    const profile = await profileColumn(connector, PRICE_COLUMN, {
+      input: { kind: "table", object: "products_source" },
+    });
+
+    expect(profile.numericMetrics).toBeDefined();
+    expect(profile.numericMetrics?.median).toBeCloseTo(19.99, 6);
+    expect(profile.numericMetrics?.stddev).toBeCloseTo(33.156455329241695, 6);
+  });
+
   it("computes boolean metrics for in_stock (postgres-products source), matching hand-counted values", async () => {
     const connector = new FixtureConnector("postgres-products", "source");
     const profile = await profileColumn(connector, IN_STOCK_COLUMN, {
