@@ -1,107 +1,90 @@
-# ParityLens — Task Brief T-09
+# ParityLens — Task Brief T-10
 
 ## Objective
 
-Implement the Orchestration API's run planner for Phase-1 checks only
-(connectivity, schema, profile): `runComparison(definition: ParityDefinition): Promise<ComparisonResult>`.
-It resolves a parsed `ParityDefinition`, obtains connectors for the named
-source/target connections, tests connectivity, runs schema comparison
-(T-06) and — if the definition's `checks.profile.enabled` is true — column
-profiling and profile comparison (T-07), and assembles a `ComparisonResult`
-matching the shape from `Idea Prompt.md` section 11.
+Scaffold the VS Code extension host: activation entry point, command
+registration, the "DATA PARITY" activity-bar tree view (Connections /
+Comparisons / Recent Runs, per `Idea Prompt.md` section 6's sidebar
+sketch), and a `SecretStore` wrapper around VS Code's `SecretStorage` API
+for connection credentials. No comparison logic — this task wires the
+extension shell only.
 
 ## Dependencies
 
-- **Required completed tasks:** T-06 (schema diff), T-07 (column
-  profiling), T-08 (definition parser), T-08a (credential-blocklist
-  hardening) — all COMPLETE and APPROVED.
-- **Required decisions or approvals:** This is Phase 1 scope only per
-  `IMPLEMENTATION-PLAN.md`'s T-09 row: **volume and row-level checks are
-  explicitly out of scope** (that is T-15's job, once T-13/T-14 exist).
-  `checks.row_count` and `checks.row_level` in the parsed definition must be
-  recognized as valid fields (so parsing doesn't reject them) but this
-  task's planner must NOT execute them yet — leave `rowCounts` and
-  `rowDifferences` on the result empty/default and do not attempt volume or
-  row-level logic.
-
-### Connection resolution scope for this task (Phase 1 boundary)
-
-`ParityDefinition.source.connection` and `.target.connection` are named
-string references (per T-08). This task must resolve a connection name to
-an actual `DataPlatformConnector` instance. For this task's scope, the only
-connector implementation that exists is the **T-04 Fixture connector** —
-real connectors (T-17/T-18/T-19) do not exist yet. Implement connection
-resolution as an injectable/pluggable registry (e.g. a
-`ConnectorRegistry`/`Map<string, DataPlatformConnector>` passed into
-`runComparison` or constructed by the caller) so that real connectors can
-be registered later without changing this task's core planning logic. Do
-not hard-code Fixture-connector-specific behavior into the planner itself
-— the planner must only depend on the `DataPlatformConnector` interface.
+- **Required completed tasks:** T-01 (npm workspaces monorepo scaffold) —
+  COMPLETE and APPROVED. `packages/extension` already exists as a
+  placeholder package (`export const PLACEHOLDER = true`) from T-01.
+- **Required decisions or approvals:** `DESIGN-SPEC.md`'s "VS Code
+  Extension Layer" row (approved): activation, commands, tree views,
+  SecretStorage integration. `DESIGN-SPEC.md`'s security section
+  (approved): credentials resolved only through VS Code SecretStorage,
+  environment variables, or native cloud/OS credential mechanisms — never
+  inline in parity configuration. This task implements the SecretStorage
+  side of that for the extension layer specifically.
 
 ## Files owned
 
-- `packages/engine/src/orchestration/planner/**`
+- `packages/extension/src/activation/**`
+- `packages/extension/src/views/**`
+- `packages/extension/src/secrets/**`
 
-Do not touch `packages/shared/**`,
-`packages/engine/src/connector-sdk/**`,
-`packages/engine/src/comparison-core/**`, or
-`packages/engine/src/orchestration/definition/**` (T-03/T-04/T-05/T-06/T-07/T-08/T-08a's
-files — consume via their exports, do not modify).
+Do not touch `packages/extension/src/index.ts` beyond wiring it to call
+into the new `activation/**` entry point (record if you do this). Do not
+touch `packages/shared/**` or `packages/engine/**`.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `ParityDefinition`, `parseDefinition` (T-08/T-08a) | As defined in `packages/engine/src/orchestration/definition/definition.ts` | `packages/engine/src/orchestration/definition/**` |
-| Consumed | `compareSchemas` (T-06) | As defined in `packages/engine/src/comparison-core/schema-diff/schema-diff.ts` | `packages/engine/src/comparison-core/schema-diff/**` |
-| Consumed | `profileColumn`, `compareProfiles` (T-07) | As defined in `packages/engine/src/comparison-core/profiling/profiling.ts` | `packages/engine/src/comparison-core/profiling/**` |
-| Consumed | `DataPlatformConnector`, `ComparisonResult` (T-02) | As defined in `packages/shared/src` | `packages/shared` |
-| Consumed | `FixtureConnector` + seed fixtures (T-04) | Used as the connector implementation for this task's integration tests | `packages/engine/src/connector-sdk/fixture/**` |
-| Produced | `runComparison(definition: ParityDefinition, connectors: ConnectorRegistry): Promise<ComparisonResult>` | Resolves `definition.source.connection`/`.target.connection` via the registry, tests connectivity (Layer 1 per `Idea Prompt.md` — a connectivity failure short-circuits the run with a `failed` status before schema/profile checks run), runs `compareSchemas` if `checks.schema.enabled`, runs `profileColumn`+`compareProfiles` per mapped column if `checks.profile.enabled`, and assembles the final `ComparisonResult` (`comparison`, `runId`, `status`, `summary.{passed,warnings,failed}` computed from the collected findings' severities, `schemaDifferences`, `profileDifferences`, `execution.{sourceDurationMs,targetDurationMs,comparisonDurationMs}`). `rowCounts`, `aggregateDifferences`, and `rowDifferences` remain empty/default (Phase 2/3 scope) | Consumed by T-11 (results webview), T-15 (extends this planner later) |
+| Consumed | VS Code Extension API (`vscode` module types) | Standard `vscode.ExtensionContext`, `vscode.TreeDataProvider`, `vscode.SecretStorage` — add `@types/vscode` as a devDependency of `packages/extension` if not already present, and document the target VS Code API version chosen (`engines.vscode` in `package.json`) | VS Code (external, not part of this monorepo) |
+| Produced | `activate(context: vscode.ExtensionContext)` | The extension's activation entry point: registers commands, instantiates the tree data provider(s), and constructs the `SecretStore` wrapper. Must be wired as the actual `activate` export `packages/extension`'s manifest points VS Code at (a minimal `package.json` `contributes`/`activationEvents`/`main` section may be required — add the minimum needed for activation to be testable, document what's deferred to T-11/T-16) | Consumed by the VS Code extension host at runtime; consumed by tests via direct invocation |
+| Produced | `ParityTreeDataProvider` (or similarly named) implementing `vscode.TreeDataProvider` | Renders the three top-level sections from `Idea Prompt.md` section 6: Connections, Comparisons, Recent Runs. For this task, an empty-state provider is sufficient (no connections/comparisons exist yet — that's later scope) as long as the tree view registers and renders the three section nodes | Consumed by VS Code's tree view UI; consumed by T-11 (extends with actual data) |
+| Produced | `SecretStore` wrapper class/module | Thin wrapper around `vscode.SecretStorage` (`context.secrets`) providing `get(key)`, `set(key, value)`, `delete(key)` for connection credentials. Must never write a credential to `context.globalState`, `context.workspaceState`, or any file — SecretStorage only | Consumed by future connector/connection-management tasks (not yet scheduled in the plan beyond this scaffold) |
 
 ## Prohibited changes
 
-- Do not implement volume, aggregate, or row-level checks — Phase 1 only
-  (schema + profile).
-- Do not modify `packages/shared/**`,
-  `packages/engine/src/connector-sdk/**`,
-  `packages/engine/src/comparison-core/**`, or
-  `packages/engine/src/orchestration/definition/**`.
-- Do not hard-code the Fixture connector into the planner's core logic —
-  depend only on the `DataPlatformConnector` interface, with the Fixture
-  connector wired in via the registry at the test/call-site level.
+- Do not implement actual connection management, comparison definition
+  editing, results rendering, or CodeLens — those are later tasks (T-11,
+  T-16, and unscheduled connection-management work).
+- Do not modify `packages/shared/**` or `packages/engine/**`.
+- Do not write any credential-shaped value to `globalState`,
+  `workspaceState`, or any file under version control, even a test fixture
+  — SecretStorage is the only permitted destination, and a test proving
+  this must use a mocked/in-memory `SecretStorage`, never a real one that
+  could persist.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused Vitest test running
-  `runComparison` against a `ParityDefinition` parsed from a YAML string
-  referencing the T-04 `sqlserver-customer` fixture pair (source and
-  target both resolved via a `ConnectorRegistry` populated with
-  `FixtureConnector` instances), with `checks.schema.enabled: true`,
-  asserting the resulting `ComparisonResult.schemaDifferences` contains the
-  known dropped-`CreditLimit`-column finding (same underlying fact T-06
-  already proved, now proven end-to-end through the full pipeline).
-- **Command:** `npx vitest run packages/engine`
-- **Expected failure reason:** `runComparison` does not exist yet.
+- **Test or check to add:** A focused test (using `@vscode/test-electron`
+  or an equivalent VS Code extension test harness — pick a reasonable
+  approach for the packages/extension workspace and document the choice)
+  asserting that `activate()` registers the tree view and that
+  `ParityTreeDataProvider.getChildren()` returns the three top-level
+  section nodes (Connections, Comparisons, Recent Runs).
+- **Command:** `npx vitest run packages/extension` (or the chosen test
+  harness's equivalent invocation — if a VS Code extension test harness
+  requires a different runner than Vitest, document why and what command
+  replaces it)
+- **Expected failure reason:** `activate`, `ParityTreeDataProvider`, and
+  `SecretStore` do not exist yet — only the T-01 placeholder does.
 - **Captured output:** Exact command output and exit code, pasted into
   `IMPLEMENTATION-REPORT.md`.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/engine`
+- **Focused command:** Same as above.
 - **Full command:** `npm run verify`
-- **Expected evidence:** Focused command passes: the end-to-end schema-diff
-  case from Red-state evidence passes; a second case with
-  `checks.profile.enabled: true` produces populated `profileDifferences`;
-  a connectivity-failure case (e.g. an unregistered connection name)
-  produces a `failed`-status result without attempting schema/profile
-  checks. Full command passes with exit code 0, no regression in the
-  existing 279 tests.
+- **Expected evidence:** Focused command passes: tree view registers with
+  the three section nodes, `SecretStore.set`/`get`/`delete` round-trip
+  correctly against a mocked `SecretStorage`, and a test confirms no
+  credential-shaped value is ever written to `globalState`/`workspaceState`.
+  Full command passes with exit code 0, no regression in the existing 283
+  tests.
 
 ## Handoff
 
 - **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-09 implementer subagent. The reviewer must confirm the assembled `ComparisonResult` shape matches `Idea Prompt.md` section 11 exactly, that Phase 2/3 fields are genuinely left empty rather than partially/incorrectly populated, and that the planner has no Fixture-connector-specific coupling (only depends on `DataPlatformConnector`).
+- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-10 implementer subagent. The reviewer must specifically confirm no credential-shaped data can reach `globalState`/`workspaceState`/a file, and that the tree view genuinely registers with VS Code's API contract rather than only satisfying a mocked test double.
 - **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-09-orchestration-phase1`
+- **Commit or patch checkpoint:** Branch `task/T-10-extension-scaffold`
