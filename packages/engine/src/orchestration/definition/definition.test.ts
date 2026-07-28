@@ -205,6 +205,19 @@ keys:
     }
   );
 
+  // T-08a (R-01 hardening): these five field names were demonstrated by the
+  // T-08 independent review to bypass the T-08 blocklist. TASK-BRIEF.md
+  // T-08a requires each to throw, reproducing the reviewer's exact
+  // adversarial cases, using the same case-insensitive/separator-insensitive
+  // exact-field-name matching mechanism as the existing tests above.
+  it.each(["auth", "pass", "db_pass", "key", "passphrase"])(
+    "throws InvalidDefinitionError on a %s field anywhere in the document (T-08a)",
+    (fieldName) => {
+      const yaml = `${minimalValid}\n${fieldName}: some-value\n`;
+      expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
+    }
+  );
+
   it("throws InvalidDefinitionError on a credential field deeply nested under an unrelated key", () => {
     const yaml = `
 version: 1

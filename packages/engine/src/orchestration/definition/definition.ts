@@ -148,6 +148,13 @@ const CREDENTIAL_FIELD_NAMES = new Set([
   "connection_string",
   "credentials",
   "credential",
+  // T-08a (R-01 hardening): names the T-08 independent review demonstrated
+  // bypass the original list above -- see TASK-BRIEF.md T-08a.
+  "auth",
+  "pass",
+  "db_pass",
+  "key",
+  "passphrase",
 ]);
 
 /** True if `key` (a YAML mapping key, as-authored) matches one of the
