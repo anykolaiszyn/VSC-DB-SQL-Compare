@@ -1,70 +1,85 @@
-# ParityLens — Task Brief T-05
+# ParityLens — Task Brief T-06
 
 ## Objective
 
-Implement the canonical type-mapping layer: map native database types
-(observed from the T-04 fixture connector's `ColumnDefinition.nativeType`
-values, and declared type catalogs for the three MVP real platforms) into
-the canonical type-category enum defined in T-02 (`Integer`, `Decimal`,
-`FloatingPoint`, `Boolean`, `String`, `Binary`, `Date`, `Time`, `Timestamp`,
-`TimestampWithTimezone`, `JSON`, `Array`, `Object`, `Geospatial`,
-`Unknown`), so that types like `INT`, `INTEGER`, `NUMBER(10,0)`, and
-`BIGINT` can be compared intelligently rather than by name alone.
+Implement schema diff: compare two `ColumnDefinition[]` sets (source and
+target) across column count, name, order, native type, normalized/canonical
+type, length, precision, scale, and nullability, and produce severity-scored
+`SchemaDifference[]` findings, matching `Idea Prompt.md` section 2's worked
+example.
 
 ## Dependencies
 
-- **Required completed tasks:** T-03 (statement-safety parser) — COMPLETE
-  and APPROVED. T-04 (DuckDB fixture connector) — COMPLETE and APPROVED;
-  its three fixture pairs (`sqlserver-customer`, `snowflake-orders`,
-  `postgres-products`) are the primary test data for this task's mapping
-  table.
-- **Required decisions or approvals:** `DESIGN-SPEC.md` names this
-  component ("Comparison Core", canonical type mapping) as approved scope.
-  `Idea Prompt.md` section 2 gives the worked example this task must
-  satisfy: `INT`/`NUMBER(38,0)`→Integer compatible, `VARCHAR(100)`/
-  `VARCHAR(255)`→String compatible, `DATETIME`/`TIMESTAMP_NTZ`→Review,
-  `BIT`/`BOOLEAN`→Boolean compatible, `MONEY`/`FLOAT`→Risk.
+- **Required completed tasks:** T-05 (canonical type-mapping layer) —
+  COMPLETE and APPROVED.
+- **Required decisions or approvals:** `DESIGN-SPEC.md` acceptance
+  criterion 1 (schema comparison against fixtures must produce a correct
+  structural diff for a deliberately mismatched pair). This task must
+  explicitly resolve open finding **M-07** from the T-05 review (see below)
+  — this is not optional cleanup, it is part of this task's required scope.
+
+### M-07 — required design decision (carried forward from T-05 review)
+
+T-05's `compareCanonicalTypes` treats same-category Timestamp/Timestamp
+(and Time/Time) pairs as `Review` instead of `Compatible`, specifically to
+reproduce `Idea Prompt.md`'s DATETIME/TIMESTAMP_NTZ example. The T-05
+reviewer confirmed this also flags two **genuinely identical** native
+timestamp types (e.g. `DATETIME2` vs `DATETIME2` on both sides) as `Review`
+when they should be `Compatible`. This task must resolve that: when this
+task's schema-diff logic calls `compareCanonicalTypes` (from T-05,
+consumed as-is — do not modify T-05's file), it must special-case an
+identical native-type-string pair on both sides to short-circuit straight
+to `Compatible` severity, before falling through to
+`compareCanonicalTypes`'s category-level classification for genuinely
+different native types. Document this decision and the reasoning in the
+implementation report, and add a focused test proving identical native
+types on both sides produce `Compatible`, not `Review`.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/type-mapping/**`
+- `packages/engine/src/comparison-core/schema-diff/**`
 
-Do not touch `packages/shared/**`,
-`packages/engine/src/connector-sdk/**` (T-03/T-04's files), or any other
-`packages/engine/src/comparison-core/**` subdirectory (those belong to
-later tasks T-06/T-07/T-12/T-13/T-14/T-20/T-21).
+Do not touch `packages/shared/**`, `packages/engine/src/connector-sdk/**`,
+or `packages/engine/src/comparison-core/type-mapping/**` (T-05's files —
+consume via its exported `mapNativeType`/`compareCanonicalTypes`, do not
+modify).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `ColumnDefinition`, canonical `CanonicalTypeCategory` enum (T-02) | As defined in `packages/shared/src/types.ts` | `packages/shared` |
-| Consumed | `FixtureConnector` + seed fixtures (T-04) | Used as realistic test input: native types actually present in the three fixture pairs | `packages/engine/src/connector-sdk/fixture/**`, `packages/engine/fixtures/**` |
-| Produced | `mapNativeType(nativeType: string, platform: SqlDialect): CanonicalTypeCategory` | Maps a native type string (e.g. `"NUMBER(38,0)"`, `"DATETIME2"`, `"VARCHAR(255)"`) plus its originating platform to exactly one canonical category. Must handle at least: integer variants (INT, INTEGER, BIGINT, SMALLINT, NUMBER(p,0)), decimal/numeric variants (DECIMAL, NUMERIC, MONEY, NUMBER(p,s) with s>0), floating-point variants (FLOAT, REAL, DOUBLE), boolean variants (BIT, BOOLEAN), string variants (VARCHAR, CHAR, TEXT, STRING), date/time/timestamp variants (DATE, TIME, DATETIME, DATETIME2, TIMESTAMP, TIMESTAMP_NTZ, TIMESTAMP_TZ), and a documented `Unknown` fallback for anything unrecognized (never throw on an unrecognized type) | Consumed by T-06 (schema diff), T-07 (profiling) |
-| Produced | `TypeCompatibility` classification: `compareCanonicalTypes(source: CanonicalTypeCategory, target: CanonicalTypeCategory): 'Compatible' \| 'Review' \| 'Risk'` | Matches the three-tier classification from `Idea Prompt.md` section 2's worked example | Consumed by T-06 (schema diff severity assignment) |
+| Consumed | `ColumnDefinition[]` (T-02) | As defined in `packages/shared/src/types.ts` | `packages/shared` |
+| Consumed | `mapNativeType`, `compareCanonicalTypes` (T-05) | As defined in `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` | `packages/engine/src/comparison-core/type-mapping/**` |
+| Consumed | `Severity` union, `SchemaDifference` shape (T-02) | `SchemaDifference` is currently a thin alias of `DifferenceItem{severity,message}` (tracked as open finding M-04) — this task should refine `SchemaDifference` with the specific fields a schema diff needs (e.g. columnName, sourceType, targetType, kind of mismatch) while keeping `severity` compatible with the `Severity` union | `packages/shared/src/result.ts` |
+| Consumed | `FixtureConnector` + seed fixtures (T-04) | Used as test input: the `sqlserver-customer` fixture pair's documented schema mismatch (dropped `CreditLimit` column) is the primary acceptance-criterion-1 test case | `packages/engine/src/connector-sdk/fixture/**`, `packages/engine/fixtures/**` |
+| Produced | `compareSchemas(source: ColumnDefinition[], target: ColumnDefinition[], expectations?: SchemaExpectations): SchemaDifference[]` | Compares column count, name, order, native+normalized type (via T-05), length, precision, scale, nullability. Each finding carries a severity (Pass/Informational/Warning/Failure/Error per `DESIGN-SPEC.md`'s severity model). A missing-target-column defaults to `Failure` severity per `Idea Prompt.md` section 12's example, unless overridden by `expectations` | Consumed by T-09 (orchestration planner) |
 
 ## Prohibited changes
 
-- Do not implement schema diff, profiling, or any other Comparison Core
-  submodule — only the type-mapping/compatibility primitive.
-- Do not modify `packages/shared/**` (if a shape gap is found in the
-  `CanonicalTypeCategory` enum, request a revised task brief rather than
-  editing T-02's files).
-- Do not modify `packages/engine/src/connector-sdk/**`.
+- Do not implement profiling, volume, aggregate, or row-level comparison —
+  schema diff only.
+- Do not modify `packages/shared/**` directly — if refining
+  `SchemaDifference` requires a shape change, make the change and document
+  it clearly as this task's contribution to that shared type (this task IS
+  the designated owner resolving M-04 for the schema-diff shape
+  specifically, per `IMPLEMENTATION-PLAN.md`'s T-06 row), but do not touch
+  `ProfileDifference`/`AggregateDifference`/`RowDifference` — those remain
+  for T-07/T-13/T-14 to refine.
+- Do not modify `packages/engine/src/comparison-core/type-mapping/**`
+  (T-05's files).
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused Vitest test asserting
-  `mapNativeType("NUMBER(38,0)", "snowflake")` returns `Integer`, matching
-  `Idea Prompt.md` section 2's worked example, plus a matrix covering the
-  other four worked-example pairs (VARCHAR(100)/VARCHAR(255)→String,
-  DATETIME/TIMESTAMP_NTZ→Timestamp category with Review compatibility,
-  BIT/BOOLEAN→Boolean, MONEY/FLOAT→Decimal vs FloatingPoint with Risk
-  compatibility).
+- **Test or check to add:** A focused Vitest test running `compareSchemas`
+  against the T-04 `sqlserver-customer` fixture pair's actual schemas,
+  asserting the dropped `CreditLimit` column produces a `Failure`-severity
+  (or equivalent) finding — this directly proves `DESIGN-SPEC.md`
+  acceptance criterion 1. A second test proves the M-07 resolution:
+  identical native types on both sides produce no finding (or a
+  `Compatible`/no-severity result), not a spurious `Review`.
 - **Command:** `npx vitest run packages/engine`
-- **Expected failure reason:** `mapNativeType` and `compareCanonicalTypes`
-  do not exist yet.
+- **Expected failure reason:** `compareSchemas` does not exist yet.
 - **Captured output:** Exact command output and exit code, pasted into
   `IMPLEMENTATION-REPORT.md`.
 
@@ -72,16 +87,14 @@ later tasks T-06/T-07/T-12/T-13/T-14/T-20/T-21).
 
 - **Focused command:** `npx vitest run packages/engine`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Focused command passes, including all five worked
-  examples from `Idea Prompt.md` section 2 reproduced exactly (Compatible/
-  Review/Risk classifications matching the doc's table), plus test cases
-  covering native types actually observed in the T-04 fixture pairs. Full
-  command passes with exit code 0, no regression in the existing 160
-  tests.
+- **Expected evidence:** Focused command passes, including the fixture-based
+  acceptance-criterion-1 test and the M-07 resolution test; a matching-schema
+  case produces zero findings. Full command passes with exit code 0, no
+  regression in the existing 229 tests.
 
 ## Handoff
 
 - **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-05 implementer subagent. The reviewer must independently re-derive at least the five `Idea Prompt.md` section 2 worked examples and confirm the classifications match exactly, not just trust the report's claim.
+- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-06 implementer subagent. The reviewer must verify against `DESIGN-SPEC.md` acceptance criterion 1 using the actual T-04 fixture mismatch, and must specifically confirm M-07 is genuinely resolved (identical native types no longer produce a spurious Review finding) without breaking the original DATETIME/TIMESTAMP_NTZ Review example from T-05.
 - **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-05-type-mapping`
+- **Commit or patch checkpoint:** Branch `task/T-06-schema-diff`
