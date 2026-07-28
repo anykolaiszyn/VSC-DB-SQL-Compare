@@ -1,44 +1,40 @@
-# ParityLens — Review Report T-06
+# ParityLens — Review Report T-07 (re-review after I-02 fix)
 
 ## Review independence
 
-This review was performed by a separate Claude Code subagent instance,
-distinct from the T-06 implementer. No implementation files, `TASK-BRIEF.md`,
-or `IMPLEMENTATION-REPORT.md` were edited as part of this review. Only this
-file (`REVIEW-REPORT.md`) was written. A throwaway probe test file
-(`_probe.test.ts`) was created under `packages/engine/src/comparison-core/schema-diff/`
-solely to independently exercise an edge case not covered by the
-implementer's own test suite; it was run once and deleted before this report
-was finalized — `git status` confirms no residue. All verification commands
-below were re-run fresh in this review session, not copied from the
-implementation report. (This file previously held the stale T-05 review
-report; it has been fully replaced with the T-06 review below.)
+This re-review was performed by a Claude Code Independent Reviewer subagent,
+distinct from both the T-07 implementer subagent and the subagent that
+authored the original T-07 review (the "CHANGES REQUIRED" pass recorded
+below in "Prior-finding disposition"). No implementation file,
+`TASK-BRIEF.md`, or `IMPLEMENTATION-REPORT.md` was edited during this review.
+Only this file (`REVIEW-REPORT.md`) was written — it replaces the prior T-07
+review report in place, per this project's one-report-per-task-per-round
+convention (the prior review's full findings are preserved below under
+"Prior-finding disposition" rather than deleted).
 
 ## Review scope
 
-- **Task objective:** Implement `compareSchemas(source, target, expectations?)`
-  comparing two `ColumnDefinition[]` sets across column count, name, order,
-  native type, normalized/canonical type, length, precision, scale, and
-  nullability, producing severity-scored `SchemaDifference[]` findings per
-  `Idea Prompt.md` section 2's worked example, and mandatorily resolve open
-  finding M-07 from the T-05 review.
-- **Files and interfaces reviewed:**
-  - `packages/engine/src/comparison-core/schema-diff/schema-diff.ts`
-  - `packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts`
-  - `packages/shared/src/result.ts` (`SchemaDifference` refinement, explicitly
-    authorized by `TASK-BRIEF.md`)
-  - `packages/shared/src/types.test.ts` (one literal touched — scope-checked)
-  - `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` (T-05,
-    consumed as-is via `compareCanonicalTypes`, confirmed not modified)
-  - `packages/engine/fixtures/sqlserver-customer.ts` (T-04, read as
-    independent ground truth for acceptance criterion 1)
-- **Evidence reviewed:** `git show --stat 67ea4f7`, `git show 67ea4f7 --
-  packages/shared/src/result.ts`, `git show 67ea4f7 --
-  packages/shared/src/types.test.ts`, `git diff main...67ea4f7 --stat`,
-  `git log --oneline -5`, direct reading of all new/changed source and the
-  `sqlserver-customer` fixture, an independent throwaway probe test, fresh
-  `npx vitest run packages/engine`, fresh `npx vitest run packages/shared`,
-  fresh `npm run verify`.
+- **Task objective (unchanged from original review):** Implement
+  `profileColumn` (general + type-family-specific column profiling metrics)
+  and `compareProfiles` (source-vs-target profile comparison surfacing only
+  meaningful changes), and refine `ProfileDifference` in
+  `packages/shared/src/result.ts`.
+- **This round's scope:** Verify the I-02 fix (commit `4246ce2`) is real,
+  correct, and correctly scoped, and confirm no regression was introduced.
+  The original review's already-accepted items (the `types.test.ts`
+  mechanical edit, and `compareProfiles`'s meaningful-change filtering,
+  both verified in the original review) were **not** re-litigated per
+  instruction — they are carried forward as already-resolved in this
+  report's scope.
+- **Files and interfaces reviewed this round:**
+  - `git show 4246ce2 -- packages/engine/src/comparison-core/profiling/profiling.ts` (full diff)
+  - `git show 4246ce2 -- packages/engine/src/comparison-core/profiling/profiling.test.ts` (full diff)
+  - `packages/engine/src/comparison-core/profiling/profiling.ts` (current full state)
+  - `packages/engine/fixtures/postgres-products.ts` (full read, hand-recomputed from scratch, independent of the implementer's or the prior review's arithmetic)
+  - `IMPLEMENTATION-REPORT.md`, including the "Addendum: I-02 fix" section in full
+  - `TASK-BRIEF.md` line 44 (interfaces table row, re-read directly, not from any report's quotation)
+  - `git show --stat 4246ce2` (scope check)
+- **Evidence reviewed:** Fresh `npx vitest run packages/engine`, fresh `npm run verify`, independent hand-computed median/sample-stddev arithmetic performed from raw fixture literals (not copied from the implementation report or test comments).
 
 ## Critical findings
 
@@ -58,46 +54,122 @@ report; it has been fully replaced with the T-06 review below.)
 | --- | --- | --- | --- |
 | NONE | | | |
 
-## Verification performed
+## I-02 fix verification
 
-| Check | Exact command or inspection | Result |
+**1. The fix is real.** `git show 4246ce2 -- packages/engine/src/comparison-core/profiling/profiling.ts`
+shows `MEDIAN(${quotedColumn}) AS median_value` and
+`STDDEV_SAMP(${quotedColumn}) AS stddev_value` added to the same single-pass
+`SELECT` query `computeNumericMetrics` already issues (alongside
+`MIN`/`MAX`/`AVG`/the zero/negative/positive `CASE WHEN` sums), and the
+returned object now includes `median: toNumber(row.median_value)` and
+`stddev: toNumber(row.stddev_value)`. The `NumericMetrics` interface (current
+`profiling.ts` lines 60-69) now declares `median: number` and
+`stddev: number` as required (non-optional) fields, matching
+`TASK-BRIEF.md` line 44's contract verbatim: "numeric metrics
+(min/max/mean/median/stddev, zero/negative/positive counts)". Confirmed by
+direct read of the current file, not just the diff.
+
+**2. Independently redone arithmetic (from scratch, not checking the
+implementer's math).** `packages/engine/fixtures/postgres-products.ts` lines
+34-40, `products_source` table, `price` column values in row order: 9.99,
+19.99, 49.99, 14.50, 89.00 (n = 5).
+
+*Median:* sorted ascending = [9.99, 14.50, 19.99, 49.99, 89.00]. n = 5 (odd),
+so the median is the 3rd (middle) value = **19.99**.
+
+*Sample standard deviation:*
+
+- Sum = 9.99 + 19.99 + 49.99 + 14.50 + 89.00 = 183.47
+- Mean = 183.47 / 5 = 36.694
+- Deviations from mean: 9.99 − 36.694 = −26.704; 19.99 − 36.694 = −16.704;
+  49.99 − 36.694 = 13.296; 14.50 − 36.694 = −22.194; 89.00 − 36.694 = 52.306
+- Squared deviations: (−26.704)² = 713.103616; (−16.704)² = 279.023616;
+  (13.296)² = 176.783616; (−22.194)² = 492.573636; (52.306)² = 2735.917636
+- Sum of squared deviations = 713.103616 + 279.023616 + 176.783616 +
+  492.573636 + 2735.917636 = 4397.40212
+- Sample variance (n − 1 = 4 denominator, matching `STDDEV_SAMP`) =
+  4397.40212 / 4 = 1099.35053
+- Sample standard deviation = √1099.35053 = **33.15645532924...**
+
+**Result: my independently redone arithmetic matches the claimed values
+exactly** — median = 19.99 (exact match), stddev ≈ 33.156455329241695
+(matches to all shown digits). No discrepancy found.
+
+**3. DuckDB function-name sanity check.** `MEDIAN(x)` (quantile-continuous
+interpolation at p=0.5) and `STDDEV_SAMP(x)` (sample standard deviation,
+n−1 denominator) are both real, correctly-spelled DuckDB built-in aggregate
+functions — consistent with independent knowledge of DuckDB's aggregate
+function library, which also exposes `STDDEV`/`STDDEV_POP` as siblings.
+Stronger evidence: the new test (`profiling.test.ts`, "computes median and
+stddev for price...") asserts *specific numeric values* against
+`profile.numericMetrics?.median`/`?.stddev`, and it passes against a real,
+locally-executed DuckDB instance via `FixtureConnector`. Had either function
+name been misspelled or nonexistent, DuckDB would raise a SQL binder/catalog
+error at query execution time (a thrown exception, failing the test with an
+error, not a close-but-wrong-value assertion failure) rather than silently
+returning a plausible wrong number — the fact that the test passes cleanly
+with the exact hand-computed value is strong evidence the function names
+resolve correctly against DuckDB's real catalog, not hallucinated.
+
+**4. Red-state evidence is credible.** The implementation report's addendum
+quotes the red-state failure as `expected undefined to be close to 19.99,
+received difference is NaN` — consistent with `median`/`stddev` genuinely
+being absent from the returned object prior to the fix (accessing an absent
+property yields `undefined`, and `toBeCloseTo` against `undefined` produces
+exactly this `NaN`-difference failure mode). This is internally consistent
+with the claimed before/after state, not merely asserted.
+
+## Fresh verification performed
+
+| Check | Exact command | Result |
 | --- | --- | --- |
-| Scope — commit file list | `git show --stat 67ea4f7` | Exactly 5 files changed: `IMPLEMENTATION-REPORT.md`, `packages/engine/src/comparison-core/schema-diff/schema-diff.ts` (new), `packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts` (new), `packages/shared/src/result.ts`, `packages/shared/src/types.test.ts`. No files under `packages/engine/src/connector-sdk/**` or `packages/engine/src/comparison-core/type-mapping/**` touched. |
-| Scope — full-branch diff vs `main` | `git diff main...67ea4f7 --stat` | Same 5 files, confirming no additional changes elsewhere on the branch. |
-| Scope — `result.ts` diff content | `git show 67ea4f7 -- packages/shared/src/result.ts` | Only the `SchemaDifference` placeholder alias was replaced with a real interface (`columnName`, `kind: SchemaDifferenceKind`, `sourceType?`, `targetType?`, inherited `severity`/`message`), plus the new `SchemaDifferenceKind` export. `ProfileDifference`, `AggregateDifference`, `RowDifference` (still `DifferenceItem` aliases) and the `Severity` union are byte-for-byte unchanged — confirmed by direct diff inspection, not just report claims. |
-| Scope — `types.test.ts` diff content and assessment | `git show 67ea4f7 -- packages/shared/src/types.test.ts` | Single 4-line change: one existing `schemaDifferences` literal (around line 218) gains `columnName: "CustomerID"` and `kind: "order-mismatch"` fields. No other line in the file touched; no assertion logic, describe/it structure, or test intent changed — the test still verifies the same `ComparisonResult` shape end-to-end, just with a literal that now satisfies the widened `SchemaDifference` interface. This is judged a trivial, mechanically-forced consequence of the authorized `result.ts` change (the literal would fail `tsc` otherwise), directly analogous to the T-04 precedent (reviewer-approved minimal `tsconfig.json`/`package.json` edits required by that task's own authorized change). Not out-of-bounds; does not warrant a revised brief. |
-| Acceptance criterion 1 — fixture ground truth | Direct read of `packages/engine/fixtures/sqlserver-customer.ts` | `customer_target`'s `CREATE TABLE` (lines 56-63) has no `CreditLimit`/`CREDIT_LIMIT` column; `customer_source`'s (lines 31-39) has `CreditLimit DECIMAL(19,4)`. Independently confirms the documented drop, not just trusted from comments. |
-| Acceptance criterion 1 — test correctness | Direct read of `schema-diff.test.ts` lines 34-50 | Fetches both schemas live via `FixtureConnector.getSchema` (not hand-built), calls `compareSchemas`, asserts a `missing-in-target` finding for `columnName === "CreditLimit"` with `severity === "Failure"`. Traced against `compareSchemas`'s logic (lines 92-104 of `schema-diff.ts`): `CreditLimit` exists in `source`, `targetByName.get("CreditLimit")` is `undefined` (confirmed by the fixture), so the `missing-in-target` branch fires with `expectations?.missingTargetColumnSeverity ?? DEFAULT_MISSING_SEVERITY` where `DEFAULT_MISSING_SEVERITY = "Failure"` and no `expectations` argument is passed in this test — correctly resolves to `Failure`. |
-| M-07 — identical native-type short-circuit | Direct read of `compareType` (`schema-diff.ts` lines 171-196) | `if (source.nativeType === target.nativeType) return undefined;` executes before `compareCanonicalTypes` is called at all — confirmed by reading the function body, not inferred from the test name. `compareCanonicalTypes` is genuinely unreachable for identical native-type strings. |
-| M-07 — original DATETIME/TIMESTAMP_NTZ behavior preserved | Direct read of `schema-diff.test.ts` lines 63-72, traced against `compareType`/`compareCanonicalTypes` | `DATETIME` ≠ `TIMESTAMP_NTZ` as strings, so execution falls through to `compareCanonicalTypes("Timestamp", "Timestamp")`, which (per `type-mapping.ts` lines 267-274, unmodified) returns `"Review"` because `source === target === "Timestamp"` hits the documented same-category-downgrade branch. `TYPE_COMPATIBILITY_SEVERITY["Review"] = "Warning"` — matches the test's expectation and confirms T-05's original documented behavior was not broken. |
-| M-07 — same-category, different-string, non-Timestamp/Time edge case (not in implementer's suite) | Independent throwaway probe: `compareSchemas([{name:"ID",nativeType:"INT",canonicalType:"Integer"}], [{name:"ID",nativeType:"INTEGER",canonicalType:"Integer"}])` | Native strings differ (`"INT"` ≠ `"INTEGER"`), so the short-circuit does *not* fire and execution correctly falls through to `compareCanonicalTypes("Integer","Integer")`, which returns `"Compatible"` (same category, not Timestamp/Time) per `type-mapping.ts`'s logic — `compareType` returns `undefined`. Probe run via `npx vitest run` confirmed `typeFindings` has length 0, matching the traced expectation. Probe file deleted immediately after use; `git status` confirms no residue. This closes the specific gap the task brief asked the reviewer to probe: the identical-string short-circuit is an *additional* fast path for the Timestamp/Time-only false positive, not a replacement for or interference with `compareCanonicalTypes`'s pre-existing correct same-category handling for every other type family. M-07's fix is complete, not just a fix for the literal test case. |
-| Severity default — missing-target-column | Direct read of `schema-diff.ts` lines 59, 96-104 and `schema-diff.test.ts`'s acceptance-criterion-1 test | `DEFAULT_MISSING_SEVERITY: Severity = "Failure"` is applied whenever no `expectations.missingTargetColumnSeverity` override is supplied, matching `Idea Prompt.md` section 12's `missing_target_column: fail` example. A second test (lines 148-154) confirms the override path works (`Warning` when explicitly configured), proving the default is a real default, not a hardcoded value. |
-| Fresh focused test run (engine) | `npx vitest run packages/engine` (re-run by this reviewer) | Exit 0. 4 test files, **229/229 tests** passed (69 type-mapping + 109 statement-safety + 11 new schema-diff + 40 fixture-connector). Matches the implementation report's claim exactly. |
-| Fresh focused test run (shared) | `npx vitest run packages/shared` (re-run by this reviewer) | Exit 0. 1 test file, **11/11 tests** passed — no regression from the `SchemaDifference` refinement. |
-| Fresh full verification | `npm run verify` (re-run by this reviewer) | Exit 0. `tsc -b --force`: no errors. `eslint .`: no errors. `vitest run`: 5 test files, **240/240 tests** passed (11 shared + 69 type-mapping + 109 statement-safety + 11 schema-diff + 40 fixture-connector). Matches the implementation report's claim exactly, no regressions. |
+| Engine tests (fresh) | `npx vitest run packages/engine` | `Test Files 5 passed (5)`, `Tests 238 passed (238)` — matches the addendum's claim exactly (237 pre-existing + 1 new I-02 regression test, 0 regressions) |
+| Full verification (fresh) | `npm run verify` | Exit 0. `tsc -b --force` clean, `eslint .` clean, `vitest run`: `Test Files 6 passed (6)`, `Tests 249 passed (249)` — matches the addendum's claim exactly (248 pre-existing baseline + 1 new test) |
+| Commit scope | `git show --stat 4246ce2` | 3 files changed: `IMPLEMENTATION-REPORT.md` (+108), `packages/engine/src/comparison-core/profiling/profiling.test.ts` (+31), `packages/engine/src/comparison-core/profiling/profiling.ts` (+40/−20 net). Nothing under `packages/shared/**` touched by this fix commit — consistent with the fix being confined to `NumericMetrics` (an engine-owned type), not `ProfileDifference` (the shared type T-07 owns a narrow slice of) |
+| `NumericMetrics` shape (current state) | Direct read of `profiling.ts` lines 60-69 | `median: number` and `stddev: number` present as required fields, alongside `min`/`max`/`mean`/`zeroCount`/`negativeCount`/`positiveCount` |
+| Median/stddev query wiring | Direct read of `computeNumericMetrics` (`profiling.ts` lines 259-290) | `MEDIAN(...)` and `STDDEV_SAMP(...)` added to the single existing aggregate `SELECT`; both mapped through `toNumber(...)` into the returned object, same pattern as the other five numeric fields |
+| Independent median/stddev hand-arithmetic | Manual recomputation from `postgres-products.ts` lines 34-40 (see "I-02 fix verification" above), redone from scratch without reference to the implementer's or prior reviewer's numbers | Median = 19.99 (exact match to claim); sample stddev ≈ 33.15645532924 (matches claim to all shown digits) |
+| DuckDB function-name validity | Knowledge check plus passing-test inference (see point 3 above) | `MEDIAN` and `STDDEV_SAMP` are real DuckDB aggregate functions; a wrong name would fail with a SQL error, not a values-close-but-wrong assertion failure — the clean pass is strong corroborating evidence |
 
 ## Prior-finding disposition
 
 | Finding ID | Disposition | Evidence of resolution |
 | --- | --- | --- |
-| M-01 (T-01, transitive devDependency audit warnings) | NOT APPLICABLE | T-06 added no dependencies; unrelated to schema-diff scope. |
-| M-04 (T-02, thin `DifferenceItem` alias shared across Schema/Profile/Aggregate/Row differences, tracked for T-06 to refine the schema-diff shape specifically) | RESOLVED (for `SchemaDifference` only) | `packages/shared/src/result.ts`'s `SchemaDifference` is now a real interface (`columnName`, `kind: SchemaDifferenceKind`, `sourceType?`, `targetType?`) extending `DifferenceItem`, confirmed by direct diff read. `ProfileDifference`/`AggregateDifference`/`RowDifference` remain thin aliases, correctly left open and tracked for T-07/T-13/T-14 per the brief's explicit scope boundary — this is the expected partial resolution, not a gap. |
-| M-05 (T-03, SQL Server `GO` batch separator not recognized) | NOT APPLICABLE | Tracked for T-17; unrelated to schema-diff. |
-| M-06 (T-03, PostgreSQL dollar-quoting scanner desync) | NOT APPLICABLE | Tracked for T-19; unrelated to schema-diff. |
-| M-07 (T-05, `compareCanonicalTypes` downgrades identical Timestamp/Timestamp and Time/Time native-type pairs to `Review` instead of `Compatible`, explicitly assigned to T-06 to resolve) | RESOLVED | `compareType`'s identical-native-type-string short-circuit (`schema-diff.ts` lines 171-179) bypasses `compareCanonicalTypes` entirely for identical native strings, confirmed by direct code trace (not just the passing test). Original `DATETIME`/`TIMESTAMP_NTZ` → `Warning` behavior confirmed preserved by trace and fresh test run. Independent probe of the same-category/different-string/non-Timestamp edge case (`INT` vs `INTEGER`) confirms `compareCanonicalTypes`'s pre-existing same-category-is-Compatible logic is untouched and still reachable — the fix is additive and complete, not a narrow patch for the literal test case. `type-mapping.ts` itself confirmed unmodified (`git show --stat 67ea4f7` and full-branch diff both show 0 changes to that file). |
-| M-08 (T-05, collation-suffixed native type strings like `VARCHAR(255) COLLATE ...` fall to `Unknown`) | NOT APPLICABLE | Tracked for T-17 (real SQL Server connector); `nativeType` as consumed by `compareType`/`mapNativeType` is unrelated to schema-diff's own logic — T-06 does not alter `mapNativeType`'s parsing. |
+| M-01 | NOT APPLICABLE | Unrelated to T-07 (T-01 devDependency vulnerabilities); no change in this task or this round |
+| M-02 | NOT APPLICABLE | Unrelated to T-07 (T-01 build config); no change in this task or this round |
+| M-03 | NOT APPLICABLE | Unrelated to T-07 (T-02 documentation citation); already resolved prior to T-07 |
+| I-01 | NOT APPLICABLE | Unrelated to T-07 (T-03 read-only-gate regex fix); already resolved prior to T-07; T-07's SQL was confirmed read-only in the original T-07 review round and is unchanged in this round's diff (the I-02 fix only added two read-only aggregate functions to an existing `SELECT`) |
+| M-04 | PARTIALLY RESOLVED (2 of 4 difference shapes done) — unchanged this round, carried forward | `SchemaDifference` resolved by T-06; `ProfileDifference` resolved by T-07 (original round, `packages/shared/src/result.ts`, not touched by this round's I-02 fix commit per the scope check above). `AggregateDifference` and `RowDifference` remain the placeholder `DifferenceItem` alias, deferred to T-13/T-14 respectively — out of scope for T-07's I-02 fix, no action taken or expected this round |
+| M-05 | NOT APPLICABLE | Unrelated to T-07 (SQL Server `GO` batch separator, tracked for T-17); no change in this task or this round |
+| M-06 | NOT APPLICABLE | Unrelated to T-07 (PostgreSQL dollar-quoted strings, tracked for T-19); no change in this task or this round |
+| I-02 | **RESOLVED** | `git show 4246ce2` adds `MEDIAN(col)`/`STDDEV_SAMP(col)` to `computeNumericMetrics`'s query and to the returned `NumericMetrics` object; `median`/`stddev` are now required fields on `NumericMetrics`, matching `TASK-BRIEF.md` line 44's contract verbatim ("min/max/mean/median/stddev"). Independently redone hand arithmetic (this round, from scratch, not copied from any report) confirms median = 19.99 and sample stddev ≈ 33.156455329241695 for the `price` column — exact match to the claimed values. Fresh `npx vitest run packages/engine` reproduces 238/238 and fresh `npm run verify` reproduces exit 0 / 249/249, both matching the addendum's claims exactly. The fabricated task-brief quote that originally (mis)justified the omission has been removed from both `IMPLEMENTATION-REPORT.md` and `profiling.ts`'s doc comments, replaced with a correct citation to the brief's actual line 44 language. No new finding was introduced by this fix — the change is additive (two new SQL aggregate columns, two new interface fields, one new test), and the scope check confirms it touched only `profiling.ts`, `profiling.test.ts`, and `IMPLEMENTATION-REPORT.md`, nothing in `packages/shared/**` or elsewhere. |
 
 ## Approval status
 
 - **Status:** APPROVED
 - **Reviewer:** Claude Code Independent Reviewer subagent
 - **Date:** 2026-07-27
-- **Release or dependency impact:** T-06 delivers `compareSchemas` and the
-  refined `SchemaDifference` shape (`columnName`, `kind`, `sourceType?`,
-  `targetType?`) that T-09 (orchestration planner) is expected to consume.
-  `DESIGN-SPEC.md` acceptance criterion 1 is independently verified against
-  the actual `sqlserver-customer` fixture (not a hand-built substitute). M-07
-  is genuinely resolved with no discovered gap. No Critical or Important
-  findings block downstream work. `ProfileDifference`, `AggregateDifference`,
-  `RowDifference`, and `Severity` remain untouched and available for
-  T-07/T-13/T-14 as designed. No other pending findings block progression.
+- **Release or dependency impact:** The single blocker from the original
+  review round (I-02: median/stddev omitted from `NumericMetrics`, justified
+  by a fabricated task-brief quote) is resolved. The fix is genuine — DuckDB's
+  native `MEDIAN`/`STDDEV_SAMP` aggregates were added to the existing
+  single-pass numeric-metrics query, both fields are now populated on every
+  numeric-column profile, and my own from-scratch hand computation against
+  the raw `postgres-products.ts` fixture data (median = 19.99, sample
+  stddev ≈ 33.15645532924) matches the claimed values exactly. Fresh
+  `npx vitest run packages/engine` (238/238) and fresh `npm run verify`
+  (exit 0, 249/249) both reproduce the implementation report's claimed
+  counts with zero regressions. The fix commit's scope is confined to the
+  three files the addendum claims — no drift into `packages/shared/**` or
+  any other task's owned files. Combined with the original review round's
+  already-verified items (hand-counted profile correctness for String/
+  Decimal/Boolean fixture columns, `compareProfiles`'s genuine
+  meaningful-change filtering including an adversarial float-noise probe,
+  correctly-scoped `ProfileDifference` refinement, and a confirmed
+  read-only-only SQL surface), T-07 now has no open Critical or Important
+  findings. T-09 (orchestration planner) and other downstream consumers of
+  `profileColumn`/`compareProfiles`/`NumericMetrics` are unblocked to
+  proceed. `AggregateDifference`/`RowDifference` remaining placeholders
+  (M-04) is expected, pre-scoped deferral to T-13/T-14, not a T-07 defect.
+  Per `AGENTS.md`, this independent approval does not substitute for final
+  human release approval.
