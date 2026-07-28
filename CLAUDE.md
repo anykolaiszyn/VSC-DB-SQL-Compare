@@ -37,6 +37,40 @@ There is no `build`/`watch`/`dev` script beyond `tsc -b` (declaration-only
 build, no bundling yet — the extension package has no runtime activation
 code until T-10).
 
+## Environment / starting or resuming on a new machine or IDE
+
+Before touching project state, run
+`multi-agent-idea-to-app/prompts/00-bootstrap-and-environment.md` — it
+checks for what's below and asks before installing or downloading
+anything. Known-good versions this project has actually been developed
+against (a version mismatch isn't necessarily broken, but is worth noting
+if `npm run verify` behaves unexpectedly):
+
+- **Node.js**: v24.9.0 (no `engines` constraint is currently declared in
+  `package.json` — this is the version development has actually used, not
+  an enforced minimum).
+- **npm**: v11.6.0 (workspaces support; this repo has no lockfile-implied
+  alternative package manager).
+- **TypeScript**: resolved via `npx tsc --version` → 5.9.3 (installed as a
+  devDependency, not global — `npm install` at the repo root is sufficient,
+  no separate global TypeScript install needed).
+- **No database server, container runtime, or cloud credentials are
+  needed for any current task.** `@duckdb/node-api` runs fully in-process
+  against an in-memory database — there is nothing external to provision.
+  This will change once T-17/T-18/T-19 (real SQL Server/Snowflake/
+  PostgreSQL connectors) exist; `PROGRESS-LEDGER.md`'s blockers table
+  tracks this.
+- **If dispatching Implementer/Reviewer subagents**: confirm
+  `multi-agent-idea-to-app/agents/implementer.md` and `.../reviewer.md`
+  are copied into `~/.claude/agents/` (or this repo's own
+  `.claude/agents/`, if that's ever set up) — see
+  `multi-agent-idea-to-app/agents/README.md`. They are not auto-discovered
+  from inside the vendored kit path.
+
+A fresh clone needs exactly `npm install` at the repo root (npm workspaces
+resolves all three packages), then `npm run verify` to confirm the
+environment actually works.
+
 ## Running the task loop
 
 Three roles drive the Task Loop phase of this project's lifecycle:

@@ -26,6 +26,15 @@ this handbook explains their relationship instead of copying their text.
 
 ## Lifecycle
 
+Before any lifecycle phase — whether starting fresh or resuming an
+existing project on a new machine or in a new IDE — use
+[00-bootstrap-and-environment.md](prompts/00-bootstrap-and-environment.md)
+to confirm the runtimes, package manager, and any project-specific local
+configuration (including this kit's [Claude Code subagent
+definitions](agents/README.md), if applicable) are actually present before
+acting on project state. This is environment setup, not a lifecycle phase
+itself; it produces no control-file content.
+
 The lifecycle has eight phases. Each phase creates evidence that the next one
 must read. Move forward only when the recorded gate is satisfied.
 
@@ -90,7 +99,11 @@ must read. Move forward only when the recorded gate is satisfied.
 8. **Handoff.** Use [08-handoff-and-resume.md](prompts/08-handoff-and-resume.md)
    whenever the owner, agent, tool, or session changes. Reconcile the working
    tree with the ledger, preserve uncommitted work, state the active task and
-   blockers, and stop when authority or state is unclear.
+   blockers, and stop when authority or state is unclear. When the handoff
+   also moves to a new machine or IDE, run
+   [00-bootstrap-and-environment.md](prompts/00-bootstrap-and-environment.md)
+   first — a clean ledger and working tree are not useful if the runtimes
+   and dependencies needed to act on them are not yet present.
 
 ## Agent roles
 
