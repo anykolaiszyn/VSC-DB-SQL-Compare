@@ -49,7 +49,19 @@ must read. Move forward only when the recorded gate is satisfied.
    [IMPLEMENTATION-REPORT.md](templates/IMPLEMENTATION-REPORT.md). A different
    agent applies [05-task-review.md](prompts/05-task-review.md) and writes the
    [review report](templates/REVIEW-REPORT.md). Critical and Important findings
-   return to a new bounded task loop; they cannot be self-approved away.
+   return to a new bounded task loop; they cannot be self-approved away. A
+   Critical or Important finding on the *same* task returns to that task's
+   own loop (new red-state evidence reproducing the exact finding, on the
+   same branch, followed by a fresh independent re-review). A finding that
+   is self-contained, low-risk, and separable from the original task's
+   remaining scope — most often a Minor finding an owner decides to close
+   immediately rather than merely track — may instead become its own small
+   bounded task, named as a lettered suffix of the task whose review
+   produced it (e.g. `T-08a` following from a finding in `T-08`'s review),
+   with its own `TASK-BRIEF.md` scoped only to that finding's resolution.
+   Record either path explicitly in the ledger's task register and open
+   findings table; do not fold an unrelated fix into a later, unrelated
+   task's scope just because that task happens to touch nearby code.
 5. **Integration.** Use [06-integration.md](prompts/06-integration.md) to
    reconcile approved tasks with their actual interfaces and test combined
    behavior. An integration defect is not a reason for an unowned broad fix:
