@@ -1,85 +1,74 @@
-# ParityLens — Task Brief T-06
+# ParityLens — Task Brief T-07
 
 ## Objective
 
-Implement schema diff: compare two `ColumnDefinition[]` sets (source and
-target) across column count, name, order, native type, normalized/canonical
-type, length, precision, scale, and nullability, and produce severity-scored
-`SchemaDifference[]` findings, matching `Idea Prompt.md` section 2's worked
-example.
+Implement column profiling: compute general, string-specific, numeric-specific,
+date/timestamp-specific, and boolean/categorical metrics for a single column
+(per `Idea Prompt.md` "Layer 4: Data Profiling"), and compare two profiles
+(source vs target) to produce severity-scored `ProfileDifference[]` findings
+that highlight meaningful changes rather than merely displaying two profiles
+side by side.
 
 ## Dependencies
 
 - **Required completed tasks:** T-05 (canonical type-mapping layer) —
-  COMPLETE and APPROVED.
-- **Required decisions or approvals:** `DESIGN-SPEC.md` acceptance
-  criterion 1 (schema comparison against fixtures must produce a correct
-  structural diff for a deliberately mismatched pair). This task must
-  explicitly resolve open finding **M-07** from the T-05 review (see below)
-  — this is not optional cleanup, it is part of this task's required scope.
-
-### M-07 — required design decision (carried forward from T-05 review)
-
-T-05's `compareCanonicalTypes` treats same-category Timestamp/Timestamp
-(and Time/Time) pairs as `Review` instead of `Compatible`, specifically to
-reproduce `Idea Prompt.md`'s DATETIME/TIMESTAMP_NTZ example. The T-05
-reviewer confirmed this also flags two **genuinely identical** native
-timestamp types (e.g. `DATETIME2` vs `DATETIME2` on both sides) as `Review`
-when they should be `Compatible`. This task must resolve that: when this
-task's schema-diff logic calls `compareCanonicalTypes` (from T-05,
-consumed as-is — do not modify T-05's file), it must special-case an
-identical native-type-string pair on both sides to short-circuit straight
-to `Compatible` severity, before falling through to
-`compareCanonicalTypes`'s category-level classification for genuinely
-different native types. Document this decision and the reasoning in the
-implementation report, and add a focused test proving identical native
-types on both sides produce `Compatible`, not `Review`.
+  COMPLETE and APPROVED. Profiling logic branches by canonical type category
+  (numeric metrics for Integer/Decimal/FloatingPoint, string metrics for
+  String, etc.), consuming T-05's `mapNativeType`.
+- **Required decisions or approvals:** `DESIGN-SPEC.md` names profiling as
+  Comparison Core scope. `Idea Prompt.md`'s "Layer 4" section and its
+  `STATUS` column worked example (distinct values, null percentage, most
+  common value, new/missing target values) is the shape this task's
+  comparison output must satisfy.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/schema-diff/**`
+- `packages/engine/src/comparison-core/profiling/**`
 
-Do not touch `packages/shared/**`, `packages/engine/src/connector-sdk/**`,
-or `packages/engine/src/comparison-core/type-mapping/**` (T-05's files —
-consume via its exported `mapNativeType`/`compareCanonicalTypes`, do not
-modify).
+Do not touch `packages/shared/**` except `ProfileDifference` in
+`packages/shared/src/result.ts` (you are the designated owner of refining
+that specific shape, per `IMPLEMENTATION-PLAN.md`'s T-07 row — same pattern
+T-06 used for `SchemaDifference`). Do not touch
+`packages/engine/src/connector-sdk/**` or
+`packages/engine/src/comparison-core/type-mapping/**` or
+`packages/engine/src/comparison-core/schema-diff/**` (T-05/T-06's files —
+consume via their exports, do not modify).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `ColumnDefinition[]` (T-02) | As defined in `packages/shared/src/types.ts` | `packages/shared` |
-| Consumed | `mapNativeType`, `compareCanonicalTypes` (T-05) | As defined in `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` | `packages/engine/src/comparison-core/type-mapping/**` |
-| Consumed | `Severity` union, `SchemaDifference` shape (T-02) | `SchemaDifference` is currently a thin alias of `DifferenceItem{severity,message}` (tracked as open finding M-04) — this task should refine `SchemaDifference` with the specific fields a schema diff needs (e.g. columnName, sourceType, targetType, kind of mismatch) while keeping `severity` compatible with the `Severity` union | `packages/shared/src/result.ts` |
-| Consumed | `FixtureConnector` + seed fixtures (T-04) | Used as test input: the `sqlserver-customer` fixture pair's documented schema mismatch (dropped `CreditLimit` column) is the primary acceptance-criterion-1 test case | `packages/engine/src/connector-sdk/fixture/**`, `packages/engine/fixtures/**` |
-| Produced | `compareSchemas(source: ColumnDefinition[], target: ColumnDefinition[], expectations?: SchemaExpectations): SchemaDifference[]` | Compares column count, name, order, native+normalized type (via T-05), length, precision, scale, nullability. Each finding carries a severity (Pass/Informational/Warning/Failure/Error per `DESIGN-SPEC.md`'s severity model). A missing-target-column defaults to `Failure` severity per `Idea Prompt.md` section 12's example, unless overridden by `expectations` | Consumed by T-09 (orchestration planner) |
+| Consumed | `ColumnDefinition`, `DataPlatformConnector.executeQuery` (T-02) | As defined in `packages/shared/src` | `packages/shared` |
+| Consumed | `mapNativeType` (T-05) | Used to decide which metric family applies to a column (numeric vs string vs date vs boolean) | `packages/engine/src/comparison-core/type-mapping/type-mapping.ts` |
+| Consumed | `FixtureConnector` + seed fixtures (T-04) | Test input: profile a fixture column with known null/distinct counts (e.g. `sqlserver-customer`'s duplicated/differing rows) and assert the computed profile matches hand-verified expected counts | `packages/engine/src/connector-sdk/fixture/**` |
+| Produced | `profileColumn(connector: DataPlatformConnector, column: ColumnDefinition, options?: ProfileOptions): Promise<ColumnProfile>` | General metrics (row count, populated count, null count/percentage, distinct count, duplicate count) for every column; branches into string metrics (empty/whitespace-only counts, min/max/avg length, case distribution) for String-category columns, numeric metrics (min/max/mean/median/stddev, zero/negative/positive counts) for Integer/Decimal/FloatingPoint-category columns, date/timestamp metrics (earliest/latest, future-date count, null count) for Date/Time/Timestamp-category columns, and boolean/categorical metrics (count/percentage by value, cardinality) for Boolean-category columns | Consumed by T-09 (orchestration planner) |
+| Produced | `compareProfiles(source: ColumnProfile, target: ColumnProfile): ProfileDifference[]` | Highlights meaningful changes (per `Idea Prompt.md`'s STATUS example: distinct-value-count change, null-percentage change, most-common-value change, new/missing categorical values) rather than a flat side-by-side dump. Each finding carries a severity | Consumed by T-09 |
 
 ## Prohibited changes
 
-- Do not implement profiling, volume, aggregate, or row-level comparison —
-  schema diff only.
-- Do not modify `packages/shared/**` directly — if refining
-  `SchemaDifference` requires a shape change, make the change and document
-  it clearly as this task's contribution to that shared type (this task IS
-  the designated owner resolving M-04 for the schema-diff shape
-  specifically, per `IMPLEMENTATION-PLAN.md`'s T-06 row), but do not touch
-  `ProfileDifference`/`AggregateDifference`/`RowDifference` — those remain
-  for T-07/T-13/T-14 to refine.
-- Do not modify `packages/engine/src/comparison-core/type-mapping/**`
-  (T-05's files).
+- Do not implement schema diff (T-06, done), volume/aggregate comparison
+  (T-13), or row-level comparison (T-14).
+- Only touch `ProfileDifference` in `packages/shared/src/result.ts` — leave
+  `SchemaDifference` (T-06, now a real shape), `AggregateDifference`,
+  `RowDifference`, and `Severity` untouched.
+- Do not modify `packages/engine/src/comparison-core/type-mapping/**` or
+  `packages/engine/src/comparison-core/schema-diff/**` (T-05/T-06's files).
+- Do not modify `packages/engine/src/connector-sdk/**`.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused Vitest test running `compareSchemas`
-  against the T-04 `sqlserver-customer` fixture pair's actual schemas,
-  asserting the dropped `CreditLimit` column produces a `Failure`-severity
-  (or equivalent) finding — this directly proves `DESIGN-SPEC.md`
-  acceptance criterion 1. A second test proves the M-07 resolution:
-  identical native types on both sides produce no finding (or a
-  `Compatible`/no-severity result), not a spurious `Review`.
+- **Test or check to add:** A focused Vitest test running `profileColumn`
+  against a column from the T-04 `sqlserver-customer` fixture with known,
+  hand-counted null/distinct values, asserting the computed profile matches
+  exactly. A second test running `compareProfiles` on two profiles with a
+  deliberately different most-common-value, asserting the comparison
+  surfaces that specific change (mirroring `Idea Prompt.md`'s STATUS
+  worked example structure) rather than just returning both profiles
+  unexamined.
 - **Command:** `npx vitest run packages/engine`
-- **Expected failure reason:** `compareSchemas` does not exist yet.
+- **Expected failure reason:** `profileColumn` and `compareProfiles` do not
+  exist yet.
 - **Captured output:** Exact command output and exit code, pasted into
   `IMPLEMENTATION-REPORT.md`.
 
@@ -87,14 +76,15 @@ modify).
 
 - **Focused command:** `npx vitest run packages/engine`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Focused command passes, including the fixture-based
-  acceptance-criterion-1 test and the M-07 resolution test; a matching-schema
-  case produces zero findings. Full command passes with exit code 0, no
-  regression in the existing 229 tests.
+- **Expected evidence:** Focused command passes: profile computation
+  matches hand-verified counts for at least one fixture column per
+  canonical type family (String, Integer/Decimal, Timestamp, Boolean);
+  profile comparison correctly surfaces meaningful changes. Full command
+  passes with exit code 0, no regression in the existing 240 tests.
 
 ## Handoff
 
 - **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-06 implementer subagent. The reviewer must verify against `DESIGN-SPEC.md` acceptance criterion 1 using the actual T-04 fixture mismatch, and must specifically confirm M-07 is genuinely resolved (identical native types no longer produce a spurious Review finding) without breaking the original DATETIME/TIMESTAMP_NTZ Review example from T-05.
+- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-07 implementer subagent. The reviewer must independently hand-verify at least one profile's counts against the actual fixture data, not trust the report's arithmetic.
 - **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-06-schema-diff`
+- **Commit or patch checkpoint:** Branch `task/T-07-profiling`
