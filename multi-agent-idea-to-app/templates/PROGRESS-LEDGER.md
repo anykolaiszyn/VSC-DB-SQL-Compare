@@ -17,7 +17,15 @@
 
 | ID | Severity | Source task or review | Owner | Required resolution | Status |
 | --- | --- | --- | --- | --- | --- |
-| [ID OR NONE] | [CRITICAL/IMPORTANT/MINOR] | [SOURCE] | [OWNER] | [ACTION] | [OPEN/RESOLVED] |
+| [ID OR NONE] | [CRITICAL/IMPORTANT/MINOR] | [SOURCE] | [OWNER] | [ACTION] | [OPEN/RESOLVED/OPEN (ACCEPTED, NON-BLOCKING; TRACKED FOR TASK ID)] |
+
+A Critical or Important finding is always OPEN or RESOLVED — never
+accepted as non-blocking; those severities gate task completion by
+definition. A Minor finding may legitimately stay open long-term as
+accepted, non-blocking debt: record it as `OPEN (accepted, non-blocking;
+tracked for [TASK ID])` with the specific future task that owns
+addressing it, rather than leaving it open with no owner or silently
+dropping it from the table once its originating task is complete.
 
 ## Blockers and dependencies
 

@@ -36,7 +36,15 @@ interfaces.
 4. Inspect the actual diff and surrounding code or artifacts; do not rely only
    on a summary.
 5. Run fresh, read-only verification where safe and record exact commands and
-   results.
+   results. Re-derive any nontrivial claim in the implementation report
+   independently rather than trusting it — redo hand-computed arithmetic
+   from raw inputs, and verify any cited requirement against the actual
+   source document rather than the report's characterization of it. For
+   anything security-, safety-, or credential-relevant, or anything the
+   implementation report discloses as an incomplete or accepted risk,
+   construct your own concrete adversarial input and confirm the actual
+   behavior yourself — do not accept a disclosed limitation at face value
+   without testing at least one case beyond what was disclosed.
 6. Write `REVIEW-REPORT.md` using `templates/REVIEW-REPORT.md`. Classify every
    issue as Critical, Important, or Minor with concrete evidence and a required
    resolution. Update `PROGRESS-LEDGER.md` with finding status.

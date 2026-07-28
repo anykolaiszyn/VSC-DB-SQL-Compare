@@ -3,6 +3,12 @@
 Use this kit when you want a technical product idea to become a reviewed,
 validated release candidate with durable evidence.
 
+0. **Starting fresh, or resuming on a new machine or IDE?** Run
+   [the bootstrap prompt](prompts/00-bootstrap-and-environment.md) first —
+   it confirms the runtimes, package manager, and any project-specific
+   local setup (including Claude Code subagent definitions, if you're
+   using [agents/](agents/)) are actually present before you act on
+   project state. It asks before installing or downloading anything.
 1. **Copy the templates** from `templates/` into your new project's root and
    keep the prompts and adapters available beside them.
 2. Fill `PROJECT-BRIEF.md` from [the project-brief template](templates/PROJECT-BRIEF.md):

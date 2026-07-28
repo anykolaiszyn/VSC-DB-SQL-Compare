@@ -26,6 +26,15 @@ this handbook explains their relationship instead of copying their text.
 
 ## Lifecycle
 
+Before any lifecycle phase — whether starting fresh or resuming an
+existing project on a new machine or in a new IDE — use
+[00-bootstrap-and-environment.md](prompts/00-bootstrap-and-environment.md)
+to confirm the runtimes, package manager, and any project-specific local
+configuration (including this kit's [Claude Code subagent
+definitions](agents/README.md), if applicable) are actually present before
+acting on project state. This is environment setup, not a lifecycle phase
+itself; it produces no control-file content.
+
 The lifecycle has eight phases. Each phase creates evidence that the next one
 must read. Move forward only when the recorded gate is satisfied.
 
@@ -49,7 +58,27 @@ must read. Move forward only when the recorded gate is satisfied.
    [IMPLEMENTATION-REPORT.md](templates/IMPLEMENTATION-REPORT.md). A different
    agent applies [05-task-review.md](prompts/05-task-review.md) and writes the
    [review report](templates/REVIEW-REPORT.md). Critical and Important findings
-   return to a new bounded task loop; they cannot be self-approved away.
+   return to a new bounded task loop; they cannot be self-approved away. A
+   Critical or Important finding on the *same* task returns to that task's
+   own loop (new red-state evidence reproducing the exact finding, on the
+   same branch, followed by a fresh independent re-review). A finding that
+   is self-contained, low-risk, and separable from the original task's
+   remaining scope — most often a Minor finding an owner decides to close
+   immediately rather than merely track — may instead become its own small
+   bounded task, named as a lettered suffix of the task whose review
+   produced it (e.g. `T-08a` following from a finding in `T-08`'s review),
+   with its own `TASK-BRIEF.md` scoped only to that finding's resolution.
+   Record either path explicitly in the ledger's task register and open
+   findings table; do not fold an unrelated fix into a later, unrelated
+   task's scope just because that task happens to touch nearby code. Once
+   a task is independently approved, merging it into the trunk branch is
+   not itself evidence that the trunk still works — install any
+   dependencies the merge introduced and re-run the full verification
+   command again on the merged trunk before marking the task complete in
+   the ledger. A clean merge can still produce a broken trunk (a missed
+   dependency, a conflict resolved the wrong way, a test that only passed
+   in isolation); catching that immediately, one task at a time, is far
+   cheaper than discovering it during Integration below.
 5. **Integration.** Use [06-integration.md](prompts/06-integration.md) to
    reconcile approved tasks with their actual interfaces and test combined
    behavior. An integration defect is not a reason for an unowned broad fix:
@@ -70,7 +99,11 @@ must read. Move forward only when the recorded gate is satisfied.
 8. **Handoff.** Use [08-handoff-and-resume.md](prompts/08-handoff-and-resume.md)
    whenever the owner, agent, tool, or session changes. Reconcile the working
    tree with the ledger, preserve uncommitted work, state the active task and
-   blockers, and stop when authority or state is unclear.
+   blockers, and stop when authority or state is unclear. When the handoff
+   also moves to a new machine or IDE, run
+   [00-bootstrap-and-environment.md](prompts/00-bootstrap-and-environment.md)
+   first — a clean ledger and working tree are not useful if the runtimes
+   and dependencies needed to act on them are not yet present.
 
 ## Agent roles
 
@@ -90,6 +123,9 @@ the Independent Reviewer of that same task.
 Use the adapter that matches the current surface:
 [Codex](adapters/CODEX.md), [Claude Code](adapters/CLAUDE-CODE.md),
 [Ollama](adapters/OLLAMA.md), or [a generic agent](adapters/GENERIC-AGENT.md).
+For Claude Code specifically, [agents/](agents/) has ready-to-copy subagent
+definitions for the Implementer and Reviewer roles above, plus a reference
+protocol for the Lead Orchestrator role — see [agents/README.md](agents/README.md).
 Adapters preserve the same control files and lifecycle; they do not grant
 authority that the plan or human owner did not record.
 

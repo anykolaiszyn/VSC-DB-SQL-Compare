@@ -4,6 +4,7 @@
   "required_files": [
     "HANDBOOK.md",
     "QUICKSTART.md",
+    "prompts/00-bootstrap-and-environment.md",
     "prompts/01-discovery.md",
     "prompts/02-design.md",
     "prompts/03-implementation-plan.md",
@@ -25,6 +26,10 @@
     "adapters/CLAUDE-CODE.md",
     "adapters/OLLAMA.md",
     "adapters/GENERIC-AGENT.md",
+    "agents/README.md",
+    "agents/implementer.md",
+    "agents/reviewer.md",
+    "agents/orchestrator.md",
     "examples/idea-to-app-example.md"
   ],
   "forbidden_markers": [

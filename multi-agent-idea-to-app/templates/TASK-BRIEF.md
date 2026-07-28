@@ -4,6 +4,15 @@
 
 [SINGLE, VERIFIABLE TASK OUTCOME]
 
+Note to whoever dispatches an implementer against this brief: when briefing
+the implementer, quote this document's load-bearing requirements verbatim
+rather than paraphrasing them. A paraphrase that loosens a requirement (for
+example, turning a required field into an offhand "nice to have if there's
+time") is a known failure mode — the implementer treats the paraphrase as
+authoritative and a real requirement quietly drops. If a dispatch prompt
+must summarize this brief for brevity, it should still point back to this
+file as the sole authority wherever the two could be read to disagree.
+
 ## Dependencies
 
 - **Required completed tasks:** [TASK IDS OR NONE]
