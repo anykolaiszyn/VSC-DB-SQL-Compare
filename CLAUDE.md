@@ -60,6 +60,12 @@ Three roles drive the Task Loop phase of this project's lifecycle:
   bugs during this project's build (see `PROGRESS-LEDGER.md`'s open
   findings for I-01/I-02 as worked examples of the review gate working).
 
+**Session maintenance:** right after reconciling a task (ledger updated,
+merged, pushed) is the safest point to run `/compact` — see
+`orchestrator.md` step 8 for why, and for the pre-compact check (confirm
+the ledger is genuinely current first). Subagent dispatches are unaffected
+either way since they run in isolated context.
+
 ## Project governance — read before making changes
 
 This repo is being built through the `multi-agent-idea-to-app` lifecycle
