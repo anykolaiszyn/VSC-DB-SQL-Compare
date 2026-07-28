@@ -207,9 +207,10 @@ immediately after the `npm run verify` run.
 
 ## Patch or commit identity
 
-- **Commit:** filled in immediately after this report is committed — see
-  `git log -1` on branch `task/T-08-definition-parser` for the exact hash.
-  This task does not self-approve, so no merge to `main` is performed here.
+- **Commit:** `a7de7bed916ac5ea83a00ecbd06b64636efc8dde` ("T-08: implement
+  Parity YAML definition schema and parser") on branch
+  `task/T-08-definition-parser`. This task does not self-approve, so no
+  merge to `main` is performed here.
 - **Branch:** `task/T-08-definition-parser`, branched from `main` at commit
   `a0dd1fd` (`T-07: reconcile ledger — task complete and approved`, `main`'s
   tip at branch-creation time, confirmed via `git merge-base main HEAD`).
