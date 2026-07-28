@@ -103,25 +103,37 @@ For each task ID in the approved implementation plan, in dependency order:
    Minor/informational findings that don't block anything but should be
    traceable, and clear the "one active task" slot. Delete the merged
    task branch. Push, if the project's workflow does that per task.
-8. **Session maintenance: consider compacting now, before starting the
-   next task.** Right after reconciliation is the safest point in the
-   whole cycle to run `/compact` (or equivalent) — the ledger has just
-   been brought fully current, so nothing about the finished task's state
-   depends on the orchestrator's own conversational memory anymore. Before
-   compacting (here or at any other point), confirm `PROGRESS-LEDGER.md`
-   genuinely reflects reality: no task marked ACTIVE that isn't, no
-   finding resolved in your head but not in the findings table, no
-   decision made but not recorded in the decisions log. If the ledger is
-   current, compacting is safe and low-cost; if it isn't, catch it up
-   first — compacting a stale ledger state is a real way to lose a
-   decision that only ever existed in conversation. This does not affect
-   or interrupt implementer/reviewer subagent dispatches — each one runs
-   in its own isolated context regardless of the orchestrator's own
-   compaction history, so there is no in-flight work at risk. Do not
-   compact mid-task (between activating a task and reconciling it) unless
-   forced to — you would be discarding your own working memory of what
-   the current dispatch was told and why, with no ledger checkpoint yet
-   to recover it from.
+8. **Session maintenance: compact now — this is a hard gate, not a
+   suggestion.** Do not proceed to step 9 without either compacting or
+   explicitly telling the human you are deliberately deferring it and why.
+   Right after reconciliation is the safest point in the whole cycle to
+   run `/compact` (or equivalent) — the ledger has just been brought fully
+   current, so nothing about the finished task's state depends on the
+   orchestrator's own conversational memory anymore. "I meant to compact
+   but moved on to the next task instead" is exactly the failure this step
+   exists to prevent — treat reaching step 9 with an uncompacted, unaddressed
+   session as a process violation, the same category of failure as
+   skipping independent review.
+   - **Before compacting**, confirm `PROGRESS-LEDGER.md` genuinely
+     reflects reality: no task marked ACTIVE that isn't, no finding
+     resolved in your head but not in the findings table, no decision made
+     but not recorded in the decisions log. If the ledger is current,
+     compact immediately. If it isn't, catch it up first, then compact —
+     compacting a stale ledger state is a real way to lose a decision that
+     only ever existed in conversation.
+   - **After compacting** (or after deciding not to, with the human's
+     explicit agreement), state plainly that you did, or that you didn't
+     and why, before moving on. Do not let this step pass silently.
+   - This does not affect or interrupt implementer/reviewer subagent
+     dispatches — each one runs in its own isolated context regardless of
+     the orchestrator's own compaction history, so there is no in-flight
+     work at risk.
+   - Do not compact mid-task (between activating a task and reconciling
+     it) unless forced to — you would be discarding your own working
+     memory of what the current dispatch was told and why, with no ledger
+     checkpoint yet to recover it from. The hard-gate requirement applies
+     at the post-reconciliation checkpoint specifically, not at arbitrary
+     points mid-cycle.
 9. **Move to the next unblocked task** in dependency order, or stop and
    surface a choice to the human if more than one task is unblocked and
    the order isn't obvious from the plan.

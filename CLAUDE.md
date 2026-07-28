@@ -94,11 +94,14 @@ Three roles drive the Task Loop phase of this project's lifecycle:
   bugs during this project's build (see `PROGRESS-LEDGER.md`'s open
   findings for I-01/I-02 as worked examples of the review gate working).
 
-**Session maintenance:** right after reconciling a task (ledger updated,
-merged, pushed) is the safest point to run `/compact` — see
-`orchestrator.md` step 8 for why, and for the pre-compact check (confirm
-the ledger is genuinely current first). Subagent dispatches are unaffected
-either way since they run in isolated context.
+**Session maintenance — hard gate, not optional:** right after reconciling
+a task (ledger updated, merged, pushed) and before moving to the next
+task, `/compact` (or explicitly tell the human you're deliberately
+deferring it and why) — see `orchestrator.md` step 8. Reaching the next
+task with an uncompacted, unaddressed session is a process violation, not
+a missed nicety; treat it the same as skipping independent review.
+Subagent dispatches are unaffected either way since they run in isolated
+context.
 
 ## Project governance — read before making changes
 
