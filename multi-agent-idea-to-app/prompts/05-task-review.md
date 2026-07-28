@@ -47,7 +47,13 @@ interfaces.
    without testing at least one case beyond what was disclosed.
 6. Write `REVIEW-REPORT.md` using `templates/REVIEW-REPORT.md`. Classify every
    issue as Critical, Important, or Minor with concrete evidence and a required
-   resolution. Update `PROGRESS-LEDGER.md` with finding status.
+   resolution. Prefix each new finding's ID with the active task ID (e.g.
+   `T-10-01`, not a bare `M-01` or `R-01`) — a reviewer has no visibility
+   into every prior finding ID across the whole project's history, so a
+   scheme that only avoids collision by the reviewer remembering what's
+   already taken will eventually collide. A task-ID prefix is
+   collision-proof by construction instead. Update `PROGRESS-LEDGER.md`
+   with finding status.
 
 ## Produce
 

@@ -76,7 +76,11 @@ worth adversarially probing.
    resolution. Do not let a real Important-or-above finding get quietly
    downgraded into a footnote — if it would let a mutating statement
    through, leak a credential, produce a materially wrong result, or
-   violate an explicit brief requirement, it blocks approval.
+   violate an explicit brief requirement, it blocks approval. Prefix each
+   new finding's ID with the active task ID (e.g. `T-10-01`, not a bare
+   `M-01` or `R-01`) — you have no visibility into every finding ID used
+   elsewhere in the project's history, so a self-chosen short ID will
+   eventually collide with one already in `PROGRESS-LEDGER.md`.
 6. **Weigh severity against the project's own stated risk model where one
    exists** (e.g. a documented "defense in depth" framing where a gap is
    acceptable because a different control is primary) — but make that
