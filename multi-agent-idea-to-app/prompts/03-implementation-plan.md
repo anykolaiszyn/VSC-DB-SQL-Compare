@@ -25,6 +25,16 @@ the approved root `DESIGN-SPEC.md`, `PROJECT-BRIEF.md`, and
    criterion to a task.
 2. Split the work into small, independently reviewable tasks. Give every task
    exclusive file ownership and explicit consumed and produced interfaces.
+   A task is a good candidate to split further when two or more of these
+   are true at once: it introduces a new external dependency, it requires
+   authoring nontrivial new fixture or test data (not just a new test
+   case against existing fixtures), and it defines a new interface other
+   tasks will depend on. Any one of these alone is normal task weight; two
+   or more together tend to produce a task that is hard for a reviewer to
+   evaluate in one pass and hard for an implementer to keep genuinely
+   test-first throughout. Prefer separating "introduce the dependency and
+   its minimal wiring" from "author the fixture/test data that exercises
+   it" when both would otherwise land in one task.
 3. Define a focused red-state test or check, its expected failure, the smallest
    scoped change, focused green verification, full verification, and exact
    commands for every task.

@@ -61,7 +61,15 @@ must read. Move forward only when the recorded gate is satisfied.
    with its own `TASK-BRIEF.md` scoped only to that finding's resolution.
    Record either path explicitly in the ledger's task register and open
    findings table; do not fold an unrelated fix into a later, unrelated
-   task's scope just because that task happens to touch nearby code.
+   task's scope just because that task happens to touch nearby code. Once
+   a task is independently approved, merging it into the trunk branch is
+   not itself evidence that the trunk still works — install any
+   dependencies the merge introduced and re-run the full verification
+   command again on the merged trunk before marking the task complete in
+   the ledger. A clean merge can still produce a broken trunk (a missed
+   dependency, a conflict resolved the wrong way, a test that only passed
+   in isolation); catching that immediately, one task at a time, is far
+   cheaper than discovering it during Integration below.
 5. **Integration.** Use [06-integration.md](prompts/06-integration.md) to
    reconcile approved tasks with their actual interfaces and test combined
    behavior. An integration defect is not a reason for an unowned broad fix:
