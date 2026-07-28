@@ -110,6 +110,9 @@ the Independent Reviewer of that same task.
 Use the adapter that matches the current surface:
 [Codex](adapters/CODEX.md), [Claude Code](adapters/CLAUDE-CODE.md),
 [Ollama](adapters/OLLAMA.md), or [a generic agent](adapters/GENERIC-AGENT.md).
+For Claude Code specifically, [agents/](agents/) has ready-to-copy subagent
+definitions for the Implementer and Reviewer roles above, plus a reference
+protocol for the Lead Orchestrator role — see [agents/README.md](agents/README.md).
 Adapters preserve the same control files and lifecycle; they do not grant
 authority that the plan or human owner did not record.
 

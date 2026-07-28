@@ -25,6 +25,10 @@
     "adapters/CLAUDE-CODE.md",
     "adapters/OLLAMA.md",
     "adapters/GENERIC-AGENT.md",
+    "agents/README.md",
+    "agents/implementer.md",
+    "agents/reviewer.md",
+    "agents/orchestrator.md",
     "examples/idea-to-app-example.md"
   ],
   "forbidden_markers": [
