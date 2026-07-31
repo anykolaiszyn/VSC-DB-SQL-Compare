@@ -153,6 +153,28 @@ describe("compareRows", () => {
         { columnName: "sku", sourceValue: "SKU-B", targetValue: "SKU-C" },
       ]);
     });
+
+    // T-14-02 (REVIEW-REPORT.md, Minor): tolerance configured only via
+    // rules[column].numericTolerance (the standard NormalizationRule field,
+    // per Idea Prompt.md section 4 / definition.ts) must be honored without
+    // also requiring the caller to duplicate it into
+    // RowCompareOptions.numericTolerance.
+    it("falls back to rules[column].numericTolerance when options.numericTolerance has no entry for the column", () => {
+      const sourceRows = [[1, "Alice", 125.37]];
+      const targetRows = [[1, "Alice", 125.38]];
+
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns, rows: targetRows, rowCount: targetRows.length },
+        ["id"],
+        mapping,
+        { amount: { numericTolerance: { absolute: 0.01 } } }
+        // No `options` argument -- options.numericTolerance is entirely absent.
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("matching");
+    });
   });
 
   describe("Idea Prompt.md section 2 worked example: ORDER_ID = 1008924", () => {
@@ -194,6 +216,38 @@ describe("compareRows", () => {
       // Only CUSTOMER_NAME should have failed to reconcile -- STATUS,
       // ORDER_AMOUNT, and SHIP_DATE all match after normalization/tolerance
       // and must NOT appear in columnDifferences.
+      expect(result?.columnDifferences).toEqual([
+        { columnName: "CUSTOMER_NAME", sourceValue: "Acme Inc.", targetValue: "Acme, Inc." },
+      ]);
+    });
+
+    // T-14-01 (REVIEW-REPORT.md): the doc's own ORDER_AMOUNT row shows the
+    // literal decimal-string forms "125.3700" vs "125.37", not two already-
+    // equal parsed JS numbers. This case reproduces those literal strings
+    // to prove numeric-string coercion (row-level.ts's own
+    // coerceNumericTolerance helper) actually resolves them to "Match" via
+    // numericTolerance, rather than relying on `===` equality of identical
+    // parsed numbers to trivially pass.
+    const sourceRowsLiteralStrings = [[1008924, "Shipped", "125.3700", "2026-07-20 00:00:00", "Acme Inc."]];
+    const targetRowsLiteralStrings = [[1008924, "SHIPPED", "125.37", "2026-07-20", "Acme, Inc."]];
+
+    it("reports Match for ORDER_AMOUNT using the doc's literal decimal-string forms (125.3700 vs 125.37)", () => {
+      const results = compareRows(
+        { columns, rows: sourceRowsLiteralStrings, rowCount: 1 },
+        { columns, rows: targetRowsLiteralStrings, rowCount: 1 },
+        ["ORDER_ID"],
+        mapping,
+        rules,
+        { numericTolerance: { ORDER_AMOUNT: { absolute: 0.01 } } }
+      );
+
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      expect(result?.category).toBe("matched-key-differing-values");
+
+      // ORDER_AMOUNT must NOT appear in columnDifferences -- "125.3700" and
+      // "125.37" are the same numeric value within tolerance once coerced.
+      // Only CUSTOMER_NAME should differ.
       expect(result?.columnDifferences).toEqual([
         { columnName: "CUSTOMER_NAME", sourceValue: "Acme Inc.", targetValue: "Acme, Inc." },
       ]);

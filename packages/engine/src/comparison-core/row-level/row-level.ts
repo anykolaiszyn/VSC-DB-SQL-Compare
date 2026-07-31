@@ -14,13 +14,17 @@
 // For matched (non-duplicate) key pairs, each mapped column is compared
 // using T-12's `applyNormalization`/`valuesEqualWithinTolerance`
 // (packages/engine/src/comparison-core/normalization/normalization.ts,
-// consumed read-only per TASK-BRIEF.md), reproducing Idea Prompt.md's
-// ORDER_ID = 1008924 worked example: STATUS "Shipped" vs "SHIPPED" matches
-// after case-insensitive normalization; ORDER_AMOUNT 125.3700 vs 125.37
-// matches via numeric tolerance; SHIP_DATE "2026-07-20 00:00:00" vs
-// "2026-07-20" matches after day-truncation; CUSTOMER_NAME "Acme Inc." vs
-// "Acme, Inc." has no normalization rule configured for it and correctly
-// reports a difference.
+// consumed read-only per TASK-BRIEF.md), plus this file's own local
+// `coerceNumericString` helper (T-14-01, REVIEW-REPORT.md -- applied only
+// when a numeric tolerance is configured for the column, so it never
+// changes behavior for exact/normalized-string comparisons), reproducing
+// Idea Prompt.md's ORDER_ID = 1008924 worked example: STATUS "Shipped" vs
+// "SHIPPED" matches after case-insensitive normalization; ORDER_AMOUNT
+// "125.3700" vs "125.37" (the doc's own literal decimal-string forms)
+// matches via numeric-string coercion + numeric tolerance; SHIP_DATE
+// "2026-07-20 00:00:00" vs "2026-07-20" matches after day-truncation;
+// CUSTOMER_NAME "Acme Inc." vs "Acme, Inc." has no normalization rule
+// configured for it and correctly reports a difference.
 //
 // Interface shape, per TASK-BRIEF.md's Interfaces table ("RecordBatch ...
 // T-14 does not call a connector directly; it operates on already-fetched
@@ -44,7 +48,7 @@ import { applyNormalization, valuesEqualWithinTolerance } from "../normalization
 /**
  * Options controlling column-level exclusion and numeric tolerance.
  *
- * `numericTolerance` is declared locally (not sourced from
+ * `numericTolerance` is declared locally (not sourced exclusively from
  * `NormalizationRule.numericTolerance`) because `valuesEqualWithinTolerance`'s
  * tolerance argument (`{ absolute?: number; percentage?: number }`) is a
  * two-value comparison concern distinct from `NormalizationRule`'s
@@ -53,11 +57,20 @@ import { applyNormalization, valuesEqualWithinTolerance } from "../normalization
  * `numericTolerance` itself. Keying by target column name lets a caller
  * supply per-column tolerance without this task needing to touch T-08's
  * `definition.ts` or T-12's `normalization.ts`.
+ *
+ * T-14-02 (REVIEW-REPORT.md, Minor): `compareMatchedRow` now falls back to
+ * `rules[targetColumnName]?.numericTolerance` when this map has no entry
+ * for a column, so a caller who already configured tolerance via the
+ * standard `NormalizationRule.numericTolerance` field (the mechanism
+ * Idea Prompt.md section 4 and `definition.ts` document) is not forced to
+ * duplicate it here as well -- this field remains available for a caller
+ * that wants a tolerance used only for row-level comparison, distinct from
+ * whatever `rules` configures.
  */
 export interface RowCompareOptions {
   /** Target-side column names (matching `ColumnMappingEntry.target`) to exclude from comparison entirely -- Idea Prompt.md's "Ignored by rule" category, scoped per TASK-BRIEF.md to this minimal parameter rather than a full expression-based ignore-rule engine. */
   ignoreColumns?: string[];
-  /** Per-column numeric tolerance, keyed by target column name, passed through to `valuesEqualWithinTolerance`. */
+  /** Per-column numeric tolerance, keyed by target column name, passed through to `valuesEqualWithinTolerance`. Takes precedence over `rules[column].numericTolerance` when both are set; falls back to `rules[column].numericTolerance` when absent for a column -- see this interface's header comment (T-14-02). */
   numericTolerance?: Record<string, { absolute?: number; percentage?: number }>;
 }
 
@@ -100,12 +113,19 @@ interface IndexedRow {
  * (excluding anything in `options.ignoreColumns`) is normalized via
  * `applyNormalization` (using the rule in `rules[targetColumnName]`, if
  * any) and compared via `valuesEqualWithinTolerance` (using
- * `options.numericTolerance[targetColumnName]`, if any). If normalizing or
- * comparing a column throws, or a row is missing a value for a mapped
- * column entirely (column name not found for that side), the whole row is
- * classified `"unable-to-compare"` rather than letting the error propagate
- * -- this function never throws for row-shape or normalization-function
- * errors.
+ * `options.numericTolerance[targetColumnName]`, falling back to
+ * `rules[targetColumnName]?.numericTolerance` if absent -- T-14-02). When a
+ * numeric tolerance applies to a column, both sides' normalized values are
+ * additionally coerced from numeric-looking strings to numbers before the
+ * tolerance comparison (T-14-01) -- this reproduces Idea Prompt.md section
+ * 2's ORDER_ID = 1008924 example, where ORDER_AMOUNT is shown as decimal-
+ * string literals ("125.3700" vs "125.37") that must resolve to "Match" via
+ * tolerance, not merely two already-`===`-equal parsed numbers. If
+ * normalizing or comparing a column throws, or a row is missing a value for
+ * a mapped column entirely (column name not found for that side), the whole
+ * row is classified `"unable-to-compare"` rather than letting the error
+ * propagate -- this function never throws for row-shape or normalization-
+ * function errors.
  */
 export function compareRows(
   sourceRows: RowSet,
@@ -212,8 +232,25 @@ function compareMatchedRow(
       const sourceNormalized = rule ? applyNormalization(sourceRawValue, rule) : sourceRawValue;
       const targetNormalized = rule ? applyNormalization(targetRawValue, rule) : targetRawValue;
 
-      const tolerance = options.numericTolerance?.[targetColumnName];
-      const equal = valuesEqualWithinTolerance(sourceNormalized, targetNormalized, tolerance);
+      // T-14-01 (REVIEW-REPORT.md): coerce numeric-looking strings to
+      // numbers here, at the comparison step, before tolerance evaluation.
+      // Idea Prompt.md section 2's own ORDER_ID = 1008924 example represents
+      // ORDER_AMOUNT as decimal-string literals ("125.3700" vs "125.37"),
+      // not identical parsed JS numbers -- and `applyNormalization`
+      // (T-12's owned normalization.ts, not editable by this task per
+      // TASK-BRIEF.md) deliberately never coerces strings to numbers; its
+      // header comment documents numericTolerance as intentionally excluded
+      // from that function's responsibility, leaving tolerance evaluation
+      // (including any type coercion tolerance evaluation needs) to the
+      // caller. Coercing only when a numeric tolerance is actually
+      // configured for this column keeps this narrow and behavior-preserving
+      // for every other column: a column with no configured tolerance still
+      // falls through to `valuesEqualWithinTolerance`'s existing strict/
+      // exact-match semantics for strings.
+      const tolerance = options.numericTolerance?.[targetColumnName] ?? rule?.numericTolerance;
+      const sourceForComparison = tolerance ? coerceNumericString(sourceNormalized) : sourceNormalized;
+      const targetForComparison = tolerance ? coerceNumericString(targetNormalized) : targetNormalized;
+      const equal = valuesEqualWithinTolerance(sourceForComparison, targetForComparison, tolerance);
 
       if (!equal) {
         columnDifferences.push({
@@ -279,4 +316,28 @@ function resolveColumns(rowSet: RowSet, keys: string[], mapping: ColumnMappingEn
 
 function resolveRows(rowSet: RowSet): unknown[][] {
   return Array.isArray(rowSet) ? rowSet : rowSet.rows;
+}
+
+/**
+ * Coerces a numeric-looking string (e.g. "125.3700") to a JS number for
+ * tolerance comparison purposes only -- see the T-14-01 comment at this
+ * function's call site in `compareMatchedRow`. Only called when a numeric
+ * tolerance is configured for the column being compared, so this never
+ * changes behavior for columns compared by exact/normalized-string
+ * equality. Non-string values and strings that don't parse as a finite
+ * number pass through unchanged (letting `valuesEqualWithinTolerance`'s
+ * existing non-numeric-input handling apply, e.g. `null`/`undefined`/
+ * genuinely non-numeric text still fall through to `===` semantics rather
+ * than being silently coerced to `NaN` and always compared unequal).
+ */
+function coerceNumericString(value: unknown): unknown {
+  if (typeof value !== "string") {
+    return value;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return value;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : value;
 }
