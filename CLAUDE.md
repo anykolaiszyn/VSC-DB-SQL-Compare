@@ -97,7 +97,7 @@ Three roles drive the Task Loop phase of this project's lifecycle:
 **Session maintenance — hard gate, not optional:** right after reconciling
 a task (ledger updated, merged, pushed) and before moving to the next
 task, `/compact` (or explicitly tell the human you're deliberately
-deferring it and why) — see `orchestrator.md` step 8. Reaching the next
+deferring it and why) — see `orchestrator.md` step 9. Reaching the next
 task with an uncompacted, unaddressed session is a process violation, not
 a missed nicety; treat it the same as skipping independent review.
 Subagent dispatches are unaffected either way since they run in isolated
