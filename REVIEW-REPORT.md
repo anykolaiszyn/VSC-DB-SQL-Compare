@@ -1,29 +1,135 @@
-# ParityLens — Review Report T-13
+# ParityLens — Review Report T-14 (Round 2 — follow-up fix)
 
 ## Review independence statement
 
-This review was performed by a separate reviewer instance with no memory
-of implementing T-13. Findings below are based on direct inspection of the
-actual diff (`git diff main..task/T-13-volume-parity`), the current source
-of every changed file, `Idea Prompt.md` section 2, `IMPLEMENTATION-PLAN.md`'s
-T-13 row, `TASK-BRIEF.md`, and a fresh run of `npm run verify` performed by
-this reviewer. `IMPLEMENTATION-REPORT.md`'s claims were treated as
-assertions to verify, not evidence.
+This review was performed by a separate agent instance from whoever wrote
+the round-1 review (`f8a72d9`) or the round-2 follow-up fix (`bcde56a`).
+No memory of either exists in this session. Findings below are derived
+solely from reading the actual diff, re-deriving the round-1 finding from
+first principles, running `npm run verify` fresh myself, and constructing
+an independent adversarial test file (not reusing any fixture from
+`row-level.test.ts`) that was run and then deleted before this report was
+finalized — confirmed via `git status --porcelain` showing only the
+pre-existing, unrelated `package-lock.json` modification.
 
 ## Scope reviewed
 
-Branch `task/T-13-volume-parity`, commits `05eccb5` (activate), `59adc9f`
-(implement), `074e1ad` (record commit hash), on top of `main` at `6610ed0`.
+- Branch `task/T-14-row-level`, commit `bcde56a`, on top of `f8a72d9`
+  (round-1 review report, disposition CHANGES REQUIRED) on top of
+  `d1bb88b` (original implementation) on `main` at `17b7aaa`.
+- This round's diff (`git diff f8a72d9 bcde56a --stat`): exactly three
+  files — `IMPLEMENTATION-REPORT.md`,
+  `packages/engine/src/comparison-core/row-level/row-level.ts`,
+  `packages/engine/src/comparison-core/row-level/row-level.test.ts`.
+- Checked against `TASK-BRIEF.md` (sole authority, unchanged since round 1)
+  and round 1's `T-14-01`/`T-14-02`/`T-14-03` findings as the object of
+  this round's re-verification.
 
-Files changed (`git diff main..task/T-13-volume-parity --stat`):
+## Disposition of prior findings
 
-- `packages/engine/src/comparison-core/volume/volume.ts` (new)
-- `packages/engine/src/comparison-core/volume/volume.test.ts` (new)
-- `packages/shared/src/result.ts` (refines `AggregateDifference`)
-- `packages/shared/src/types.test.ts` (mechanical fix for the widened type)
-- `IMPLEMENTATION-REPORT.md`
+| ID | Round 1 severity | Round 2 disposition |
+| --- | --- | --- |
+| T-14-01 | Important (blocking) | **RESOLVED — independently confirmed** |
+| T-14-02 | Minor | **RESOLVED — independently confirmed** |
+| T-14-03 | Minor | Left open, as explicitly directed by round 1's own disposition ("no action required"/non-blocking, not re-flagged) |
 
-## Findings
+### T-14-01 — independent re-verification
+
+**Claimed fix:** a new local `coerceNumericString(value)` helper in
+`row-level.ts` (this task's own owned file) that converts a numeric-looking
+string to a JS number, applied to both sides' normalized values immediately
+before `valuesEqualWithinTolerance`, but *only* when a numeric tolerance
+resolves truthy for that column (`tolerance = options.numericTolerance?.[col] ?? rule?.numericTolerance`).
+
+**(a) `normalization.ts` genuinely untouched.** Ran
+`git diff main..task/T-14-row-level -- packages/engine/src/comparison-core/normalization/`
+myself: empty output. Also ran
+`git diff f8a72d9 bcde56a -- packages/engine/src/comparison-core/normalization/ packages/shared/ packages/engine/src/orchestration/ packages/engine/src/comparison-core/mapping/ packages/extension/`
+(the full set of prohibited-by-this-task paths): empty output. Confirmed —
+T-12's, T-08's, and T-09's/T-15's owned files are all untouched by this
+follow-up.
+
+**(b) Doc's literal string forms now resolve as a match.** I wrote a fresh,
+independent test file
+(`packages/engine/src/comparison-core/row-level/__review-t14-round2.test.ts`,
+deleted after use — see below) using my own column layout and mapping,
+not the implementer's fixture object, and fed `compareRows` the exact
+literal strings `"125.3700"` (source) vs `"125.37"` (target) with
+`numericTolerance: { absolute: 0.01 }` configured for that column. Result:
+`category: "matching"`, one result, no `columnDifferences`. **Confirmed
+resolved** — this was the exact case round 1 found broken (previously
+`matched-key-differing-values` with `ORDER_AMOUNT` incorrectly reported as
+differing).
+
+**(c) Coercion is narrowly scoped — no false matches, no regressions.**
+Four additional independent probes, all passing:
+
+1. Two genuinely different numeric-looking strings (`"100.00"` vs
+   `"999.99"`) *with* tolerance configured (`absolute: 0.01`, far smaller
+   than the actual difference): still correctly reported as
+   `matched-key-differing-values` with `ORDER_AMOUNT` in
+   `columnDifferences`. Tolerance-aware coercion does not turn into an
+   unconditional fuzzy-string-match — the tolerance bound is still
+   enforced after coercion.
+2. Same literal strings (`"125.3700"` vs `"125.37"`) with **no** tolerance
+   configured anywhere (`{}` for both `rules` and `options`): correctly
+   reported as `matched-key-differing-values`, `ORDER_AMOUNT` differing.
+   Confirms the coercion is gated on `tolerance` being truthy, not applied
+   unconditionally to every numeric-looking string.
+3. Two non-numeric strings (`"abc"` vs `"xyz"`) with tolerance configured
+   for that column: correctly reported as differing, not coerced to `NaN`
+   and short-circuited into a false "equal" or false "unequal" via a
+   `NaN`-comparison artifact — `coerceNumericString`'s
+   `Number.isFinite(parsed)` guard correctly leaves non-numeric strings
+   as-is, and `valuesEqualWithinTolerance` falls through to `===` on the
+   original strings.
+4. `CUSTOMER_NAME`'s exact-string-difference case (`"Acme Inc."` vs
+   `"Acme, Inc."`, no `NormalizationRule` configured for that column) still
+   reports as a genuine `matched-key-differing-values` finding with exactly
+   that one column in `columnDifferences`, even in a scenario where
+   `ORDER_AMOUNT` on the same row *is* tolerance-configured and coerced —
+   confirming the coercion is applied per-column (gated on that column's
+   own resolved `tolerance`), not row-globally.
+
+All 7 of my independent probes (4 above plus 3 for T-14-02, below) passed
+on the first run with no code changes needed — see Verification section
+for the exact command and output.
+
+### T-14-02 — independent re-verification
+
+**Claimed fix:** `const tolerance = options.numericTolerance?.[col] ?? rule?.numericTolerance;`
+— `compareMatchedRow` now falls back to the standard
+`NormalizationRule.numericTolerance` field when `RowCompareOptions.numericTolerance`
+has no entry for that column, with `options` still taking precedence when
+both are configured.
+
+I constructed two independent probes:
+
+1. Tolerance supplied **only** via `rules[col].numericTolerance`
+   (`{ absolute: 0.5 }`), with `options` entirely `{}` (no
+   `numericTolerance` key at all) — source `100.0`, target `100.3` (typed
+   numbers, well within 0.5). Result: `category: "matching"`. **Confirmed
+   resolved** — this is exactly the double-configuration trap round 1
+   identified; it no longer requires the caller to duplicate the tolerance
+   into `RowCompareOptions`.
+2. Precedence check: `rules[col].numericTolerance = { absolute: 5 }`
+   (would tolerate the 0.3 difference) *and*
+   `options.numericTolerance.ORDER_AMOUNT = { absolute: 0.01 }` (would not)
+   configured simultaneously. Result: `category: "matched-key-differing-values"`
+   — confirms `options.numericTolerance` wins when both are present,
+   matching the documented precedence in the interface's header comment
+   and `IMPLEMENTATION-REPORT.md`'s claim.
+
+### T-14-03 — left open, as directed
+
+Per round 1's own disposition, this was explicitly non-blocking
+("no action required beyond what's already tracked"). The follow-up's own
+scope note confirms it was deliberately left untouched. I did not re-probe
+it since nothing in this round's diff touches `resolveColumns` or the
+bare-`unknown[][]` branch, and round 1 already recorded it as accepted,
+tracked debt rather than an open blocker. Not re-flagged.
+
+## New findings this round
 
 ### Critical
 
@@ -35,184 +141,95 @@ NONE.
 
 ### Minor
 
-| ID | Finding | Evidence | Resolution |
-| --- | --- | --- | --- |
-| T-13-01 | Tolerance precedence when both `percentage` and `absolute` are supplied is undocumented in `ParityChecks.rowCount.tolerance` (`definition.ts`) and `evaluateTolerance` (`volume.ts:148-157`) silently prefers `percentage`. The implementer disclosed this themselves in the report's "Assumptions" section rather than hiding it. | `volume.ts:148-153`: `if (tolerance?.percentage !== undefined) { ... } if (tolerance?.absolute !== undefined) { ... }` — no validation error, no doc-level statement of precedence anywhere `definition.ts` or its own tests assert on. No test in `volume.test.ts` exercises the both-supplied case. | Not blocking — this is genuinely a `definition.ts`-shape ambiguity T-13 could not resolve without editing T-08's owned file, which the brief prohibits. Track as a note for whichever task (T-08 revision or T-15) formalizes precedence or adds a validation rule against supplying both. Self-disclosed, not discovered by adversarial probing. |
+NONE new. (T-14-03 carried forward, unchanged, per above — not a new
+finding.)
+
+## Adversarial verification performed (independent fixtures, not reused from implementer)
+
+Constructed fresh in a throwaway file
+(`packages/engine/src/comparison-core/row-level/__review-t14-round2.test.ts`),
+using my own column ordering, mapping objects, and row values distinct
+from every fixture in `row-level.test.ts`. Run via
+`npx vitest run packages/engine/src/comparison-core/row-level/__review-t14-round2.test.ts`:
+**7/7 passed** on first run. File deleted immediately after; confirmed via
+`git status --porcelain` showing only the pre-existing unrelated
+`package-lock.json` modification (no residue).
+
+Covered: doc's literal string forms resolving to match (T-14-01b);
+tolerance-bound still enforced after coercion, not an unconditional fuzzy
+match (T-14-01c-1); no coercion at all when no tolerance is configured
+anywhere (T-14-01c-2); non-numeric strings not silently coerced or
+NaN-matched (T-14-01c-3); CUSTOMER_NAME's exact-difference case unaffected
+even on a row where a sibling column is tolerance-coerced (T-14-01c-4);
+`rules[col].numericTolerance`-only fallback honored (T-14-02-1);
+`options.numericTolerance` precedence over `rules[col].numericTolerance`
+when both configured (T-14-02-2).
+
+## Scope and ownership check
+
+- `git diff f8a72d9 bcde56a --stat`: exactly three files —
+  `IMPLEMENTATION-REPORT.md`,
+  `packages/engine/src/comparison-core/row-level/row-level.ts`,
+  `packages/engine/src/comparison-core/row-level/row-level.test.ts`. Both
+  source files are within T-14's declared ownership
+  (`packages/engine/src/comparison-core/row-level/**`).
+- No changes to `packages/shared/src/result.ts`,
+  `packages/engine/src/orchestration/**`,
+  `packages/engine/src/comparison-core/mapping/**`,
+  `packages/engine/src/comparison-core/normalization/**`, or
+  `packages/extension/**` — confirmed via targeted `git diff --stat`
+  against each path (all empty) and directly by re-reading
+  `normalization.ts` (unmodified from what round 1 already reviewed).
+- No new interface signature break: `compareRows`'s exported signature is
+  unchanged; `coerceNumericString` is a private, unexported helper.
+- No scope creep beyond the two findings this follow-up was dispatched to
+  fix — no hash-comparison, sampling, or ignore-rule-engine code
+  introduced; `grep`-equivalent inspection of the diff shows only the
+  `coerceNumericString` helper, its call site, and the `?? rule?.numericTolerance`
+  fallback, plus doc-comment updates and two new tests.
 
 ## Verification performed
 
-### Fresh `npm run verify` (this reviewer's own run, on `task/T-13-volume-parity`)
+| Check | Command | My result | Report's claim | Match? |
+| --- | --- | --- | --- | --- |
+| Full verify | `npm run verify` | `tsc -b --force` clean, `eslint .` clean, `vitest run`: **17 test files, 347 tests passed**, exit 0 | 17 test files, 347 tests passed, exit 0 | Yes |
+| Focused (row-level) | included in full run | `row-level.test.ts (8 tests)` all passed | 8/8 passed | Yes |
+| Independent adversarial probe | `npx vitest run .../__review-t14-round2.test.ts` (throwaway, deleted after) | 7/7 passed | N/A — not part of implementer's evidence | New evidence, not a re-check |
+| Residue check | `git status --porcelain` after deleting probe file | Only pre-existing unrelated `package-lock.json` diff | N/A | Clean |
 
-```
- Test Files  16 passed (16)
-      Tests  339 passed (339)
-```
-Exit code: `0`. Matches `IMPLEMENTATION-REPORT.md`'s claimed 16 files / 339
-tests / exit 0 exactly (334 pre-existing + 5 new volume tests, no
-regressions).
+Fresh run performed independently in this session (not reusing the
+implementer's captured output, and not reusing round 1's captured output
+either).
 
-### Independent re-derivation of the worked-example arithmetic (scrutinized hardest, per the brief's Handoff note)
+## Final approval status
 
-Computed independently (not copied from the report or the test file):
+**APPROVED**
 
-```
-difference = 12,402,991 - 12,405,128 = -2,137
-rate = -2,137 / 12,405,128 * 100 = -0.01722674687435712...%
-rounded to 4 decimal places = -0.0172%
-|rate| = 0.01722674... > tolerance 0.0100  ->  True  ->  FAIL
-```
+T-14-01 (the sole blocking finding from round 1) is genuinely resolved,
+confirmed via independent reproduction of the exact failing case (doc's
+literal `"125.3700"`/`"125.37"` string forms) plus four additional
+adversarial probes constructed fresh for this round, none of which reused
+the implementer's fixtures. The fix is correctly and narrowly scoped: it
+does not introduce false matches for genuinely different tolerance-bound
+values, does not activate at all when no tolerance is configured, does not
+mishandle non-numeric strings, and does not disturb `CUSTOMER_NAME`'s
+exact-difference behavior even on a row where a sibling column is
+coerced. `normalization.ts` (T-12's owned file) is confirmed untouched by
+direct diff, satisfying the brief's "do not touch" constraint and the
+round-1 review's own conditional guidance.
 
-This matches `Idea Prompt.md` section 2's worked example (`Source rows:
-12,405,128 / Target rows: 12,402,991 / Difference: -2,137 / Difference
-rate: -0.0172% / Tolerance: 0.0100% / Result: FAIL`) exactly, and matches
-the implementer's report and `volume.test.ts`'s
-`toBeCloseTo(-0.0172267, 6)` assertion. `difference = targetCount -
-sourceCount` (sign convention: target below source -> negative), matching
-the worked example's sign. No discrepancy found.
+T-14-02 is also genuinely resolved: tolerance supplied only via
+`rules[col].numericTolerance` is now honored without requiring duplication
+into `RowCompareOptions.numericTolerance`, and `options.numericTolerance`
+correctly retains precedence when both are configured.
 
-### `AggregateDifference` refinement additivity (scrutinized hardest, item b)
+T-14-03 remains open as non-blocking, tracked debt, per round 1's own
+disposition — not re-flagged, not re-litigated.
 
-`git diff main..task/T-13-volume-parity -- packages/shared/src/result.ts`
-shows only the `AggregateDifference` hunk changed — replacing `export type
-AggregateDifference = DifferenceItem;` with a full interface extending
-`DifferenceItem` (`sourceCount`, `targetCount`, `difference`,
-`differenceRate`, optional `tolerance`). `SchemaDifference`,
-`ProfileDifference`, and `RowDifference` do not appear anywhere in the
-diff hunk — confirmed byte-for-byte unchanged by inspecting the diff
-context lines directly (the `RowDifference` placeholder line immediately
-following `AggregateDifference` in the file is present in the diff only as
-unchanged trailing context). This is a purely additive, non-breaking
-refinement consistent with the pattern `SchemaDifference` (T-06) and
-`ProfileDifference` (T-07) established.
+No new Critical, Important, or Minor findings were identified in this
+round. Scope is confirmed limited to `row-level.ts`/`row-level.test.ts`/
+`IMPLEMENTATION-REPORT.md`, all within T-14's declared ownership. Fresh
+`npm run verify` matches the implementer's claimed 347/347 tests, exit 0,
+exactly.
 
-The only other file touched as a consequence is
-`packages/shared/src/types.test.ts`, where one pre-existing test literal
-gained four new required numeric fields to satisfy the now-widened
-interface (`TS2739` would otherwise fire). This is a minimal, mechanically
-forced consequence of the authorized `result.ts` change, not scope
-expansion — no assertions were altered, only the object literal's shape.
-
-### Scope-creep check (scrutinized hardest, item c)
-
-Searched `volume.ts` and `volume.test.ts` for any distinct-key-count,
-duplicate-key-count, null-key-count, count-by-partition/date/segment, or
-min/max-key logic. None found — all occurrences of "distinct" in
-`volume.ts` are inside doc comments explicitly listing what was *excluded*
-(lines 10-15, 48, 85, 88). `compareVolume`'s only executed query is
-`SELECT COUNT(*) AS row_count FROM <objectRef>` (`volume.ts:188`) — a
-single scalar total row count, nothing else. `IMPLEMENTATION-PLAN.md`'s
-literal T-13 row text does say "row count, distinct count, duplicate/null
-key counts, tolerance evaluation," which is broader than what was built —
-but `TASK-BRIEF.md`'s Prohibited Changes section explicitly quotes and
-narrows that same plan-row language down to "row count with tolerance
-evaluation only," and the brief is the authoritative scope document per
-`AGENTS.md`. The implementer followed the brief, not a loose reading of
-the plan row, and flagged the narrowing explicitly in both the code
-comment and the report. No scope creep found.
-
-### File-ownership / prohibited-changes check
-
-- `git diff main..task/T-13-volume-parity -- packages/engine/src/orchestration/` -> empty. No planner or definition.ts changes.
-- `git diff main..task/T-13-volume-parity -- packages/shared/src/connector.ts` -> empty. No new method added to `DataPlatformConnector`.
-- `git diff main..task/T-13-volume-parity -- packages/engine/src/comparison-core/profiling/profiling.ts` -> empty. T-07's owned file untouched.
-- `git diff main..task/T-13-volume-parity -- packages/extension/` -> empty. Engine-only, as required.
-- All changed files fall within `packages/engine/src/comparison-core/volume/**` (declared ownership), the one authorized `result.ts` refinement, and the mechanically-forced `types.test.ts` fix (called out explicitly in the report, consistent with the brief's anticipated-mechanical-edit allowance).
-
-### Connector-interaction pattern check (item 4)
-
-Compared `volume.ts`'s `resolveObjectReference`/`countRows` against
-`profiling.ts`'s `resolveObjectReference`/query-execution pattern
-(`profiling.ts:369-401`). Both independently reimplement the same shape:
-`quoteIdentifier` for `{ kind: "table" }`, a wrapped subquery for `{ kind:
-"query" }`, and iteration over `connector.executeQuery(...)`'s
-`AsyncIterable<RecordBatch>`. No shared import between the two files (as
-required, since `profiling.ts` is T-07's owned file) — `volume.ts`
-reimplements the pattern locally rather than importing it, exactly as the
-brief instructed ("model your query-execution pattern on it ... but do
-not import from or edit it"). `FixtureConnector.executeQuery` calls
-`assertReadOnlyStatement` internally (`fixture-connector.ts:188`), so
-`compareVolume`'s generated `SELECT COUNT(*) ...` SQL is routed through
-the existing read-only defense-in-depth control automatically — no
-mutating statement is possible through this path, and no new bypass was
-introduced.
-
-### Adversarial probing
-
-- Attempted to identify a case where `evaluateTolerance` could be tricked
-  into a false PASS: `Math.abs(differenceRate) > tolerance.percentage`
-  and `Math.abs(difference) > tolerance.absolute` are both strict
-  inequalities using `Math.abs`, so sign is neutralized correctly on both
-  branches (a target *higher* than source is treated symmetrically with
-  target *lower* than source) — verified against `differenceRate`'s
-  computed sign in the worked-example test (negative) and confirmed the
-  logic is sign-agnostic by inspection, no asymmetric bug found.
-- `differenceRate` div-by-zero guard (`sourceCount === 0 ? 0 : ...`,
-  `volume.ts:129`) was checked: if `sourceCount === 0` and
-  `targetCount > 0`, `differenceRate` reports `0` (misleading in
-  isolation) but `difference` is still nonzero, and `evaluateTolerance`'s
-  percentage branch would then compare `0` against the configured
-  tolerance and always pass — a real latent gap for an empty-source/
-  populated-target case under percentage tolerance specifically.
-  Investigated further: with no tolerance configured (the default/
-  no-tolerance path), `difference !== 0` still correctly fails, and
-  `severity` is independently gated on `difference === 0` (not
-  `differenceRate`), so `severity` is not silently masked to `"Pass"` —
-  only a percentage-tolerance FAIL could theoretically be missed in this
-  one edge case. Not classified Important because: (a) it requires a
-  specific unlikely configuration (percentage tolerance across an empty
-  source table) not central to the tool's primary use case, (b) `severity`
-  still correctly reports `"Informational"` rather than `"Pass"` when
-  `difference !== 0` even in this case (the finding is downgraded from
-  Failure to Informational, not silently eliminated — the user still sees
-  a nonzero-difference finding), and (c) this is an edge case within a
-  documented, brief-endorsed judgment call rather than an unflagged
-  omission. Recorded here as an observation for future hardening rather
-  than a blocking finding; no test currently exercises it.
-- Confirmed `buildMessage`'s tolerance-description branch is consistent
-  with `evaluateTolerance`'s precedence (percentage checked first in
-  both), so the human-readable message cannot describe a different
-  tolerance mode than the one actually evaluated.
-
-### Prior findings disposition
-
-No prior open finding in `PROGRESS-LEDGER.md` is scoped to this task (only
-`T-12-01` exists as a task-ID-prefixed finding at the time of this review;
-no `T-13-*` findings existed before this review). This review introduces
-one new Minor finding, `T-13-01`, and does not close any pre-existing
-finding.
-
-## Disposition of the omitted-tolerance judgment call (item 5)
-
-The brief explicitly instructed: "When `tolerance` is omitted, treat as
-exact-equality (any nonzero difference fails) — document this judgment
-call explicitly in the report ... do not guess silently."
-`evaluateTolerance`'s final branch (`volume.ts:155-156`, `return
-difference !== 0`) implements exactly this. It is documented in three
-places: the `compareVolume` doc comment (`volume.ts:81-100`), the
-implementation report's Judgment Calls section (#1), and exercised by a
-dedicated test (`volume.test.ts:108-119`, "treats an omitted tolerance as
-exact equality"). This satisfies the brief's requirement — the call is
-reasonable (documented as "the safer default for a parity tool" rather
-than silently defaulting to informational-only/never-fails) and is not a
-silent assumption.
-
-## Final disposition
-
-**APPROVED.**
-
-Rationale: fresh verification matches the implementer's claims exactly
-(339/339 tests, exit 0). The worked-example arithmetic was independently
-re-derived from raw inputs and matches both the idea doc and the
-implementation. `AggregateDifference`'s refinement in `result.ts` is
-confirmed purely additive with no changes to `SchemaDifference`,
-`ProfileDifference`, or `RowDifference`. No scope creep beyond row-count
-comparison was found in the actual diff, despite the plan row's broader
-literal wording — the brief's explicit narrowing was followed and
-documented. No edits exist to `orchestration/**`, `definition.ts`, or
-`connector.ts`; the connector-interaction pattern correctly mirrors
-`profiling.ts` without importing from it, and generated SQL is routed
-through the existing `assertReadOnlyStatement` control. One Minor finding
-(`T-13-01`, undocumented tolerance precedence when both `percentage` and
-`absolute` are supplied) is self-disclosed by the implementer, narrow in
-impact, and does not block approval — it is recorded for future-task
-follow-up (T-08 revision or T-15).
+**T-14 is approved and ready for reconciliation into `main`.**

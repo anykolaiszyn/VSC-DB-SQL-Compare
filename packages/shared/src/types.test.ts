@@ -231,7 +231,9 @@ describe("T-02 canonical shared types", () => {
           differenceRate: -10
         }
       ],
-      rowDifferences: [{ severity: "Pass", message: "no differences" }],
+      rowDifferences: [
+        { severity: "Pass", message: "no differences", category: "matching", keyValues: [1] }
+      ],
       execution: { sourceDurationMs: 1, targetDurationMs: 1, comparisonDurationMs: 1 }
     };
     expect(result.schemaDifferences[0]?.severity).toBe("Warning");
