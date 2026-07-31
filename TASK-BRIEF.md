@@ -1,90 +1,118 @@
-# ParityLens — Task Brief T-10
+# ParityLens — Task Brief T-11
 
 ## Objective
 
-Scaffold the VS Code extension host: activation entry point, command
-registration, the "DATA PARITY" activity-bar tree view (Connections /
-Comparisons / Recent Runs, per `Idea Prompt.md` section 6's sidebar
-sketch), and a `SecretStore` wrapper around VS Code's `SecretStorage` API
-for connection credentials. No comparison logic — this task wires the
-extension shell only.
+Implement the Phase-1-scope results webview and status bar summary: given a
+`ComparisonResult`, render its `schemaDifferences` and `profileDifferences`
+as tables in a VS Code webview panel, and show a `Parity: N passed | N
+warnings | N failed` summary in the status bar — using only the data passed
+into the rendering functions, with no direct connector or credential access
+from webview code.
+
+Note to whoever dispatches an implementer against this brief: when briefing
+the implementer, quote this document's load-bearing requirements verbatim
+rather than paraphrasing them. A paraphrase that loosens a requirement (for
+example, turning a required field into an offhand "nice to have if there's
+time") is a known failure mode — the implementer treats the paraphrase as
+authoritative and a real requirement quietly drops. If a dispatch prompt
+must summarize this brief for brevity, it should still point back to this
+file as the sole authority wherever the two could be read to disagree.
 
 ## Dependencies
 
-- **Required completed tasks:** T-01 (npm workspaces monorepo scaffold) —
-  COMPLETE and APPROVED. `packages/extension` already exists as a
-  placeholder package (`export const PLACEHOLDER = true`) from T-01.
-- **Required decisions or approvals:** `DESIGN-SPEC.md`'s "VS Code
-  Extension Layer" row (approved): activation, commands, tree views,
-  SecretStorage integration. `DESIGN-SPEC.md`'s security section
-  (approved): credentials resolved only through VS Code SecretStorage,
-  environment variables, or native cloud/OS credential mechanisms — never
-  inline in parity configuration. This task implements the SecretStorage
-  side of that for the extension layer specifically.
+- **Required completed tasks:** T-09 (orchestration planner, produces
+  `ComparisonResult`), T-10 (extension scaffold — activation, tree view,
+  `SecretStore`). Both COMPLETE/APPROVED per `PROGRESS-LEDGER.md`.
+- **Required decisions or approvals:** NONE beyond the already-approved
+  `IMPLEMENTATION-PLAN.md` row for T-11.
 
 ## Files owned
 
-- `packages/extension/src/activation/**`
-- `packages/extension/src/views/**`
-- `packages/extension/src/secrets/**`
+- `packages/extension/src/webview/**`
+- `packages/extension/src/statusbar/**`
 
-Do not touch `packages/extension/src/index.ts` beyond wiring it to call
-into the new `activation/**` entry point (record if you do this). Do not
-touch `packages/shared/**` or `packages/engine/**`.
+Do not touch `packages/extension/src/activation/activate.ts`,
+`packages/extension/src/views/**`, or `packages/extension/src/secrets/**` —
+those are T-10's owned files. If wiring the webview/status bar into
+activation requires a change to `activate.ts` (e.g. registering a new
+command or subscribing the status bar item), that is a **minimal,
+mechanically-necessary companion change**, not new scope — following the
+precedent set in `PROGRESS-LEDGER.md`'s T-04/T-06 decisions (2026-07-27):
+note it explicitly and separately in the implementation report rather than
+folding it in silently, and keep it to the smallest edit that makes T-11's
+owned code reachable from activation.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | VS Code Extension API (`vscode` module types) | Standard `vscode.ExtensionContext`, `vscode.TreeDataProvider`, `vscode.SecretStorage` — add `@types/vscode` as a devDependency of `packages/extension` if not already present, and document the target VS Code API version chosen (`engines.vscode` in `package.json`) | VS Code (external, not part of this monorepo) |
-| Produced | `activate(context: vscode.ExtensionContext)` | The extension's activation entry point: registers commands, instantiates the tree data provider(s), and constructs the `SecretStore` wrapper. Must be wired as the actual `activate` export `packages/extension`'s manifest points VS Code at (a minimal `package.json` `contributes`/`activationEvents`/`main` section may be required — add the minimum needed for activation to be testable, document what's deferred to T-11/T-16) | Consumed by the VS Code extension host at runtime; consumed by tests via direct invocation |
-| Produced | `ParityTreeDataProvider` (or similarly named) implementing `vscode.TreeDataProvider` | Renders the three top-level sections from `Idea Prompt.md` section 6: Connections, Comparisons, Recent Runs. For this task, an empty-state provider is sufficient (no connections/comparisons exist yet — that's later scope) as long as the tree view registers and renders the three section nodes | Consumed by VS Code's tree view UI; consumed by T-11 (extends with actual data) |
-| Produced | `SecretStore` wrapper class/module | Thin wrapper around `vscode.SecretStorage` (`context.secrets`) providing `get(key)`, `set(key, value)`, `delete(key)` for connection credentials. Must never write a credential to `context.globalState`, `context.workspaceState`, or any file — SecretStorage only | Consumed by future connector/connection-management tasks (not yet scheduled in the plan beyond this scaffold) |
+| Consumed | `ComparisonResult` (`packages/shared/src/result.ts`) | Full shape: `comparison`, `runId`, `status`, `summary: {passed, warnings, failed}`, `rowCounts`, `schemaDifferences: SchemaDifference[]`, `profileDifferences: ProfileDifference[]`, `aggregateDifferences`, `rowDifferences`, `execution`. T-11 renders `schemaDifferences` and `profileDifferences` only — `aggregateDifferences`/`rowDifferences` stay empty until T-13/T-14/T-15 exist; do not build UI that assumes they're populated. | T-02 (shape), T-09 (producer) |
+| Consumed | `SchemaDifference` fields | `severity`, `message`, `columnName`, `kind` (`missing-in-target` \| `missing-in-source` \| `type-mismatch` \| `length-mismatch` \| `precision-mismatch` \| `scale-mismatch` \| `nullability-mismatch` \| `order-mismatch`), optional `sourceType`/`targetType` | T-06 |
+| Consumed | `ProfileDifference` fields | `severity`, `message`, `columnName`, `metric` (`distinctCount` \| `nullPercentage` \| `mostCommonValue` \| `newTargetValue` \| `missingTargetValue`), optional `sourceValue`/`targetValue` (typed `unknown` — render via `String(value)`, do not assume a numeric or string type at compile time) | T-07 |
+| Produced | Webview panel render function | Given a `ComparisonResult`, produces webview HTML/content showing schema differences and profile differences each as a table (one row per `DifferenceItem`, columns include at minimum `severity`, `columnName`, and the kind/metric-specific detail). Must not read `vscode.workspace`, `SecretStorage`, or invoke any connector — the function's only input is the `ComparisonResult` object (plus whatever `vscode.WebviewPanel`/webview API surface is needed to actually display it). | T-16 (extends in Phase 2) |
+| Produced | Status bar item | Text format `Parity: {summary.passed} passed \| {summary.warnings} warnings \| {summary.failed} failed`, matching `Idea Prompt.md`'s "Status bar" worked example (`Parity: 18 passed | 2 warnings | 1 failed`) literally in format. Updates from a `ComparisonResult`'s `summary` field only. | Consumers: user-visible; no other task currently consumes this programmatically |
 
 ## Prohibited changes
 
-- Do not implement actual connection management, comparison definition
-  editing, results rendering, or CodeLens — those are later tasks (T-11,
-  T-16, and unscheduled connection-management work).
-- Do not modify `packages/shared/**` or `packages/engine/**`.
-- Do not write any credential-shaped value to `globalState`,
-  `workspaceState`, or any file under version control, even a test fixture
-  — SecretStorage is the only permitted destination, and a test proving
-  this must use a mocked/in-memory `SecretStorage`, never a real one that
-  could persist.
+- Do not modify `packages/shared/src/result.ts` — `SchemaDifference`,
+  `ProfileDifference`, `AggregateDifference`, and `RowDifference` are each
+  owned by a different, already-completed or future task (see
+  `CLAUDE.md`: "a refined difference shape is owned by the task that
+  created it"). T-11 only consumes these shapes, never edits them.
+- Do not implement `aggregateDifferences`/`rowDifferences` rendering as if
+  populated — those arrays are guaranteed empty until T-15 (Phase 2
+  planner) exists; building real UI against them now is out of scope and
+  would need rework once T-14 defines `RowDifference`'s real shape.
+- Do not add any connection-management, run-triggering, or comparison
+  YAML-editing UI — that is unscheduled/future scope, not T-11.
+- Do not touch `packages/engine/**` or `packages/shared/**` — T-11 is an
+  extension-only, presentation-layer task.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A focused test (using `@vscode/test-electron`
-  or an equivalent VS Code extension test harness — pick a reasonable
-  approach for the packages/extension workspace and document the choice)
-  asserting that `activate()` registers the tree view and that
-  `ParityTreeDataProvider.getChildren()` returns the three top-level
-  section nodes (Connections, Comparisons, Recent Runs).
-- **Command:** `npx vitest run packages/extension` (or the chosen test
-  harness's equivalent invocation — if a VS Code extension test harness
-  requires a different runner than Vitest, document why and what command
-  replaces it)
-- **Expected failure reason:** `activate`, `ParityTreeDataProvider`, and
-  `SecretStore` do not exist yet — only the T-01 placeholder does.
-- **Captured output:** Exact command output and exit code, pasted into
-  `IMPLEMENTATION-REPORT.md`.
+- **Test or check to add:** A webview-rendering test asserting that a
+  `SchemaDifference` item present in a `ComparisonResult` fixture produces
+  a corresponding table row (assert on rendered content, e.g. the column
+  name and severity both appear in the produced HTML/content string) — this
+  must fail because the webview module doesn't exist yet. A second focused
+  test for the status bar: given a `ComparisonResult` with
+  `summary: {passed: 18, warnings: 2, failed: 1}`, the status bar item's
+  text equals `Parity: 18 passed | 2 warnings | 1 failed` — must fail
+  because the status bar module doesn't exist yet.
+- **Command:** `npx vitest run packages/extension`
+- **Expected failure reason:** Module resolution failure — `webview/**` and
+  `statusbar/**` do not exist under `packages/extension/src/` yet.
+- **Captured output:** Paste the actual failing command output and exit
+  code into `IMPLEMENTATION-REPORT.md`, not a paraphrase.
 
 ## Green-state and full verification
 
-- **Focused command:** Same as above.
+- **Focused command:** `npx vitest run packages/extension`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Focused command passes: tree view registers with
-  the three section nodes, `SecretStore.set`/`get`/`delete` round-trip
-  correctly against a mocked `SecretStorage`, and a test confirms no
-  credential-shaped value is ever written to `globalState`/`workspaceState`.
-  Full command passes with exit code 0, no regression in the existing 283
-  tests.
+- **Expected evidence:** All new webview/status-bar tests pass; a
+  `ComparisonResult` fixture with at least one `SchemaDifference` and one
+  `ProfileDifference` (reuse or extend an existing engine-package fixture
+  result shape rather than inventing an unrelated one, if a convenient one
+  already exists — otherwise a small hand-built literal matching the real
+  interface is fine) renders both as table rows; the previously-passing
+  294 tests (per `PROGRESS-LEDGER.md`'s T-10 entry) still pass with no
+  regression; `npm run verify` exits 0.
 
 ## Handoff
 
-- **Implementation report location:** `IMPLEMENTATION-REPORT.md` (project root)
-- **Independent reviewer:** A separate Claude Code subagent instance, dispatched by the Lead Orchestrator, distinct from the T-10 implementer subagent. The reviewer must specifically confirm no credential-shaped data can reach `globalState`/`workspaceState`/a file, and that the tree view genuinely registers with VS Code's API contract rather than only satisfying a mocked test double.
-- **Review report location:** `REVIEW-REPORT.md` (project root)
-- **Commit or patch checkpoint:** Branch `task/T-10-extension-scaffold`
+- **Implementation report location:** `IMPLEMENTATION-REPORT.md`
+- **Independent reviewer:** `reviewer` subagent (separate instance from
+  whichever `implementer` subagent does this task)
+- **Review report location:** `REVIEW-REPORT.md`
+- **Commit or patch checkpoint:** Branch `task/T-11-results-webview-phase1`
+
+**Note to reviewer:** scrutinize hardest whether the webview-rendering
+function has any path that reaches `vscode.workspace`, `SecretStorage`, a
+connector, or any I/O beyond the `ComparisonResult` object and the webview
+display API itself — the brief's Interfaces table states "webview only
+renders data passed to it," and `IMPLEMENTATION-PLAN.md`'s T-11 review-gate
+column says the reviewer must confirm "no direct connector/credential
+access from webview code." Also verify any `activate.ts` edit is genuinely
+minimal (wiring only) and not a reimplementation of T-10's activation
+logic.
