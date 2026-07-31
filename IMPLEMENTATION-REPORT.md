@@ -1,129 +1,168 @@
-# ParityLens — Implementation Report T-12
+# ParityLens — Implementation Report T-13
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved; see Recommended next step)
-- **Objective:** Implement column mapping (automatic suggestion by exact/case-insensitive/snake-camel/ordinal matching, per `Idea Prompt.md` section 3) and normalization rules (trim, case, whitespace collapse, numeric tolerance, date truncation/timezone, null equivalents, per `Idea Prompt.md` section 4), per `TASK-BRIEF.md` T-12.
+- **Objective:** Per `TASK-BRIEF.md`'s Objective section: "Implement volume
+  parity per `Idea Prompt.md` section 2 ("Layer 3: Volume Parity") and
+  section 12 ("Severity and Tolerance Model"): compare total row count ...
+  between source and target, evaluate the difference against a configured
+  tolerance (exact equality / absolute / percentage / informational only),
+  and classify the result per the severity model." Scoped per
+  `IMPLEMENTATION-PLAN.md`'s T-13 row (quoted in the brief's Prohibited
+  Changes section) to "row count with tolerance evaluation only" —
+  distinct-key-count, duplicate-key-count, null-key-count, count-by-
+  partition/date/segment, and min/max-key are explicitly NOT implemented.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/engine/src/comparison-core/mapping/mapping.ts` | New | `suggestMappings(source, target): MappingSuggestion[]` — the brief's Interfaces-table Produced entry |
-| `packages/engine/src/comparison-core/mapping/mapping.test.ts` | New | Red/green evidence + worked-example proof for `suggestMappings` |
-| `packages/engine/src/comparison-core/normalization/normalization.ts` | New | `applyNormalization(value, rule): unknown` and `valuesEqualWithinTolerance(a, b, tolerance): boolean` — the brief's Interfaces-table Produced entry |
-| `packages/engine/src/comparison-core/normalization/normalization.test.ts` | New | Red/green evidence + worked-example proof for `applyNormalization`/`valuesEqualWithinTolerance`, plus a dedicated non-mutation ("purity") test group |
-
-No file outside `packages/engine/src/comparison-core/mapping/**` and `packages/engine/src/comparison-core/normalization/**` was touched. `packages/engine/src/orchestration/definition/definition.ts` (T-08's file, defining `NormalizationRule`/`ColumnMappingEntry`) was read only, never edited.
+| `packages/engine/src/comparison-core/volume/volume.ts` | New file. `compareVolume(source, target, sourceInput, targetInput, tolerance?)` implementation. | Brief's "Files owned": `packages/engine/src/comparison-core/volume/**`. |
+| `packages/engine/src/comparison-core/volume/volume.test.ts` | New file. Red-state-then-green-state test suite (5 tests). | Brief's Red-state evidence + Green-state sections. |
+| `packages/shared/src/result.ts` | Refined `AggregateDifference` from `export type AggregateDifference = DifferenceItem;` (placeholder alias, line 126) into a real interface extending `DifferenceItem` with `sourceCount`, `targetCount`, `difference`, `differenceRate`, `tolerance?`. | Brief's Interfaces table: "This is the ONE place `packages/shared/src/result.ts` may be edited by this task — refine `AggregateDifference` from the placeholder alias into a real interface." `SchemaDifference`/`ProfileDifference`/`RowDifference` were not touched. |
+| `packages/shared/src/types.test.ts` | Updated one existing test literal (`aggregateDifferences: [{ severity: "Failure", message: "sum(order_amount) differs" }]`) to satisfy the now-required `AggregateDifference` fields. | **Not in this task's declared file ownership** (`packages/engine/src/comparison-core/volume/**` only) — called out separately per the brief's own anticipated-mechanical-edit rule ("If satisfying the brief mechanically forces a small edit outside the literal file list ... make the minimal such edit, and call it out explicitly"). This was a pre-existing test literal in `packages/shared/src/types.test.ts` that constructed a `ComparisonResult` with an `aggregateDifferences` entry using only `severity`/`message`; after widening `AggregateDifference` (a change the brief explicitly authorized), TypeScript's structural check on that literal failed with `TS2739: Type '{ severity: "Failure"; message: string; }' is missing the following properties from type 'AggregateDifference': sourceCount, targetCount, difference, differenceRate`. The minimal fix was adding four numeric literal fields (`sourceCount: 100, targetCount: 90, difference: -10, differenceRate: -10`) to that one test object; no assertions or other test content were changed. |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:**
-  - `suggestMappings(source: ColumnDefinition[], target: ColumnDefinition[]): MappingSuggestion[]` proposes, for each source column, zero or one best-candidate target column using exactly four strategies in preference order — exact name, case-insensitive name, snake_case↔camelCase equivalence, ordinal position (last-resort fallback). Each `MappingSuggestion` reports `{source, target, strategy}` so a caller can show why a mapping was suggested. A target column already claimed by a higher-preference suggestion for another source column is not reused, so no target is suggested twice. Pure function — never mutates `source`/`target`, never touches a `ParityDefinition`/`ColumnMappingEntry`.
-  - `applyNormalization(value: unknown, rule: NormalizationRule): unknown` applies whichever of `trim`, `caseSensitive: false`, `collapseWhitespace`, `truncateTo`, `timezone`, `nullEquivalents` are present on `rule`, in that fixed order (null-equivalents check first — short-circuits to `null` — then string shaping, then date truncation/timezone). `numericTolerance` is deliberately **not** applied here (see judgment call below); it leaves numeric values unchanged and is evaluated separately via `valuesEqualWithinTolerance(a, b, tolerance)`.
-  - Non-string/non-listed-sentinel values (numbers, booleans, objects, arrays) pass through **unchanged, by reference**, never mutated — this is the brief's primary reviewer scrutiny target, and is proven by a dedicated "purity / non-mutation" test group asserting object/array/rule-argument identity and content are unchanged after a call.
+- **Behavior delivered:** `compareVolume` executes `SELECT COUNT(*) FROM <objectRef>` against both `source` and `target` connectors (concurrently, via `Promise.all`), computes `difference = targetCount - sourceCount` and `differenceRate = (difference / sourceCount) * 100` (0 when `sourceCount === 0`), evaluates the difference against an optional `tolerance: { percentage?: number; absolute?: number }`, and returns a `VolumeDifference` (= `AggregateDifference`) with `severity` set to `"Pass"` (difference is exactly 0), `"Failure"` (nonzero and outside tolerance), or `"Informational"` (nonzero but within tolerance).
 - **Interfaces consumed:**
-  - `ColumnDefinition[]` (`packages/shared/src/types.ts`, T-02) — read-only, full shape used (`name`, `ordinalPosition` for the ordinal fallback).
-  - `NormalizationRule` (`packages/engine/src/orchestration/definition/definition.ts`, T-08) — read-only import, every field consumed as documented in the brief.
+  - `DataPlatformConnector` (`packages/shared/src/connector.ts`) — `executeQuery`, `quoteIdentifier` only, per the brief's Interfaces table; no new method added to this shared interface.
+  - `QueryInput`, `ExecutionOptions` (`packages/shared/src/types.ts`) — read-only.
+  - `ParityChecks.rowCount.tolerance` shape (`packages/engine/src/orchestration/definition/definition.ts:85-91`) — consumed structurally only. `definition.ts` was not imported from or edited; `compareVolume` declares its own local `VolumeTolerance` interface (`{ percentage?: number; absolute?: number }`) that is structurally identical, so T-15 (which does depend on both `definition.ts` and this module when wiring `compareVolume` into the planner) can pass `ParityChecks.rowCount.tolerance` straight through without a cast.
 - **Interfaces produced:**
-  - `suggestMappings(source: ColumnDefinition[], target: ColumnDefinition[]): MappingSuggestion[]` and the `MappingSuggestion`/`MappingStrategy` types, from `packages/engine/src/comparison-core/mapping/mapping.ts`.
-  - `applyNormalization(value: unknown, rule: NormalizationRule): unknown` and `valuesEqualWithinTolerance(a: unknown, b: unknown, tolerance: {absolute?: number; percentage?: number} | undefined): boolean`, from `packages/engine/src/comparison-core/normalization/normalization.ts`.
+  - `compareVolume(source: DataPlatformConnector, target: DataPlatformConnector, sourceInput: QueryInput, targetInput: QueryInput, tolerance?: VolumeTolerance): Promise<VolumeDifference>` — exact exported signature in `packages/engine/src/comparison-core/volume/volume.ts`.
+  - `VolumeTolerance` — `{ percentage?: number; absolute?: number }`, exported from `volume.ts`.
+  - `VolumeDifference` — exported type alias for `AggregateDifference`, exported from `volume.ts` for call-site readability (per that file's doc comment).
+  - `AggregateDifference` (`packages/shared/src/result.ts`) — refined interface: `extends DifferenceItem { sourceCount: number; targetCount: number; difference: number; differenceRate: number; tolerance?: { percentage?: number; absolute?: number } }`.
+
+## Judgment calls (flagged per the brief's explicit instruction not to guess silently)
+
+1. **Omitted-tolerance semantics.** The brief's Interfaces table states: "When `tolerance` is omitted, treat as exact-equality (any nonzero difference fails) — document this judgment call explicitly in the report since the idea doc lists 'informational comparison only' as a distinct mode this type doesn't cleanly express." Implemented exactly as instructed: `evaluateTolerance` returns `difference !== 0` when neither `tolerance.percentage` nor `tolerance.absolute` is supplied. `ParityChecks.rowCount.tolerance` (`definition.ts:85-91`) has no field distinguishing "informational only" from "no tolerance configured" — both would arrive at `compareVolume` as `tolerance: undefined`. Rather than invent an out-of-band sentinel or edit `definition.ts` (T-08's owned file, out of scope), an omitted tolerance is treated as the strictest mode (exact equality), not the loosest (informational-only / never-fails), reasoned as the safer default for a parity tool. This is documented in `volume.ts`'s doc comment on `compareVolume` and flagged here as a residual gap: expressing "informational comparison only" as its own explicit mode would require a `definition.ts` change, which is outside T-13's file ownership.
+2. **Severity for a nonzero, within-tolerance difference.** Not explicitly specified by the brief. Chose `"Informational"` (not `"Warning"` or `"Pass"`) on the reasoning that a nonzero-but-tolerated difference is real signal worth surfacing (consistent with how T-07's `compareProfiles` uses `"Informational"` for a `distinctCount` change that isn't inherently a defect), but by definition satisfies the user's configured tolerance, so it should not read as `"Warning"`-level urgency. `"Pass"` is reserved for the difference being exactly 0.
+3. **Message format.** Not specified by the brief beyond "at minimum: `severity` and `message`." `buildMessage` produces a human-readable one-line summary including locale-formatted counts, the difference, the rate to 4 decimal places, the tolerance description, and an explicit `PASS`/`FAIL` outcome word — modeled for eventual webview/log display (T-16 consumes this).
+4. **`countRows`'s row-count extraction.** `executeQuery` batches are consumed generically (find `"row_count"` by column name, falling back to index 0) rather than assuming a fixed column position, mirroring defensive patterns already used elsewhere in the codebase (e.g. `profiling.ts`'s `runSingleRowQuery`/`runQuery` helpers, which this task could not import from since `profiling.ts` is T-07's owned file — the equivalent logic was reimplemented locally in `volume.ts`, same as `resolveObjectReference` was).
+
+## Explicitly out of scope (per Prohibited Changes)
+
+Per `TASK-BRIEF.md`'s Prohibited Changes section, this implementation does **not** include: distinct-key-count, duplicate-key-count, null-key-count, count-by-partition/date/segment, or min/max-key comparisons. Only total row count with tolerance evaluation was implemented. `compareVolume` was also **not** wired into `packages/engine/src/orchestration/planner/**` (explicitly T-15's job) and `packages/engine/src/orchestration/definition/definition.ts` was not modified (T-08's owned file, consumed read-only via a structurally-equivalent local type).
 
 ## Verification evidence
 
-| Check | Exact command | Result | Evidence location |
-| --- | --- | --- | --- |
-| Red state | `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization` | Exit 1. `Error: Failed to load url ./mapping.js ... Does the file exist?` and the same for `./normalization.js` — module resolution failure, exactly as the brief predicted ("neither directory exists yet"). `Test Files 2 failed (2)`, `Tests no tests`. | Captured transcript below |
-| Focused green state | `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization` | Exit 0. `Test Files 2 passed (2)`, `Tests 36 passed (36)` (12 mapping + 24 normalization) | Captured transcript below |
-| Full verification | `npm run verify` | Exit 0. `tsc -b --force` clean, `eslint .` clean, `vitest run`: `Test Files 15 passed (15)`, `Tests 334 passed (334)` | Captured transcript below |
+### Baseline (before any change)
 
-### Red-state transcript (abridged, real output)
+Command: `npm run verify` — confirmed green before starting: 15 test files, 334 tests passed, exit 0 (typecheck, lint, and test all passed in sequence).
+
+### Red state
+
+Command: `npx vitest run packages/engine/src/comparison-core/volume`
+
+Exit code: `1`
+
+Captured output (relevant excerpt):
 
 ```
-$ npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization
-...
- ❯ packages/engine/src/comparison-core/normalization/normalization.test.ts (0 test)
- ❯ packages/engine/src/comparison-core/mapping/mapping.test.ts (0 test)
+ ❯ packages/engine/src/comparison-core/volume/volume.test.ts (0 test)
 
-⎯⎯⎯⎯⎯⎯ Failed Suites 2 ⎯⎯⎯⎯⎯⎯⎯
+⎯⎯⎯⎯⎯⎯ Failed Suites 1 ⎯⎯⎯⎯⎯⎯⎯
 
- FAIL  packages/engine/src/comparison-core/mapping/mapping.test.ts [ packages/engine/src/comparison-core/mapping/mapping.test.ts ]
-Error: Failed to load url ./mapping.js (resolved id: ./mapping.js) in V:/Secret Projects/VSC-DB-SQL-Compare/packages/engine/src/comparison-core/mapping/mapping.test.ts. Does the file exist?
+ FAIL  packages/engine/src/comparison-core/volume/volume.test.ts [ packages/engine/src/comparison-core/volume/volume.test.ts ]
+Error: Failed to load url ./volume.js (resolved id: ./volume.js) in V:/Secret Projects/VSC-DB-SQL-Compare/packages/engine/src/comparison-core/volume/volume.test.ts. Does the file exist?
+ ❯ loadAndTransform ../../Secret%20Projects/VSC-DB-SQL-Compare/node_modules/vite/dist/node/chunks/dep-BK3b2jBa.js:51969:17
 
- FAIL  packages/engine/src/comparison-core/normalization/normalization.test.ts [ packages/engine/src/comparison-core/normalization/normalization.test.ts ]
-Error: Failed to load url ./normalization.js (resolved id: ./normalization.js) in V:/Secret Projects/VSC-DB-SQL-Compare/packages/engine/src/comparison-core/normalization/normalization.test.ts. Does the file exist?
-
- Test Files  2 failed (2)
+ Test Files  1 failed (1)
       Tests  no tests
 ```
-Exit code: `1` (confirmed via `echo EXIT:$?` immediately after the command).
 
-### Focused green-state transcript (real output)
+This matches the brief's predicted failure reason exactly: "Module resolution failure — the directory doesn't exist yet under `packages/engine/src/comparison-core/`."
 
-```
-$ npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization
- ✓ packages/engine/src/comparison-core/mapping/mapping.test.ts (12 tests) 6ms
- ✓ packages/engine/src/comparison-core/normalization/normalization.test.ts (24 tests) 27ms
+### Focused green state
 
- Test Files  2 passed (2)
-      Tests  36 passed (36)
-```
+Command: `npx vitest run packages/engine/src/comparison-core/volume`
 
-### Full verification transcript (real output, tail)
+Exit code: `0`
+
+Captured output:
 
 ```
-$ npm run verify
+ ✓ packages/engine/src/comparison-core/volume/volume.test.ts (5 tests) 129ms
+
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
+```
+
+The 5 tests, matching the brief's Green-state requirements:
+1. Reproduces `Idea Prompt.md` section 2's worked example literally (source 12,405,128 / target 12,402,991 / percentage tolerance 0.01 / `FAIL`).
+2. An in-tolerance percentage case (`PASS`/non-failing).
+3. An absolute-tolerance case, both within and exceeding tolerance.
+4. Omitted-tolerance exact-equality behavior (both a matching and a mismatched pair).
+5. An exactly-equal pair with a tolerance supplied, confirming `severity === "Pass"`.
+
+**Worked-example arithmetic, shown for independent verification** (per `AGENTS.md`'s "never fabricate ... arithmetic" rule and the brief's note to the reviewer):
+- `difference = 12,402,991 − 12,405,128 = −2,137` ✓ matches idea doc.
+- `differenceRate = −2,137 / 12,405,128 × 100 = −0.0172267468...%`. The idea doc displays this rounded to `-0.0172%`. The test asserts `toBeCloseTo(-0.0172267, 6)` against the unrounded computed value (not a re-assertion of the rounded display string), independently computed via `python3 -c "print((12402991-12405128)/12405128*100)"` → `-0.01722674687435712`, which rounds to `-0.0172%` at 4 decimal places, matching the idea doc.
+- `tolerance.percentage = 0.01` (i.e. 0.0100%). `abs(-0.01722674...) > 0.01` → `True` → `FAIL`. Matches idea doc's `Result: FAIL`.
+
+### Full verification
+
+Command: `npm run verify`
+
+Exit code: `0`
+
+Captured output (tail):
+
+```
+> paritylens@0.0.1 verify
+> npm run typecheck && npm run lint && npm run test
+
+> paritylens@0.0.1 typecheck
 > tsc -b --force
+
+> paritylens@0.0.1 lint
 > eslint .
+
+> paritylens@0.0.1 test
 > vitest run
- ✓ packages/engine/src/comparison-core/type-mapping/type-mapping.test.ts (69 tests) 16ms
+
+ ✓ packages/shared/src/types.test.ts (11 tests) 5ms
+ ✓ packages/engine/src/comparison-core/type-mapping/type-mapping.test.ts (69 tests) 14ms
  ✓ packages/engine/src/connector-sdk/safety/statement-safety.test.ts (109 tests) 28ms
  ✓ packages/engine/src/comparison-core/normalization/normalization.test.ts (24 tests) 38ms
- ✓ packages/shared/src/types.test.ts (11 tests) 7ms
  ✓ packages/engine/src/comparison-core/mapping/mapping.test.ts (12 tests) 10ms
  ✓ packages/extension/src/webview/resultsWebview.test.ts (2 tests) 4ms
- ✓ packages/extension/src/statusbar/parityStatusBar.test.ts (2 tests) 4ms
  ✓ packages/extension/src/secrets/secretStore.test.ts (3 tests) 9ms
- ✓ packages/extension/src/views/parityTreeDataProvider.test.ts (5 tests) 8ms
+ ✓ packages/extension/src/views/parityTreeDataProvider.test.ts (5 tests) 7ms
  ✓ packages/extension/src/activation/activate.test.ts (3 tests) 9ms
- ✓ packages/engine/src/orchestration/definition/definition.test.ts (30 tests) 56ms
- ✓ packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts (11 tests) 66ms
- ✓ packages/engine/src/comparison-core/profiling/profiling.test.ts (9 tests) 159ms
- ✓ packages/engine/src/orchestration/planner/planner.test.ts (4 tests) 181ms
- ✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests) 871ms
+ ✓ packages/engine/src/orchestration/definition/definition.test.ts (30 tests) 67ms
+ ✓ packages/extension/src/statusbar/parityStatusBar.test.ts (2 tests) 3ms
+ ✓ packages/engine/src/comparison-core/schema-diff/schema-diff.test.ts (11 tests) 59ms
+ ✓ packages/engine/src/comparison-core/profiling/profiling.test.ts (9 tests) 156ms
+ ✓ packages/engine/src/comparison-core/volume/volume.test.ts (5 tests) 152ms
+ ✓ packages/engine/src/orchestration/planner/planner.test.ts (4 tests) 212ms
+ ✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests) 905ms
 
- Test Files  15 passed (15)
-      Tests  334 passed (334)
+ Test Files  16 passed (16)
+      Tests  339 passed (339)
 ```
-Exit code: `0` (confirmed via `echo EXIT:$?` immediately after the command). 334 = 298 baseline (per `PROGRESS-LEDGER.md`'s T-11 entry) + 36 new (12 mapping + 24 normalization). No regression in any previously-passing test.
 
-Idea-doc worked examples exercised literally and passing:
-- Section 3: `customer_id → CUSTOMER_ID` via case-insensitive strategy; `cust_nm`, `created_dt`, `active_ind` each proven to NOT produce an exact/case-insensitive/snake-camel match (abbreviation matching correctly out of scope).
-- Section 4: `customer_name` (`trim` + `case_sensitive: false` + `collapse_whitespace: true` combined) → `"acme inc."`; `order_amount` (`numeric_tolerance.absolute: 0.01`) via `valuesEqualWithinTolerance`; `created_timestamp` (`timezone: {America/New_York → UTC}` + `truncate_to: second`); `cancellation_date` (`null_equivalents: ["1900-01-01", "9999-12-31"]`).
+334 previously-passing tests + 5 new volume tests = 339, no regressions. `npm run verify` (typecheck → lint → test, in that order) exits 0.
 
 ## Assumptions and risks
 
-- **Assumptions (judgment calls):**
-  1. **`applyNormalization` naming and tolerance split** — implemented exactly as the brief names it, with `numericTolerance` exposed as a separate `valuesEqualWithinTolerance(a, b, tolerance)` helper rather than folded into `applyNormalization`, per the brief's own explicit guidance ("document how your implementation exposes this, e.g. a separate `valuesEqualWithinTolerance` helper, since tolerance is inherently a two-value comparison, not a single-value transform"). Not treated as an open judgment call since the brief names this exact pattern.
-  2. **`applyNormalization`'s field-application order** is not specified by the brief beyond the section-4 worked examples (which only combine fields that don't interact). I chose: null-equivalents check first (short-circuits everything else), then trim → case-fold → collapse-whitespace (matching the order fields are listed in `NormalizationRule` and in the customer_name worked example), then date truncation/timezone last (only applies to string values, independent of the string-shaping fields — a value is never simultaneously a "string to trim" and a "date to truncate" in the worked examples, so order between the two groups doesn't affect any given rule's real-world use, but trim/case/whitespace running first means a date-shaped value with incidental leading/trailing whitespace would still parse correctly).
-  3. **`timezone` without `truncateTo`** — the brief's Interfaces table requires `timezone` conversion and separately requires `truncateTo`; I implemented them as independently applicable (either can appear alone), converting to UTC ISO-8601 as the normalized output format in both cases, since the brief doesn't specify a different output representation and UTC ISO-8601 is unambiguous and directly comparable regardless of the record's original timezone.
-  4. **Host-timezone independence (a correctness fix I caught myself during implementation, not a request from the brief):** my first draft used `Date.parse`/`new Date(string)` on timestamp strings with no explicit UTC/offset marker. This is a real bug class — ECMA-262 leaves that parse behavior host-local-timezone-dependent, and my first version's `created_timestamp` test only passed by coincidence because this development machine's local zone (`America/New_York`, confirmed via `Intl.DateTimeFormat().resolvedOptions().timeZone`) happened to equal the test's configured `timezone.source`. I rewrote date parsing (`parseAsUtcWallClock` in `normalization.ts`) to explicitly parse wall-clock components via regex and `Date.UTC`, making the parse step itself host-timezone-independent; only the explicit `rule.timezone` field now introduces any timezone semantics. I added a second worked-example test (`created_timestamp: DST-boundary sanity check`) asserting a January (EST, UTC-5) conversion differs by exactly one hour from the July (EDT, UTC-4) case, proving the fix resolves actual IANA DST rules via `Intl.DateTimeFormat` rather than a fixed offset or the host's own zone.
+- **Assumptions:**
+  - The literal-count test fixtures use DuckDB's `generate_series(0, count - 1)` table function (via `{ kind: "query" }` input) to produce inputs whose row count is exactly a specified literal (e.g. exactly 12,405,128 rows), rather than relying on the small seeded fixture tables (`sqlserver-customer` etc. have only a handful of rows each, per `profiling.test.ts`'s own comments) — this was necessary to reproduce the idea doc's specific literal numbers exactly. This exercises the identical `executeQuery`/`assertReadOnlyStatement`/DuckDB code path a real connector or seeded-table input would use; only the SQL source differs, not the code path under test.
+  - `ParityChecks.rowCount.tolerance`'s two fields (`percentage`, `absolute`) are assumed mutually exclusive in practice (per the brief's Interfaces table listing them as alternative tolerance modes); `evaluateTolerance` checks `percentage` first, falling back to `absolute` only if `percentage` is `undefined`. If a caller supplies both, `percentage` silently wins — this is not explicitly specified by the brief or `definition.ts`, and is a minor undocumented-precedence risk a reviewer may want to flag or a future task may want to make an explicit validation error.
 - **Risks or limitations:**
-  - `parseAsUtcWallClock`'s regex targets the plain `YYYY-MM-DD[THH:mm:ss[.sss]]` shape used throughout `Idea Prompt.md` section 4's examples and this task's tests. A value already carrying an explicit `Z`/offset suffix, or a genuinely different date format, falls back to `Date.parse` (host-local for the no-offset case, which cannot occur for a matched-with-offset string, so this fallback path is host-independent in practice). Values that don't match either shape return the original value unchanged (not a date, `truncateTo`/`timezone` don't apply) — this is intentional per the brief ("non-date-shaped strings pass through unaffected"), not a gap.
-  - `suggestMappings`'s snake-camel strategy normalizes by stripping `_`/`-` and lowercasing; it does not disambiguate cases where this normalization causes two structurally different names to collide (e.g. two source columns both normalizing to the same form would compete for the same target, and the first-processed source column wins under the "claimed targets" rule). Not exercised by a dedicated test since no such case appears in the brief's worked examples; flagging as a known untested edge case rather than omitting mention of it.
-  - `applyNormalization`'s `caseSensitive` field only case-folds strings (`toLowerCase()`); it does not perform full Unicode normalization (NFC/NFD) — `Idea Prompt.md` section 4 lists "Unicode normalization" and "remove punctuation"/"normalize line endings" as candidate string-normalization rules, but `NormalizationRule` (T-08's already-approved shape, consumed read-only) has no field for them, so they are out of scope for this task by construction, not an oversight.
+  - "Informational comparison only" (one of the four tolerance modes `Idea Prompt.md` section 2 names) has no explicit representation in `ParityChecks.rowCount.tolerance` and is not distinctly implementable without a `definition.ts` change — see Judgment call #1 above. This is a known, documented gap, not a silent omission.
+  - `compareVolume` is not wired into the planner (`runComparison`) — by design, per the brief (T-15's job). It cannot be exercised end-to-end through a `ParityDefinition` yet.
+  - Concurrent tolerance precedence (percentage-over-absolute when both supplied) is an undocumented assumption, noted above.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Commit:** `7c04db7` ("T-12: implement column mapping suggestion and normalization rules")
-- **Branch:** `task/T-12-mapping-normalization`
+- **Branch:** `task/T-13-volume-parity`
+- **Commit:** recorded after this report is written and staged — see the commit created immediately following this report (exact hash to be confirmed via `git log -1` after commit; this section is filled in accurately at commit time, not backdated).
 
 ## Recommended next step
 
-Independent review by the `reviewer` subagent (a separate instance from this implementer), per `TASK-BRIEF.md`'s Handoff section, focused especially on:
-1. The non-mutation ("purity") guarantee on `applyNormalization` — the brief's stated primary scrutiny target.
-2. Confirming `suggestMappings` genuinely produces no confident match for `cust_nm`, `created_dt`, `active_ind` against their idea-doc abbreviation-based targets.
-3. Independently checking the timezone/DST arithmetic in `normalization.ts` (`parseAsUtcWallClock` / `getUtcOffsetMs`) rather than trusting this report's worked-through math alone.
-
-This report reflects implementation-and-evidence completion only. It is not a claim of review, approval, or release readiness — those require the independent reviewer and, ultimately, human release approval per `AGENTS.md`.
+Independent review by the `reviewer` subagent (a separate instance from this implementer), per `TASK-BRIEF.md`'s Handoff section, writing findings to `REVIEW-REPORT.md`. Per the brief's "Note to reviewer," scrutinize: (a) the percentage-rate arithmetic against the worked example (re-derive independently rather than trusting this report's own arithmetic shown above), (b) whether `AggregateDifference`'s refinement in `result.ts` followed the same additive, non-breaking pattern as `SchemaDifference`/`ProfileDifference` with no changes to sibling shapes, and (c) whether this implementation stayed within row-count-only scope (no distinct/duplicate/null-key, partition, or min/max-key logic was added — confirm against the actual diff, not just this report's characterization). This implementer does not self-approve and recommends no status beyond "implemented with recorded evidence, pending independent review."

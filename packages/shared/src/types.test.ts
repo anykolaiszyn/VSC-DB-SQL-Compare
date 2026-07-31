@@ -221,7 +221,16 @@ describe("T-02 canonical shared types", () => {
       profileDifferences: [
         { severity: "Informational", message: "distinct count differs", columnName: "STATUS", metric: "distinctCount" }
       ],
-      aggregateDifferences: [{ severity: "Failure", message: "sum(order_amount) differs" }],
+      aggregateDifferences: [
+        {
+          severity: "Failure",
+          message: "sum(order_amount) differs",
+          sourceCount: 100,
+          targetCount: 90,
+          difference: -10,
+          differenceRate: -10
+        }
+      ],
       rowDifferences: [{ severity: "Pass", message: "no differences" }],
       execution: { sourceDurationMs: 1, targetDurationMs: 1, comparisonDurationMs: 1 }
     };
