@@ -1,325 +1,178 @@
-# ParityLens — Implementation Report T-14
+# ParityLens — Implementation Report T-15
 
 ## Status and objective
 
-- **Status:** COMPLETE (implementation and evidence only — not reviewed or approved; see Recommended next step). Updated after `REVIEW-REPORT.md`'s CHANGES REQUIRED disposition — see "Follow-up fix: T-14-01 / T-14-02 (REVIEW-REPORT.md)" below for what changed in this revision and why.
-- **Objective:** Implement row-level parity per `Idea Prompt.md` section 2
-  ("Layer 6: Row-Level Parity"): key-based matching between source and
-  target record sets, classifying every row into one of the eight
-  categories the idea doc names verbatim — Matching, Missing from source,
-  Missing from target, Duplicate in source, Duplicate in target, Matched
-  key with differing values, Unable to compare, Ignored by rule — and, for
-  matched rows, comparing each mapped column using T-12's normalization.
+- **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
+- **Objective:** Per `TASK-BRIEF.md`'s Objective section verbatim: "Extend
+  the Orchestration API's planner (`runComparison`, T-09's file) to execute
+  Phase-2 checks — volume parity (T-13's `compareVolume`) and row-level
+  parity (T-14's `compareRows`) — honoring `checks.rowCount.enabled` and
+  `checks.rowLevel.enabled` from the parsed `ParityDefinition`, and populate
+  `ComparisonResult.rowCounts`, `.aggregateDifferences`, and
+  `.rowDifferences` from real results instead of the empty/default
+  placeholder values T-09 left in place."
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/engine/src/comparison-core/row-level/row-level.ts` | New (this session's original commit), then revised (this follow-up) to add `coerceNumericString` and a `rules[column].numericTolerance` fallback inside `compareMatchedRow` — see the follow-up section below. `compareRows(sourceRows, targetRows, keys, mapping, rules?, options?)` and supporting helpers. | Files owned by this task per `TASK-BRIEF.md`. |
-| `packages/engine/src/comparison-core/row-level/row-level.test.ts` | New (original commit: six tests), then revised (this follow-up) to add two tests: the doc's literal `ORDER_AMOUNT` decimal-string forms (`"125.3700"` vs `"125.37"`), and a `rules[column].numericTolerance`-only fallback case. Eight tests total: classification categories, target-side-only duplicate, `ignoreColumns`, unable-to-compare, composite key, the literal `ORDER_ID = 1008924` worked example (typed-number form), the literal-string-decimal form of the same example, and the tolerance-fallback case. | Red-state evidence + green-state proof, per brief's Red-state/Green-state sections; follow-up tests are T-14-01/T-14-02's own red/green evidence. |
-| `packages/shared/src/result.ts` | Replaced the placeholder `export type RowDifference = DifferenceItem;` (old line 128) with a real `RowDifference` interface (extends `DifferenceItem`, adds `category: RowDifferenceCategory`, `keyValues: unknown[]`, `columnDifferences?: RowColumnDifference[]`), plus new `RowDifferenceCategory` and `RowColumnDifference` types. `SchemaDifference`/`ProfileDifference`/`AggregateDifference` are untouched (verified via `git diff` — see below). | Brief: "You must also refine `RowDifference` in `packages/shared/src/result.ts`... this is the ONE place in `result.ts` you may touch." |
-| `packages/shared/src/types.test.ts` | One-line edit to the existing `rowDifferences: [{ severity: "Pass", message: "no differences" }]` literal in the `"constructs difference-array items with a severity field"` test, adding the now-required `category`/`keyValues` fields. | **Flagged separately per Implementer instructions, not folded in silently:** this file is outside T-14's declared ownership (`packages/engine/src/comparison-core/row-level/**` only). However, widening `RowDifference` from a `DifferenceItem` alias to a real interface with required fields is explicitly what the brief asks for, and that change mechanically breaks this pre-existing literal at typecheck time (`tsc -b --force` failed with `TS2739: Type '{ severity: "Pass"; message: string; }' is missing the following properties from type 'RowDifference': category, keyValues`). This is the identical situation T-13 faced and resolved the same way — `git log --oneline -- packages/shared/src/types.test.ts` shows commit `59adc9f "T-13: implement volume parity (compareVolume, AggregateDifference refinement)"` previously edited this same test file's `aggregateDifferences` literal for the same reason. The edit is the minimal one possible: two new required fields added to one array literal, nothing else in the file touched. |
+| `packages/engine/src/orchestration/planner/planner.ts` | Added steps 5/6 to `runComparison`: when `checks.rowCount?.enabled === true`, calls T-13's `compareVolume` once per run (passing `definition.checks.rowCount.tolerance` straight through) and populates `rowCounts`/`aggregateDifferences`; when `checks.rowLevel?.enabled === true`, fetches full row data for both sides via a new private `fetchAllRows` helper (bare `SELECT *`, honoring `ParitySide.where` when present) and calls T-14's `compareRows` with `definition.keys`/`.columnMapping`/`.rules`, populating `rowDifferences`. Extended the existing `allFindings` array (consumed by the untouched `summarizeFindings`/`deriveStatus` functions) to include `aggregateDifferences` and `rowDifferences`. Updated the file's header comment to describe the new steps. T-09's Phase-1 behavior (connectivity short-circuit, schema/profile checks, `summarizeFindings`/`deriveStatus` logic itself) is otherwise byte-for-byte unchanged. | `TASK-BRIEF.md` Objective + Interfaces table |
+| `packages/engine/src/orchestration/planner/planner.test.ts` | Replaced the old "Phase 1 scope boundary" describe block (which asserted Phase-2 fields stayed empty even when enabled — now obsolete since T-15 makes them act) with four new tests under "Phase 2: row-count checks" and "Phase 2: row-level checks": (1) `checks.row_count.enabled: true` populates `rowCounts`/`aggregateDifferences` from real `compareVolume` results against the `sqlserver-customer` fixture (6 source rows, 7 target rows); (2) `checks.row_count.enabled: false` leaves those fields at the Phase-1 empty default; (3) `checks.row_level.enabled: true` populates `rowDifferences` (asserts a `missing-from-target` finding for the fixture's known missing `CustomerID 4`); (4) `checks.row_level.enabled: false` leaves `rowDifferences` empty. Added three new YAML fixtures (`ROW_COUNT_ONLY_YAML`, `ROW_LEVEL_ONLY_YAML`, `BOTH_DISABLED_YAML`) to isolate each check's enabled/disabled state independently, per the brief's red-state and green-state sections. Existing tests (acceptance-criterion-1, profile checks, connectivity short-circuit) left unmodified. | `TASK-BRIEF.md` Red-state evidence + Green-state and full verification sections |
+
+No file outside `packages/engine/src/orchestration/planner/**` was modified. `comparison-core/volume/**`, `comparison-core/row-level/**`, `comparison-core/mapping/**`, `comparison-core/normalization/**`, `orchestration/definition/definition.ts`, and all four `result.ts` difference shapes were consumed read-only via `import`, exactly as the brief's Files owned / Prohibited changes sections require.
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** `compareRows` classifies every row from a source
-  and target row set into exactly one of the eight `RowDifferenceCategory`
-  values. Composite keys are matched by concatenating all key-column values
-  into one tuple key (via `JSON.stringify`), not by matching on the first
-  key column only. A key value repeated more than once on one side marks
-  every row sharing that key on that side as `"duplicate-in-source"`/
-  `"duplicate-in-target"` (both sides independently — a key duplicated on
-  *both* sides produces duplicate findings for every row on both sides and
-  no `"matching"`/`"matched-key-differing-values"` finding for that key,
-  since no reliable 1:1 pairing exists). For a uniquely-matched key pair,
-  every mapped column (minus anything in `options.ignoreColumns`) is
-  normalized via T-12's `applyNormalization` (using `rules[targetColumn]`
-  if present) and compared via T-12's `valuesEqualWithinTolerance` (using
-  `options.numericTolerance[targetColumn]` if present); any column
-  difference after normalization produces `"matched-key-differing-values"`
-  with a `columnDifferences` array naming every differing column and its
-  normalized source/target values; zero differences produces `"matching"`.
-  If normalizing/comparing a column throws, or a mapped column name isn't
-  present on a row's side, the row is classified `"unable-to-compare"`
-  rather than letting the error escape `compareRows` — verified by test
-  (see below).
-
+- **Behavior delivered:** `runComparison` now executes volume and row-level
+  checks when their respective `checks.*.enabled` flags are `true`, and
+  leaves the corresponding result fields at T-09's original Phase-1
+  defaults when disabled — no query is issued to either connector for a
+  disabled check (verified by the four new tests; `ROW_LEVEL_ONLY_YAML`
+  disables row-count and its test explicitly asserts `rowCounts` stays
+  `{ source: 0, target: 0, difference: 0 }`, and vice versa for
+  `ROW_COUNT_ONLY_YAML` asserting `rowDifferences` stays `[]`). Volume and
+  row-level findings are folded into the same `allFindings` array that
+  feeds `summarizeFindings`/`deriveStatus`, so a Phase-2 finding can flip
+  `status` to `"failed"`/`"warning"` and increment `summary.failed`/
+  `summary.warnings` exactly as schema/profile findings already do — no
+  separate/duplicated status logic was written.
 - **Interfaces consumed:**
-  - `RecordBatch` (`packages/shared/src/types.ts`, read-only).
-  - `ColumnMappingEntry` / `keys: string[]` from `packages/engine/src/orchestration/definition/definition.ts` (T-08's owned file, imported read-only — not edited).
-  - `applyNormalization(value, rule)` / `valuesEqualWithinTolerance(a, b, tolerance)` from `packages/engine/src/comparison-core/normalization/normalization.ts` (T-12's owned file, imported read-only — not edited).
-
+  - `compareVolume(source, target, sourceInput, targetInput, tolerance?)`
+    from `packages/engine/src/comparison-core/volume/volume.ts` (T-13,
+    read-only import). Called with `{ kind: "table", object:
+    definition.source.object }` / target equivalent and
+    `definition.checks.rowCount?.tolerance` passed straight through,
+    matching the Interfaces table's exact instruction.
+  - `compareRows(sourceRows, targetRows, keys, mapping, rules?, options?)`
+    from `packages/engine/src/comparison-core/row-level/row-level.ts`
+    (T-14, read-only import). Called with `definition.keys`,
+    `definition.columnMapping`, and `definition.rules` after fetching both
+    sides' full row data.
+  - `ParityDefinition.checks.rowCount`/`.rowLevel`, `.keys`,
+    `.columnMapping`, `.rules`, `ParitySide.where` — all from
+    `packages/engine/src/orchestration/definition/definition.ts` (T-08,
+    read-only).
+  - `DataPlatformConnector.executeQuery`/`.quoteIdentifier` (existing
+    interface, unchanged) — used by the new `fetchAllRows` helper to issue
+    a bare `SELECT * FROM <object> [WHERE <where>]` and consume the
+    resulting `AsyncIterable<RecordBatch>` fully into one in-memory
+    `RecordBatch`.
 - **Interfaces produced:**
-  - `compareRows(sourceRows: RowSet, targetRows: RowSet, keys: string[], mapping: ColumnMappingEntry[], rules: Record<string, NormalizationRule> = {}, options: RowCompareOptions = {}): RowDifference[]`
-    where `RowSet = RecordBatch | unknown[][]` and
-    `RowCompareOptions = { ignoreColumns?: string[]; numericTolerance?: Record<string, { absolute?: number; percentage?: number }> }`.
-    **Judgment call, documented in the module's header comment:** for a
-    `RecordBatch` input, its own `columns` array is used directly. For a
-    bare `unknown[][]` input, this task had no independent column-name
-    source, so column names are resolved positionally as `keys` followed by
-    each mapping entry's source/target name, in that order — a caller using
-    the bare-array form must lay out row values in that same order. All six
-    tests in this task use the `RecordBatch` form (which has no such
-    ordering constraint, since `columns` is explicit), so this positional
-    convention is exercised only by the type signature, not by a test; it
-    is documented as a judgment call in `row-level.ts`'s header comment for
-    the reviewer to weigh.
-  - `RowDifference`, `RowDifferenceCategory`, `RowColumnDifference` (`packages/shared/src/result.ts`).
-  - `RowCompareOptions`, `RowSet` (`packages/engine/src/comparison-core/row-level/row-level.ts`).
+  - `ComparisonResult.rowCounts` — populated from
+    `VolumeDifference.{sourceCount, targetCount, difference}` when
+    row-count checking is enabled; unchanged `{ source: 0, target: 0,
+    difference: 0 }` default otherwise.
+  - `ComparisonResult.aggregateDifferences` — a single-element array
+    `[compareVolume's result]` when row-count checking is enabled; `[]`
+    otherwise.
+  - `ComparisonResult.rowDifferences` — `compareRows`'s full returned array
+    when row-level checking is enabled; `[]` otherwise.
+  - No shape in `packages/shared/src/result.ts` was modified — this task
+    consumes `AggregateDifference`/`RowDifference`/`SchemaDifference`/
+    `ProfileDifference` exactly as already defined.
+
+### T-13-01 (carried-forward finding) resolution
+
+Per the brief: "either resolve the ambiguity explicitly in how you call
+`compareVolume` (document which of `percentage`/`absolute` wins when a
+definition supplies both, matching whatever `compareVolume`'s own
+`evaluateTolerance` already does...) or flag it as still-open." I read
+`volume.ts`'s `evaluateTolerance` directly (lines 148–157): it checks
+`tolerance?.percentage !== undefined` first and returns based on that
+alone if set; `tolerance?.absolute` is only consulted when `percentage` is
+`undefined`. So **percentage takes precedence whenever both are
+configured**. I documented this precedence rule at the `compareVolume` call
+site in `planner.ts` (the comment directly around the call) rather than
+re-deriving or overriding it, and pass
+`definition.checks.rowCount.tolerance` straight through unchanged, exactly
+as the brief instructed. This resolves T-13-01 rather than leaving it open.
+
+### T-14-02 note
+
+Per the brief, T-14-02 was "already resolved inside `compareRows` itself —
+no action needed here beyond passing `rules` through so the fallback
+actually engages." `runComparison` passes `definition.rules` as
+`compareRows`'s `rules` argument, so the existing fallback
+(`options.numericTolerance?.[col] ?? rules[col]?.numericTolerance`, inside
+`row-level.ts`, unmodified by this task) is reachable end-to-end. No
+`RowCompareOptions.numericTolerance` value is passed from the planner in
+this task — the brief does not ask for a definition-level "row-level
+numeric tolerance override" concept distinct from `rules`, and inventing
+one would be scope expansion beyond "integration-only."
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0. 16 test files, 339 tests passed. | Captured at session start, before any edit. |
-| Red state | `npx vitest run packages/engine/src/comparison-core/row-level` (before creating any file under that directory) | `No test files found, exiting with code 0` — directory did not exist, matching the brief's predicted "module resolution failure" reason. After the test file was written (before `row-level.ts` existed): `Error: Failed to load url ./row-level.js ... Does the file exist?`, 1 failed suite, 0 tests run, non-zero exit. | Captured directly from command output during this session (not paraphrased). |
-| Focused green state | `npx vitest run packages/engine/src/comparison-core/row-level` | `Test Files 1 passed (1)`, `Tests 6 passed (6)`. Exit 0. All 6 tests pass, including the literal `ORDER_ID = 1008924` worked example (STATUS → matches via `caseSensitive: false`; ORDER_AMOUNT → matches via `numericTolerance: { absolute: 0.01 }`; SHIP_DATE → matches via `truncateTo: "day"`; CUSTOMER_NAME → reported in `columnDifferences`, i.e. a difference, with no rule configured for it) and one composite-key test (`["order_id", "line_number"]`, two key columns). | Captured directly from command output during this session. |
-| Full verification (original commit) | `npm run verify` | `tsc -b --force` — no errors. `eslint .` — no errors. `vitest run` — `Test Files 17 passed (17)`, `Tests 345 passed (345)`. Explicit exit-code check: `npm run verify > /tmp/verify_out.txt 2>&1; echo "EXIT CODE: $?"` printed `EXIT CODE: 0`. 345 = 339 previously-passing + 6 new; no regressions. | Captured directly from command output during this session. |
-
-See "Follow-up fix: T-14-01 / T-14-02" below for this revision's own red/green/full-verification evidence (347 tests).
+| Red state | `npx vitest run packages/engine/src/orchestration/planner` (after adding the new Phase-2 tests, before touching `planner.ts`) | 2 of 7 tests failed for the predicted reason: `expected { source: +0, target: +0, difference: +0 } to deeply equal { source: 6, target: 7, difference: 1 }` (row-count test) and `expected 0 to be greater than 0` on `result.rowDifferences.length` (row-level test); the other 5 tests (including the disabled-check tests, which pass trivially pre-change since nothing runs Phase 2 yet) passed. Test file result: `1 failed`, `2 failed | 5 passed (7)`. | Captured directly from command output during this session |
+| Focused green state | `npx vitest run packages/engine/src/orchestration/planner` (after the `planner.ts` change) | `Test Files 1 passed (1)`, `Tests 7 passed (7)`. | Captured directly from command output during this session |
+| Full verification | `npm run verify` | `tsc -b --force` clean, `eslint .` clean, `vitest run`: `Test Files 17 passed (17)`, `Tests 350 passed (350)` (347 baseline + 3 net new — 1 old test removed, 4 new tests added). Exit code 0 (confirmed via a separate `echo $?` check after a silent re-run of `npm run verify`). | Captured directly from command output during this session |
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - `RowDifference.keyValues` is populated for every category, including
-    `"missing-from-source"`/`"missing-from-target"` (the key value is known
-    from whichever side the row actually came from) — a judgment call since
-    the brief says "at minimum ... the row's key value(s)" without
-    specifying whether a missing-side row still reports a key.
-  - `columnDifferences` is `undefined` (not an empty array) for every
-    category except `"matched-key-differing-values"`, so a consumer can
-    branch on presence rather than length — mirrors the `sourceType`/
-    `targetType` optional-field pattern already used in `SchemaDifference`.
-  - Per-column numeric tolerance is exposed as a `RowCompareOptions.numericTolerance`
-    parameter (keyed by target column name), which now (as of this
-    follow-up) falls back to `rules[targetColumn]?.numericTolerance` when
-    absent — see "Follow-up fix: T-14-01 / T-14-02" below. `normalization.ts`'s
-    own header comment documents that `applyNormalization` intentionally
-    never applies `numericTolerance` itself (it's a two-value comparison
-    concern, evaluated separately via `valuesEqualWithinTolerance`), so
-    tolerance evaluation — including reading whichever of the two possible
-    sources supplies it — is this task's responsibility at the comparison
-    step. This is additive to `RowCompareOptions` (declared in this task's
-    own owned file), not a change to `NormalizationRule` itself.
-  - Severity defaults per category (`matching` → Pass, `missing-from-*`/
-    `matched-key-differing-values` → Failure, `duplicate-in-*` → Warning,
-    `unable-to-compare` → Error, `ignored-by-rule` → Skipped) are a
-    judgment call — the brief specifies the eight categories and the
-    `severity`/`message` inheritance from `DifferenceItem` but does not
-    prescribe severity-per-category. This mapping follows the existing
-    `Severity` model's apparent intent (Pass for agreement, Failure for a
-    genuine parity problem, Warning for a data-quality smell short of
-    outright failure, Error for an inability to even evaluate) but a
-    reviewer or T-15 (which wires this into the planner) may reasonably
-    want this configurable instead of fixed.
-
+  - Row-level check's row-fetch query is a bare `SELECT * FROM <object>
+    [WHERE <where>]`. The brief's Interfaces table says "build a plain
+    `SELECT` over `definition.source.object`/`.target.object`" without
+    specifying a column list — I used `SELECT *` rather than enumerating
+    `keys` + `columnMapping` columns explicitly, since `compareRows`
+    resolves columns from the returned `RecordBatch.columns` regardless of
+    which columns are present (see `row-level.ts`'s `resolveColumns`), and
+    `SELECT *` is simpler and matches "a plain SELECT" literally. This is a
+    judgment call — a narrower column list would also have satisfied the
+    interface, but `SELECT *` avoids needing to special-case derived
+    mapping entries (`source_expression`) that don't have a plain source
+    column name to select.
+  - Row cap for the row-level fetch: I introduced
+    `DEFAULT_ROW_LEVEL_MAX_ROWS = 1_000_000` (matching the order of
+    magnitude of `profiling.ts`'s own `DEFAULT_MAX_ROWS` pattern for
+    aggregate queries) and `DEFAULT_ROW_LEVEL_TIMEOUT_MS = 30_000`
+    (matching every other query-issuing module in this codebase). The
+    brief does not specify a row cap; T-14's own header comment says row
+    sets are "assume[d] to fit in memory," so a generous-but-bounded cap
+    consistent with the rest of the codebase's pattern seemed like the
+    smallest reasonable choice rather than an unbounded fetch.
+  - A `compareVolume`/`compareRows` failure (e.g. the underlying query
+    throwing) is allowed to propagate and reject the whole `runComparison`
+    call, the same as an unhandled exception anywhere else in this
+    function already would (schema/profile checks above have identical
+    behavior — neither is wrapped in try/catch). This is documented
+    in-line at the call site in `planner.ts`. I chose this over silently
+    catching and downgrading to an empty result because Layer-1
+    connectivity failures are the only case Idea Prompt.md's design
+    explicitly frames as "a basic execution status to report" rather than
+    an exception; a query failure past that point reads as a genuine run
+    failure, not a parity finding to report gracefully. The brief
+    explicitly flags this as unspecified and asks the reviewer to judge
+    whether the choice is reasonable — I'm flagging it here per that
+    instruction, not asserting it's the only correct choice.
 - **Risks or limitations:**
-  - The bare-`unknown[][]` `RowSet` branch's positional column-naming
-    convention (`keys` then mapping names, in order) is documented but
-    untested — every test in this task uses the `RecordBatch` form.
-    Flagging this explicitly since the brief calls both forms "your
-    choice" but expects the choice to be documented, not necessarily
-    exhaustively tested for both branches.
-  - Key values are tupled into a Map key via `JSON.stringify`. This is
-    correct for the primitive key types Idea Prompt.md's examples use
-    (numbers, strings) but would not distinguish, e.g., a key value of the
-    string `"1"` from the number `1` if such a mismatch ever occurred
-    across source/target key columns of different native types — not
-    exercised by any test here, and not something `Idea Prompt.md`'s
-    examples suggest is a real scenario, but worth a reviewer's attention
-    given this is a correctness-sensitive matching mechanism.
-  - No pagination/streaming — matches the brief's explicit scope
-    ("assume both sides fit in memory for now").
-
+  - `fetchAllRows` loads the entire result set into memory as a single
+    `RecordBatch` (no streaming/pagination) — this matches T-14's own
+    documented scope boundary ("assume both sides fit in memory for now"),
+    but is a real limitation for large tables; a future task would need to
+    address true streaming row-level comparison.
+  - `compareVolume`/`compareRows` failures currently propagate as thrown
+    exceptions from `runComparison` rather than being captured as a
+    `"failed"`-status `ComparisonResult` the way connectivity failures are.
+    Callers of `runComparison` must be prepared to catch/handle a rejected
+    promise for a Phase-2 query failure, which is a different failure mode
+    than a Phase-1 connectivity failure. Flagged for reviewer judgment per
+    the brief's explicit instruction on this point.
 - **Blockers:** None.
-
-## Follow-up fix: T-14-01 / T-14-02 (REVIEW-REPORT.md)
-
-`REVIEW-REPORT.md`'s disposition was **CHANGES REQUIRED**, blocked on one
-Important finding, `T-14-01`. This section documents the fix, per that
-review's own two suggested options.
-
-### T-14-01 (Important, blocking) — resolved via option (a)
-
-**Finding, quoted from `REVIEW-REPORT.md`:** the original `ORDER_AMOUNT`
-test supplied "the same parsed JS number `125.37` on both sides, which is
-`===`-equal by definition," so it never actually exercised numeric
-tolerance/coercion, and feeding `compareRows` the doc's literal
-decimal-string forms (`"125.3700"` vs `"125.37"`) produced a **false
-difference** rather than "Match."
-
-**Choice made: option (a)** — add genuine numeric-string coercion to the
-comparison path, plus a real test using the doc's literal string forms.
-Not option (b), because the review's own root-cause analysis is correct
-and the gap is real, not a documentation mismatch: `Idea Prompt.md`
-section 2's own worked-example table literally writes `125.3700` and
-`125.37` as distinct textual representations (not two instances of the
-same parsed number), and the brief's Interfaces table explicitly lists
-`ORDER_AMOUNT: 125.3700 vs 125.37 → "Match"` as one of the four columns
-to "reproduce ... as literal test cases." Declaring "values arrive
-already-typed as JS numbers" as the intended contract (option b) would
-require asserting that the doc's own literal example is out of scope for
-this task to actually satisfy — that is not a defensible reading of a
-brief that quotes the doc's exact numbers as a requirement.
-
-Per the review's own conditional in option (a) — "but if this requires
-editing `normalization.ts` ... do NOT edit it; instead do the coercion
-locally within `row-level.ts`" — the fix is entirely local to
-`row-level.ts` (this task's own owned file). `normalization.ts` (T-12's
-owned file) is untouched; confirmed via `git diff main..task/T-14-row-level
--- packages/engine/src/comparison-core/normalization/` returning no
-output.
-
-**What changed in `row-level.ts`:**
-
-- A new local helper, `coerceNumericString(value)`: converts a
-  numeric-looking string (via `Number(trimmed)` + `Number.isFinite`) to a
-  JS number; returns any non-string value, or a string that doesn't parse
-  as a finite number, unchanged.
-- In `compareMatchedRow`, immediately before calling
-  `valuesEqualWithinTolerance`: `sourceForComparison`/`targetForComparison`
-  are computed by applying `coerceNumericString` to the already-normalized
-  values — but **only when a numeric tolerance actually applies to this
-  column** (`tolerance` is truthy). This scoping is deliberate: a column
-  with no configured tolerance is unaffected by this change at all, so
-  every one of the six pre-existing tests (e.g. `CUSTOMER_NAME`'s "Acme
-  Inc." vs "Acme, Inc." exact-string-difference case, which must NOT be
-  coerced or fuzzy-matched) keeps its exact prior semantics. Only
-  `columnDifferences`' reported values continue to use the
-  *pre-coercion* `sourceNormalized`/`targetNormalized` values (not the
-  coerced numbers), so a difference report still shows the caller's
-  original representation, not an internal comparison artifact.
-
-### T-14-02 (Minor, non-blocking) — folded in
-
-Judgment call: **in scope**, not deferred to T-15. The suggested change
-(`compareRows` falling back to `rules[targetColumnName]?.numericTolerance`
-when `options.numericTolerance[targetColumnName]` is absent) is small,
-additive, entirely within `row-level.ts` (already-owned file, and the
-exact same function this follow-up is already editing for T-14-01), and
-directly adjacent to the T-14-01 fix — the `tolerance` variable T-14-01's
-coercion logic depends on is the same one this fallback affects. Fixing
-both in the same pass avoided touching the same three lines twice for two
-separate reviewer findings in the same function.
-
-**What changed:** `const tolerance = options.numericTolerance?.[targetColumnName] ?? rule?.numericTolerance;`
-— `options.numericTolerance` still takes precedence when both are
-configured (documented in `RowCompareOptions`'s header comment); a caller
-that only configured tolerance via the standard `NormalizationRule.numericTolerance`
-field is no longer forced to duplicate it into `RowCompareOptions.numericTolerance`
-as well.
-
-T-14-03 (untested bare-array `RowSet` branch) was left untouched, per the
-dispatch instruction ("accepted as non-blocking per the review").
-
-### Red-state evidence (T-14-01)
-
-**Command:** `npx vitest run packages/engine/src/comparison-core/row-level`
-(run immediately after adding the new literal-string-decimal test, before
-touching `row-level.ts`'s comparison logic):
-
-```
- ❯ row-level.test.ts (7 tests | 1 failed)
-   × compareRows > Idea Prompt.md section 2 worked example: ORDER_ID = 1008924 >
-     reports Match for ORDER_AMOUNT using the doc's literal decimal-string forms (125.3700 vs 125.37)
-     → expected [ { …(3) }, { …(3) } ] to deeply equal [ { …(3) } ]
-
-AssertionError: expected [ { …(3) }, { …(3) } ] to deeply equal [ { …(3) } ]
-- Expected
-+ Received
-  Array [
-    Object {
-+     "columnName": "ORDER_AMOUNT",
-+     "sourceValue": "125.3700",
-+     "targetValue": "125.37",
-+   },
-+   Object {
-      "columnName": "CUSTOMER_NAME",
-      "sourceValue": "Acme Inc.",
-      "targetValue": "Acme, Inc.",
-    },
-  ]
-
- Test Files  1 failed (1)
-      Tests  1 failed | 6 passed (7)
-```
-
-Failed for exactly the predicted reason: `ORDER_AMOUNT` surfaced as a
-false `columnDifferences` entry instead of being absent, confirming the
-review's reproduction before any fix was applied.
-
-### Green-state evidence (T-14-01 + T-14-02)
-
-**Command:** `npx vitest run packages/engine/src/comparison-core/row-level`
-(after the `coerceNumericString` fix and the `rules[column].numericTolerance`
-fallback, and after adding the T-14-02 fallback test):
-
-```
- ✓ packages/engine/src/comparison-core/row-level/row-level.test.ts (8 tests) 7ms
-
- Test Files  1 passed (1)
-      Tests  8 passed (8)
-```
-
-All 8 tests pass (the original 6, plus the T-14-01 literal-string-decimal
-test, plus the T-14-02 fallback test).
-
-### Full verification evidence (this follow-up)
-
-**Command:** `npm run verify`
-
-```
-> tsc -b --force        (no output — clean)
-> eslint .              (no output — clean)
-> vitest run
-
- Test Files  17 passed (17)
-      Tests  347 passed (347)
-```
-
-347 = 345 previously-passing (per the original `IMPLEMENTATION-REPORT.md`
-entry above) + 2 new tests (T-14-01's literal-string-decimal case,
-T-14-02's fallback case). No regressions — all 17 test files pass, `tsc`
-and `eslint` both clean, exit 0.
-
-### Scope check for this follow-up
-
-`git diff --stat` (working tree, this follow-up only, before commit)
-touches exactly two files:
-`packages/engine/src/comparison-core/row-level/row-level.ts` and
-`packages/engine/src/comparison-core/row-level/row-level.test.ts` — both
-within `TASK-BRIEF.md`'s declared ownership
-(`packages/engine/src/comparison-core/row-level/**`). `normalization.ts`,
-`result.ts`, and every other file are untouched by this follow-up. The
-pre-existing, unrelated `package-lock.json` modification already present
-in the working tree before this session began was left alone.
 
 ## Patch or commit identity
 
-- **Original commit:** `d1bb88b` (reviewed in `REVIEW-REPORT.md`).
-- **This follow-up's commit:** see `git log -1 --format=%H task/T-14-row-level`
-  after this report is committed (this report is included in that same
-  commit, per the Implementer process's step 7/8 ordering). Built on top
-  of `d1bb88b` and the review-report commit `f8a72d9`, on the same branch.
-- **Branch:** `task/T-14-row-level` (unchanged — no new branch created for
-  this follow-up, per dispatch instructions).
+- **Patch or commit:** `70e1fa29045269b2539454201818d3bca70fdbad` — "T-15: wire volume and row-level checks into runComparison (Phase 2)"
+- **Branch or workspace:** `task/T-15-orchestration-phase2`
 
 ## Recommended next step
 
-Independent review of this follow-up commit by the `reviewer` subagent (a
-separate instance from this implementer and, ideally, from whoever
-performed the original `REVIEW-REPORT.md` review, though the brief does
-not require a *different* reviewer for a follow-up on the same task) —
-specifically re-verify: (1) the doc's literal `"125.3700"`/`"125.37"`
-string forms now genuinely resolve to "Match" via
-`compareRows`, not merely via the new test's own assertions; (2) the
-`coerceNumericString` scoping (applied only when `tolerance` is truthy)
-does not silently change behavior for any column without a configured
-numeric tolerance — in particular, re-confirm `CUSTOMER_NAME`'s
-`"Acme Inc."` vs `"Acme, Inc."` still reports as a genuine difference,
-not a false match; (3) the `rules[column].numericTolerance` fallback does
-not change behavior when `options.numericTolerance` already has an entry
-for that column (precedence order); (4) `normalization.ts` is genuinely
-untouched by this follow-up. This report does not constitute review,
-approval, or a claim of release-readiness — those are reserved for the
-reviewer and the human release-approval gate respectively.
+Independent review by the `reviewer` subagent (a separate instance from
+this implementer), per `TASK-BRIEF.md`'s Handoff section — write
+`REVIEW-REPORT.md`. This report documents implementation-and-evidence
+scope only; it is not a claim of review or approval, and this task should
+not be marked complete/approved until that independent review has run,
+including the brief's explicitly-requested adversarial spy-connector probe
+of the disabled-check no-silent-execution behavior and the
+compareVolume/compareRows-failure-propagation judgment call.

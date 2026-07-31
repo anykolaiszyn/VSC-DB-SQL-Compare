@@ -14,9 +14,12 @@
 //   3. Connectivity-failure proof: an unregistered connection name in the
 //      registry short-circuits the run to a failed-status result without
 //      attempting schema/profile checks.
-//   4. Phase 2/3 scope-boundary proof: rowCounts/aggregateDifferences/
-//      rowDifferences remain empty/default even when checks.row_count and
-//      checks.row_level are enabled in the definition.
+//   4. T-15 Phase 2 proof: checks.row_count.enabled routes to T-13's
+//      compareVolume and populates rowCounts/aggregateDifferences from real
+//      results; checks.row_level.enabled routes to T-14's compareRows (after
+//      fetching full row data via executeQuery) and populates
+//      rowDifferences; disabling either check leaves its corresponding
+//      field(s) at the Phase-1 empty/default value -- no silent execution.
 import { describe, expect, it } from "vitest";
 import { parseDefinition } from "../definition/definition.js";
 import { FixtureConnector } from "../../connector-sdk/fixture/fixture-connector.js";
@@ -77,7 +80,7 @@ checks:
     enabled: true
 `;
 
-const PHASE2_FLAGS_YAML = `
+const ROW_COUNT_ONLY_YAML = `
 version: 1
 name: customer-migration-parity
 source:
@@ -90,11 +93,54 @@ keys:
   - CustomerID
 checks:
   schema:
-    enabled: true
+    enabled: false
   row_count:
     enabled: true
   row_level:
+    enabled: false
+`;
+
+const ROW_LEVEL_ONLY_YAML = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+column_mapping:
+  CustomerID: CustomerID
+  CustomerName: CustomerName
+checks:
+  schema:
+    enabled: false
+  row_count:
+    enabled: false
+  row_level:
     enabled: true
+`;
+
+const BOTH_DISABLED_YAML = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: false
+  row_count:
+    enabled: false
+  row_level:
+    enabled: false
 `;
 
 function fixtureRegistry(): ConnectorRegistry {
@@ -146,16 +192,52 @@ describe("runComparison", () => {
     });
   });
 
-  describe("Phase 1 scope boundary", () => {
-    it("leaves rowCounts/aggregateDifferences/rowDifferences empty/default even when checks.row_count and checks.row_level are enabled", async () => {
-      const definition = parseDefinition(PHASE2_FLAGS_YAML);
-      expect(definition.checks.rowCount?.enabled).toBe(true);
-      expect(definition.checks.rowLevel?.enabled).toBe(true);
+  describe("Phase 2: row-count checks", () => {
+    it("populates rowCounts and aggregateDifferences from compareVolume when checks.row_count.enabled is true", async () => {
+      const definition = parseDefinition(ROW_COUNT_ONLY_YAML);
+      const result = await runComparison(definition, fixtureRegistry());
 
+      // sqlserver-customer fixture: 6 source rows, 7 target rows (see
+      // packages/engine/fixtures/sqlserver-customer.ts).
+      expect(result.rowCounts).toEqual({ source: 6, target: 7, difference: 1 });
+      expect(result.aggregateDifferences).toHaveLength(1);
+      expect(result.aggregateDifferences[0]?.sourceCount).toBe(6);
+      expect(result.aggregateDifferences[0]?.targetCount).toBe(7);
+      // Row-level check was disabled -- no rowDifferences should appear.
+      expect(result.rowDifferences).toEqual([]);
+    });
+
+    it("leaves rowCounts/aggregateDifferences at Phase-1 defaults when checks.row_count.enabled is false (no silent execution)", async () => {
+      const definition = parseDefinition(BOTH_DISABLED_YAML);
       const result = await runComparison(definition, fixtureRegistry());
 
       expect(result.rowCounts).toEqual({ source: 0, target: 0, difference: 0 });
       expect(result.aggregateDifferences).toEqual([]);
+    });
+  });
+
+  describe("Phase 2: row-level checks", () => {
+    it("populates rowDifferences from compareRows when checks.row_level.enabled is true", async () => {
+      const definition = parseDefinition(ROW_LEVEL_ONLY_YAML);
+      const result = await runComparison(definition, fixtureRegistry());
+
+      expect(result.rowDifferences.length).toBeGreaterThan(0);
+      // CustomerID 4 is present in source but missing from target -- known
+      // fixture fact from sqlserver-customer.ts's header comment.
+      const missingFromTarget = result.rowDifferences.find(
+        (d) => d.category === "missing-from-target"
+      );
+      expect(missingFromTarget).toBeDefined();
+      // Row-count check was disabled -- rowCounts/aggregateDifferences stay
+      // at their Phase-1 defaults.
+      expect(result.rowCounts).toEqual({ source: 0, target: 0, difference: 0 });
+      expect(result.aggregateDifferences).toEqual([]);
+    });
+
+    it("leaves rowDifferences at the Phase-1 empty default when checks.row_level.enabled is false (no silent execution)", async () => {
+      const definition = parseDefinition(BOTH_DISABLED_YAML);
+      const result = await runComparison(definition, fixtureRegistry());
+
       expect(result.rowDifferences).toEqual([]);
     });
   });
