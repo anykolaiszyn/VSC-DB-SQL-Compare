@@ -71,7 +71,17 @@ For each task ID in the approved implementation plan, in dependency order:
    paraphrase as if it were the brief, and a real requirement quietly
    drops. When summarizing the brief in a dispatch prompt, quote its
    load-bearing language verbatim rather than restating it.
-5. **Dispatch the reviewer.** A different subagent instance from the
+5. **Before dispatching the reviewer, verify the implementer's work is
+   actually committed.** Run `git status`/`git log` on the task branch
+   yourself — confirm the expected files are committed (not just changed
+   on disk) and that `IMPLEMENTATION-REPORT.md` reflects the current task,
+   not stale content from a prior one. Do not assume this from the
+   implementer's own report; check it directly. If work is uncommitted,
+   either commit it yourself (staging only the files the brief authorizes)
+   or send it back — but do not dispatch a reviewer against an empty or
+   stale diff, since the reviewer has no way to detect that from inside
+   its own isolated context and will waste its dispatch reviewing nothing.
+6. **Dispatch the reviewer.** A different subagent instance from the
    implementer, always — never let the same context that wrote the code
    also review it. Point the reviewer at the brief, the implementation
    report, and the actual diff, and tell it explicitly what to scrutinize
@@ -81,7 +91,7 @@ For each task ID in the approved implementation plan, in dependency order:
    implementer's own tests and agrees isn't doing independent review —
    it should write and run its own adversarial probes and its own
    from-scratch verification of any nontrivial arithmetic or claim.
-6. **If the reviewer returns CHANGES REQUIRED**, do not treat this as a
+7. **If the reviewer returns CHANGES REQUIRED**, do not treat this as a
    failure to route around. Update the ledger to record the exact finding
    (severity, evidence, required resolution), then dispatch a **new
    bounded implementer task** scoped only to that finding — same branch,
@@ -92,7 +102,7 @@ For each task ID in the approved implementation plan, in dependency order:
    re-verifies the original finding by reproducing the original failing
    case itself, not by trusting the fix report. Do not advance until this
    comes back APPROVED with the finding explicitly marked resolved.
-7. **Reconcile.** Once approved: commit the review report on the task
+8. **Reconcile.** Once approved: commit the review report on the task
    branch, merge to the trunk branch (`--no-ff`, so the task's history
    stays visible), install any new dependencies and re-run the full
    verification command fresh on the merged trunk — the merge itself is
@@ -103,15 +113,15 @@ For each task ID in the approved implementation plan, in dependency order:
    Minor/informational findings that don't block anything but should be
    traceable, and clear the "one active task" slot. Delete the merged
    task branch. Push, if the project's workflow does that per task.
-8. **Session maintenance: compact now — this is a hard gate, not a
-   suggestion.** Do not proceed to step 9 without either compacting or
+9. **Session maintenance: compact now — this is a hard gate, not a
+   suggestion.** Do not proceed to step 10 without either compacting or
    explicitly telling the human you are deliberately deferring it and why.
    Right after reconciliation is the safest point in the whole cycle to
    run `/compact` (or equivalent) — the ledger has just been brought fully
    current, so nothing about the finished task's state depends on the
    orchestrator's own conversational memory anymore. "I meant to compact
    but moved on to the next task instead" is exactly the failure this step
-   exists to prevent — treat reaching step 9 with an uncompacted, unaddressed
+   exists to prevent — treat reaching step 10 with an uncompacted, unaddressed
    session as a process violation, the same category of failure as
    skipping independent review.
    - **Before compacting**, confirm `PROGRESS-LEDGER.md` genuinely
@@ -134,9 +144,9 @@ For each task ID in the approved implementation plan, in dependency order:
      checkpoint yet to recover it from. The hard-gate requirement applies
      at the post-reconciliation checkpoint specifically, not at arbitrary
      points mid-cycle.
-9. **Move to the next unblocked task** in dependency order, or stop and
-   surface a choice to the human if more than one task is unblocked and
-   the order isn't obvious from the plan.
+10. **Move to the next unblocked task** in dependency order, or stop and
+    surface a choice to the human if more than one task is unblocked and
+    the order isn't obvious from the plan.
 
 ## Judgment calls that stay with the orchestrator, not a subagent
 

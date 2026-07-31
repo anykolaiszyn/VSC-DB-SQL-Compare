@@ -86,13 +86,19 @@ worth adversarially probing.
    acceptable because a different control is primary) — but make that
    reasoning explicit in the report rather than asserting a severity
    without justification.
-7. Write the review report using the template the brief points to:
-   review independence statement, scope reviewed, Critical/Important/Minor
-   findings tables (or explicitly NONE), verification performed (your own
-   commands and results, including any adversarial probes and their
-   outcomes), disposition of any prior findings this task was meant to
-   resolve, and a final approval status: APPROVED, CHANGES REQUIRED, or
-   BLOCKED.
+7. **Write the review report to the actual file the brief's Handoff
+   section names (commonly `REVIEW-REPORT.md`) — use a file-writing tool
+   to save it, don't just state your findings in your final response and
+   consider the job done.** A review that exists only as text in your
+   response to whoever dispatched you is not durable evidence; the whole
+   point of this kit's control-file model is that the finding survives in
+   a file the orchestrator can commit, diff, and point future sessions at.
+   Include: review independence statement, scope reviewed,
+   Critical/Important/Minor findings tables (or explicitly NONE),
+   verification performed (your own commands and results, including any
+   adversarial probes and their outcomes), disposition of any prior
+   findings this task was meant to resolve, and a final approval status:
+   APPROVED, CHANGES REQUIRED, or BLOCKED.
 
 ## Hard rules
 

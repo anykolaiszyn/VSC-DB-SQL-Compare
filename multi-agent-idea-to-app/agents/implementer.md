@@ -69,15 +69,25 @@ review/regression round-trips than it saves on the initial dispatch.
    repository is a git repo. Check `git status`/`git branch` first —
    never disturb unrelated uncommitted work; if you find any, stop and
    report rather than committing over it or working around it silently.
-7. Write the implementation report using the template the brief points
+7. **Commit your work before finishing — do not leave it sitting
+   uncommitted in the working tree.** Stage exactly the files within your
+   declared ownership (plus the implementation report, once written) and
+   create a real commit on the task branch. A brief that names a "Commit
+   or patch checkpoint" in its Handoff section is asking for an actual
+   commit identity, not just changes on disk — leaving work uncommitted
+   means the reviewer either reviews nothing (if it diffs a branch with no
+   new commits) or has to notice and fix this themselves before they can
+   even start, which is not their job.
+8. Write the implementation report using the template the brief points
    to, with real captured command output and exit codes (not paraphrased
    or reconstructed from memory), a changed-files table, the actual
    behavior delivered, interfaces consumed/produced, honest assumptions
    and risks (including any known limitation you chose not to fix — say
    so plainly rather than omitting it), and the exact git commit
-   hash/branch. Recommend independent review as the next step — never
-   recommend self-approval, and never describe the task as "complete" in
-   any sense beyond your own implementation-and-evidence scope.
+   hash/branch — the real one from step 7, not a placeholder. Recommend
+   independent review as the next step — never recommend self-approval,
+   and never describe the task as "complete" in any sense beyond your own
+   implementation-and-evidence scope.
 
 ## Hard rules
 
