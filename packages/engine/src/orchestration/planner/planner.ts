@@ -1,5 +1,5 @@
 // T-09: Orchestration API run planner (Phase 1: connectivity, schema,
-// profile checks only).
+// profile checks). Extended by T-15 (Phase 2: volume + row-level checks).
 //
 // runComparison(definition, connectors) is the first task that wires the
 // engine's pieces together end-to-end:
@@ -15,37 +15,48 @@
 //   2. Test connectivity on both sides (Idea Prompt.md's "Layer 1:
 //      Connectivity and Execution"). A connectivity failure on either side
 //      short-circuits the run with a "failed"-status ComparisonResult
-//      *before* any schema/profile work runs.
+//      *before* any schema/profile/volume/row-level work runs.
 //   3. If `checks.schema.enabled`, fetch both sides' schemas and run T-06's
 //      `compareSchemas`.
 //   4. If `checks.profile.enabled`, fetch both sides' schemas (reused from
 //      step 3 when schema checking also ran), profile every column present
 //      on both sides via T-07's `profileColumn`, and diff each pair via
 //      `compareProfiles`.
-//   5. Assemble the final `ComparisonResult` matching Idea Prompt.md section
+//   5. (T-15) If `checks.rowCount?.enabled`, run T-13's `compareVolume` once
+//      for the whole comparison and populate `rowCounts` /
+//      `aggregateDifferences` from its result.
+//   6. (T-15) If `checks.rowLevel?.enabled`, fetch both sides' full row data
+//      via `executeQuery` and run T-14's `compareRows`, populating
+//      `rowDifferences`.
+//   7. Assemble the final `ComparisonResult` matching Idea Prompt.md section
 //      11's shape exactly, with `summary.{passed,warnings,failed}` computed
-//      from the actual collected findings' severities and `status` derived
-//      from the same collected findings.
+//      from the actual collected findings' severities (now including
+//      volume/row-level findings, per T-15) and `status` derived from the
+//      same collected findings.
 //
-// PHASE 1 SCOPE BOUNDARY: `checks.rowCount` / `checks.rowLevel` are valid,
-// already-parsed fields on `ParityDefinition` (T-08's job), but this
-// planner does not act on them -- `rowCounts`, `aggregateDifferences`, and
-// `rowDifferences` are left at their empty/default values regardless of
-// those flags. Executing volume/row-level checks is T-15's job, once
-// T-13/T-14 exist (see TASK-BRIEF.md / IMPLEMENTATION-PLAN.md's T-09 row).
+// Each of steps 5/6 is independently gated on its own `checks.*.enabled`
+// flag -- disabling a check leaves its corresponding result field(s) at
+// T-09's original Phase-1 empty/default values, with no query issued to
+// either connector for that check (see planner.test.ts's "no silent
+// execution" tests).
 import type {
+  AggregateDifference,
   ColumnDefinition,
   ComparisonResult,
   ComparisonStatus,
   ComparisonSummary,
   DataPlatformConnector,
   ProfileDifference,
+  RecordBatch,
+  RowDifference,
   Severity,
   SchemaDifference,
 } from "@paritylens/shared";
 import type { ParityDefinition } from "../definition/definition.js";
 import { compareSchemas } from "../../comparison-core/schema-diff/schema-diff.js";
 import { compareProfiles, profileColumn } from "../../comparison-core/profiling/profiling.js";
+import { compareVolume } from "../../comparison-core/volume/volume.js";
+import { compareRows } from "../../comparison-core/row-level/row-level.js";
 
 /**
  * Injectable/pluggable map from a `ParityDefinition` connection name (the
@@ -156,10 +167,86 @@ export async function runComparison(
     }
   }
 
+  // --- Steps 5/6: Phase 2 checks -- volume (row-count) and row-level parity.
+  // Timed together with schema/profile as part of the same "comparison"
+  // phase (comparisonDurationMs covers steps 3-6 collectively, matching how
+  // T-09 already timed schema+profile as one phase rather than splitting
+  // per-check timings the shared ComparisonResult shape has no field for).
+  let rowCounts: ComparisonResult["rowCounts"] = { source: 0, target: 0, difference: 0 };
+  let aggregateDifferences: AggregateDifference[] = [];
+  let rowDifferences: RowDifference[] = [];
+
+  const rowCountEnabled = definition.checks.rowCount?.enabled === true;
+  const rowLevelEnabled = definition.checks.rowLevel?.enabled === true;
+
+  if (rowCountEnabled) {
+    // Judgment call (documented per TASK-BRIEF.md's instruction not to leave
+    // this unspecified-and-silent): compareVolume is awaited directly and
+    // allowed to propagate/reject the whole runComparison call on failure,
+    // the same way any other unexpected exception in this function already
+    // would (schema/profile checks above have the same behavior -- neither
+    // is wrapped in a try/catch). This differs deliberately from the Layer-1
+    // connectivity short-circuit (step 2 above), which converts a
+    // *connectivity* failure into a "failed"-status result because
+    // Idea Prompt.md's Layer 1 contract explicitly frames connectivity as
+    // "a basic execution status" fact to report, not an exception. A
+    // compareVolume/compareRows failure past that point (e.g. the query
+    // itself erroring) is a genuine run failure, not a parity finding, so
+    // letting it throw (rather than silently downgrading it to an empty
+    // result) keeps failures loud, consistent with how this file already
+    // treats every other unexpected error.
+    const volumeDifference = await compareVolume(
+      source,
+      target,
+      { kind: "table", object: definition.source.object },
+      { kind: "table", object: definition.target.object },
+      definition.checks.rowCount?.tolerance
+      // T-13-01 (PROGRESS-LEDGER.md, Minor, carried forward to this task):
+      // when a definition supplies both `tolerance.percentage` and
+      // `tolerance.absolute`, precedence is resolved entirely inside
+      // compareVolume's own `evaluateTolerance` (volume.ts) -- percentage
+      // wins whenever both are set (checked first, absolute only consulted
+      // when percentage is undefined). This task passes
+      // `definition.checks.rowCount.tolerance` straight through unchanged
+      // (the shapes are structurally assignable, per volume.ts's own header
+      // comment), so that precedence rule applies as-is; this task does not
+      // reinterpret or override it, and does not modify volume.ts (T-13's
+      // owned file) to make the precedence any more explicit than it already
+      // is there. Documented here, at the call site, so the ambiguity T-13-01
+      // flagged is now resolved rather than left open.
+    );
+    rowCounts = {
+      source: volumeDifference.sourceCount,
+      target: volumeDifference.targetCount,
+      difference: volumeDifference.difference,
+    };
+    aggregateDifferences = [volumeDifference];
+  }
+
+  if (rowLevelEnabled) {
+    const [sourceRows, targetRows] = await Promise.all([
+      fetchAllRows(source, definition.source),
+      fetchAllRows(target, definition.target),
+    ]);
+
+    rowDifferences = compareRows(
+      sourceRows,
+      targetRows,
+      definition.keys,
+      definition.columnMapping,
+      definition.rules
+    );
+  }
+
   const comparisonDurationMs = Date.now() - comparisonStart;
 
-  // --- Step 5: assemble the final ComparisonResult.
-  const allFindings: Array<{ severity: Severity }> = [...schemaDifferences, ...profileDifferences];
+  // --- Step 7: assemble the final ComparisonResult.
+  const allFindings: Array<{ severity: Severity }> = [
+    ...schemaDifferences,
+    ...profileDifferences,
+    ...aggregateDifferences,
+    ...rowDifferences,
+  ];
   const summary = summarizeFindings(allFindings);
   const status = deriveStatus(allFindings);
 
@@ -168,15 +255,11 @@ export async function runComparison(
     runId,
     status,
     summary,
-    // Phase 2/3 scope boundary: rowCounts/aggregateDifferences/rowDifferences
-    // stay at their empty/default values regardless of
-    // checks.rowCount/checks.rowLevel -- volume and row-level execution is
-    // T-15's job, not this task's. See this file's header comment.
-    rowCounts: { source: 0, target: 0, difference: 0 },
+    rowCounts,
     schemaDifferences,
     profileDifferences,
-    aggregateDifferences: [],
-    rowDifferences: [],
+    aggregateDifferences,
+    rowDifferences,
     execution: {
       sourceDurationMs,
       targetDurationMs,
@@ -184,6 +267,55 @@ export async function runComparison(
     },
   };
 }
+
+/** Fetches a `ParitySide`'s full row data (all mapped/key columns are
+ * naturally included since this issues a bare `SELECT *`) via
+ * `executeQuery`, consuming the resulting `AsyncIterable<RecordBatch>` fully
+ * into a single in-memory `RecordBatch`, per TASK-BRIEF.md's Interfaces
+ * table ("fetch full row data for both sides via `executeQuery` ... consume
+ * the resulting `AsyncIterable<RecordBatch>` fully into row sets"). Applies
+ * `ParitySide.where` when present, matching the exact pattern this file
+ * already documents for `ParitySide` fields elsewhere. Row-set size is
+ * bounded by `DEFAULT_ROW_LEVEL_MAX_ROWS` -- row-level comparison assumes
+ * both sides fit in memory (T-14's own file header comment: "assume both
+ * sides fit in memory for now"), and this planner does not add pagination
+ * beyond what `compareRows` itself already assumes. */
+async function fetchAllRows(
+  connector: DataPlatformConnector,
+  side: ParityDefinition["source"]
+): Promise<RecordBatch> {
+  const objectRef = connector.quoteIdentifier(side.object);
+  const sql = side.where
+    ? `SELECT * FROM ${objectRef} WHERE ${side.where}`
+    : `SELECT * FROM ${objectRef}`;
+
+  const executionOptions = {
+    maxRows: DEFAULT_ROW_LEVEL_MAX_ROWS,
+    timeoutMs: DEFAULT_ROW_LEVEL_TIMEOUT_MS,
+  };
+
+  let columns: string[] = [];
+  const rows: unknown[][] = [];
+
+  for await (const batch of connector.executeQuery({ kind: "query", sql }, executionOptions)) {
+    if (columns.length === 0) {
+      columns = batch.columns;
+    }
+    rows.push(...batch.rows);
+  }
+
+  return { columns, rows, rowCount: rows.length };
+}
+
+/** Row cap passed to `executeQuery`'s `ExecutionOptions` when fetching full
+ * row data for row-level comparison. Generous but bounded, matching
+ * DESIGN-SPEC.md's safety-limit pattern already used elsewhere in this
+ * codebase (e.g. profiling.ts's own `DEFAULT_MAX_ROWS` for aggregate
+ * queries) -- row-level comparison is explicitly scoped to in-memory row
+ * sets (T-14's own documented assumption), not true streaming, so this is a
+ * safety bound rather than a claim of unlimited scale. */
+const DEFAULT_ROW_LEVEL_MAX_ROWS = 1_000_000;
+const DEFAULT_ROW_LEVEL_TIMEOUT_MS = 30_000;
 
 /** Profiles every column present on both sides (by name) and diffs each
  * pair via T-07's `compareProfiles`, collecting all resulting findings. */
