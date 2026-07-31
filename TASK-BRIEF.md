@@ -1,104 +1,106 @@
-# ParityLens — Task Brief T-12
+# ParityLens — Task Brief T-13
 
 ## Objective
 
-Implement column mapping (automatic suggestion by exact/case-insensitive/
-snake-camel/ordinal matching, per `Idea Prompt.md` section 3) and
-normalization rules (trim, case, whitespace collapse, numeric tolerance,
-date truncation/timezone, null equivalents, per `Idea Prompt.md` section 4).
+Implement volume parity per `Idea Prompt.md` section 2 ("Layer 3: Volume
+Parity") and section 12 ("Severity and Tolerance Model"): compare total row
+count (and, where cheaply derivable from the same query, distinct/null key
+counts) between source and target, evaluate the difference against a
+configured tolerance (exact equality / absolute / percentage / informational
+only), and classify the result per the severity model.
 
-Note to whoever dispatches an implementer against this brief: when briefing
-the implementer, quote this document's load-bearing requirements verbatim
-rather than paraphrasing them. A paraphrase that loosens a requirement (for
-example, turning a required field into an offhand "nice to have if there's
-time") is a known failure mode — the implementer treats the paraphrase as
-authoritative and a real requirement quietly drops. If a dispatch prompt
-must summarize this brief for brevity, it should still point back to this
-file as the sole authority wherever the two could be read to disagree.
+Note to whoever dispatches an implementer against this brief: quote this
+document's load-bearing requirements verbatim rather than paraphrasing them.
+A paraphrase that loosens a requirement is a known failure mode from this
+project's history (T-07's I-02 finding traced back to exactly this) — the
+implementer treats the paraphrase as authoritative and a real requirement
+quietly drops. If a dispatch prompt must summarize this brief for brevity,
+it should still point back to this file as the sole authority wherever the
+two could be read to disagree.
 
 ## Dependencies
 
-- **Required completed tasks:** T-09 (orchestration planner). COMPLETE and
-  APPROVED per `PROGRESS-LEDGER.md`. (T-08's `NormalizationRule` and
-  `ColumnMappingEntry` types, which this task consumes, already exist and
-  are also COMPLETE/APPROVED.)
+- **Required completed tasks:** T-12 (column mapping + normalization).
+  COMPLETE and APPROVED per `PROGRESS-LEDGER.md`. (T-13 does not actually
+  consume T-12's `suggestMappings`/`applyNormalization` output directly —
+  volume parity compares row counts, not mapped column values — but
+  `IMPLEMENTATION-PLAN.md`'s dependency-ordering lists T-12 as the
+  prerequisite, satisfied.)
 - **Required decisions or approvals:** NONE beyond the already-approved
-  `IMPLEMENTATION-PLAN.md` row for T-12.
+  `IMPLEMENTATION-PLAN.md` row for T-13.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/mapping/**`
-- `packages/engine/src/comparison-core/normalization/**`
+- `packages/engine/src/comparison-core/volume/**`
 
-Do not touch `packages/engine/src/orchestration/definition/definition.ts`
-(T-08's owned file, defines `NormalizationRule`/`ColumnMappingEntry` that
-this task consumes read-only) or any other `comparison-core/*` sibling
-directory (`type-mapping/`, `schema-diff/`, `profiling/` — each owned by
-its own completed task).
+Do not touch `packages/engine/src/comparison-core/profiling/**` (T-07's
+owned file — model your query-execution pattern on it for consistency, per
+the Interfaces table below, but do not import from or edit it beyond a
+normal read), `packages/engine/src/orchestration/**` (T-09's/T-15's owned
+files — T-13 produces a comparison function; wiring it into the planner's
+`runComparison` is explicitly T-15's job, not this task's), or
+`packages/shared/src/result.ts` beyond the one refinement named below.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `ColumnDefinition[]` (`packages/shared/src/types.ts`) | Full shape: `name`, `ordinalPosition`, `nativeType`, `canonicalType`, `nullable`, `isPrimaryKeyCandidate`, optional `length`/`precision`/`scale`. Source and target sides each produce their own array via a connector's `getSchema()`. | T-02 |
-| Consumed | `NormalizationRule` (`packages/engine/src/orchestration/definition/definition.ts`) | `{ trim?, caseSensitive?, collapseWhitespace?, numericTolerance?: {absolute?, percentage?}, timezone?: {source, target}, truncateTo?, nullEquivalents?: string[] }` — every field optional, a rule may combine any subset. This is the existing, already-implemented shape from T-08; consume it as-is, do not redefine or duplicate it. | T-08 (producer of the type) |
-| Consumed | `ColumnMappingEntry` (same file) | Discriminated union: `{source, target}` (plain rename) or `{name, target, sourceExpression?, targetExpression?}` (derived mapping). T-12's `suggestMappings` produces *suggestions*, distinct from this type, which represents a user-authored/approved mapping already present in a `ParityDefinition`. Do not conflate the two — see Prohibited changes. | T-08 (producer of the type) |
-| Produced | `suggestMappings(source: ColumnDefinition[], target: ColumnDefinition[]): MappingSuggestion[]` | For each source column, suggests zero or one best-candidate target column using, in order of preference per `Idea Prompt.md` section 3: exact name match, case-insensitive match, snake_case↔camelCase equivalence, then ordinal position as a last-resort fallback. Each suggestion must report which strategy matched (so a caller/UI can show *why* a mapping was suggested) and must not silently auto-apply — per the idea doc, "Users must be able to approve, reject, or manually edit every mapping," meaning this function only proposes, it never mutates a `ParityDefinition`. Worked example from the idea doc to validate against literally: `customer_id → CUSTOMER_ID` (exact, case-insensitive), `cust_nm → CUSTOMER_NAME` is explicitly called out as *not* achievable by simple matching (abbreviation expansion is out of scope — do not attempt fuzzy/abbreviation matching; only implement the four listed strategies), `created_dt → CREATED_TIMESTAMP` (also abbreviation-based, expect no confident match), `active_ind → IS_ACTIVE` (also abbreviation-based, expect no confident match). Prove the exact/case-insensitive/snake-camel cases work correctly rather than claiming the abbreviation cases "mostly work" — they don't, and shouldn't. | T-16 (consumes for a future mapping-approval UI, unscheduled) |
-| Produced | `applyNormalization(value: unknown, rule: NormalizationRule): unknown` (or an equivalent name — document your exact choice in the report) | Applies exactly the rule fields present on `NormalizationRule` to a single value, returning the normalized value for comparison purposes only. Must implement, at minimum: `trim`, `caseSensitive: false` (case-fold strings), `collapseWhitespace`, `numericTolerance` (used at comparison time, not as a value transform — document how your implementation exposes this, e.g. a separate `valuesEqualWithinTolerance` helper, since tolerance is inherently a two-value comparison, not a single-value transform), `truncateTo` (date truncation, e.g. `"second"`), `timezone` conversion, and `nullEquivalents` (treat any value in the list as equivalent to null for comparison purposes). Match the idea doc section 4 worked example's rule shapes exactly (`customer_name: {trim, case_sensitive: false, collapse_whitespace: true}`, `order_amount: {numeric_tolerance: {absolute: 0.01}}`, `created_timestamp: {timezone: {source, target}, truncate_to: "second"}`, `cancellation_date: {null_equivalents: [...]}`). | T-13 (volume parity, tolerance evaluation), T-14 (row-level parity, applies normalization before comparing) |
+| Consumed | `DataPlatformConnector` (`packages/shared/src/connector.ts`) | No dedicated row-count method exists on this interface. Follow T-07's established pattern in `packages/engine/src/comparison-core/profiling/profiling.ts` (`profileColumn`): build your own `SELECT COUNT(*) ...` SQL string, resolve the query object reference the same way `resolveObjectReference` does, quote identifiers via `connector.quoteIdentifier`, and execute via `connector.executeQuery(input, executionOptions)`, consuming the single-row `AsyncIterable<RecordBatch>` result. Do not add a new method to the shared `DataPlatformConnector` interface — that would be an unowned change to `packages/shared/src/connector.ts` outside this task's file ownership. | T-04 (FixtureConnector, the only connector available for testing) |
+| Consumed | `ParityChecks.rowCount` (`packages/engine/src/orchestration/definition/definition.ts:85-91`) | Existing, already-implemented shape: `{ enabled: boolean, tolerance?: { percentage?: number, absolute?: number } }`. This is the tolerance configuration T-13 evaluates against. Consume read-only; do not modify `definition.ts`. Note the type only supports absolute/percentage tolerance and enabled/disabled — it has no explicit "exact equality" or "informational only" variant beyond what absolute/percentage-omitted or enabled:false already express; if you find a genuine gap, stop and flag it as a blocker rather than editing T-08's file. | T-08 (producer of the type) |
+| Produced | `compareVolume(source: DataPlatformConnector, target: DataPlatformConnector, sourceInput: QueryInput, targetInput: QueryInput, tolerance?: { percentage?: number; absolute?: number }): Promise<VolumeDifference>` (exact signature/name your choice — document it precisely in the report) | Executes a row-count query against both connectors, computes `difference = targetCount - sourceCount` and `differenceRate` (percentage), and classifies the result against the supplied tolerance per `Idea Prompt.md` section 2's worked example: `Source rows: 12,405,128 / Target rows: 12,402,991 / Difference: -2,137 / Difference rate: -0.0172% / Tolerance: 0.0100% / Result: FAIL`. Reproduce this exact worked example as a literal test case. When `tolerance` is omitted, treat as exact-equality (any nonzero difference fails) — document this judgment call explicitly in the report since the idea doc lists "informational comparison only" as a distinct mode this type doesn't cleanly express (see the Interfaces row above); do not guess silently. | T-15 (wires into planner), T-16 (renders in webview) |
+| Produced | `VolumeDifference` — new interface, extends or is assignable to the existing `AggregateDifference` placeholder alias in `packages/shared/src/result.ts:126` (`export type AggregateDifference = DifferenceItem;` — currently just an alias, explicitly reserved for T-13 to refine per that file's header comment and line 125's own doc comment: "Placeholder item shape for `ComparisonResult.aggregateDifferences`; refined by T-13") | Must report at minimum: `severity` and `message` (inherited from `DifferenceItem`), `sourceCount`, `targetCount`, `difference`, `differenceRate`, and the tolerance that was evaluated against. This is the ONE place `packages/shared/src/result.ts` may be edited by this task — refine `AggregateDifference` from the placeholder alias into a real interface, following the exact pattern `SchemaDifference` (T-06) and `ProfileDifference` (T-07) already established in that same file (extend `DifferenceItem`, add a doc comment explaining the shape, do not touch `SchemaDifference`/`ProfileDifference`/`RowDifference` in the same file). | T-15, T-16 |
 
 ## Prohibited changes
 
-- **Normalization must never mutate source or target data.** `Idea
-  Prompt.md` section 4 states explicitly: "These transformations should
-  apply only in the comparison engine. They should never alter the
-  underlying data." `applyNormalization` must be a pure function returning
-  a new normalized value for comparison purposes, never writing back to
-  any connector, record, or persisted structure. This is the reviewer's
-  primary scrutiny target — see Handoff below.
+- Do not widen `SchemaDifference`, `ProfileDifference`, or `RowDifference`
+  in `result.ts` as a side effect — only `AggregateDifference` is this
+  task's to refine, per that file's own ownership comments.
 - Do not modify `packages/engine/src/orchestration/definition/definition.ts`
-  — `NormalizationRule` and `ColumnMappingEntry` are T-08's owned types;
-  T-12 consumes them read-only. If a genuine gap is found (a field this
-  task needs but the type doesn't have), stop and flag it as a blocker
+  — `ParityChecks.rowCount` is T-08's owned type; T-13 consumes it
+  read-only. If a genuine gap is found, stop and flag it as a blocker
   rather than editing T-08's file.
-- Do not implement AI-assisted/semantic mapping suggestions — `Idea
-  Prompt.md` section 14 explicitly excludes "AI-generated mappings" from
-  MVP scope.
-- Do not implement abbreviation/prefix/suffix-removal matching (e.g.
-  `cust_nm` → `CUSTOMER_NAME`) — only the four strategies named in this
-  brief's Interfaces table (exact, case-insensitive, snake-camel, ordinal)
-  are in scope; profile-similarity and value-overlap matching (also listed
-  in the idea doc as possible future strategies) are likewise out of scope
-  for this task.
-- Do not touch `packages/extension/**` — T-12 is engine-only.
+- Do not modify `packages/engine/src/orchestration/planner/**` — wiring
+  `compareVolume` into `runComparison` is T-15's explicitly scoped job
+  (`IMPLEMENTATION-PLAN.md` T-15 row), not T-13's. T-13 only produces the
+  comparison function; it does not call it from the planner.
+- Do not implement distinct-key-count, duplicate-key-count, null-key-count,
+  count-by-partition/date/segment, or min/max-key comparisons — `Idea
+  Prompt.md` section 2 lists these as part of "Layer 3: Volume Parity," but
+  `IMPLEMENTATION-PLAN.md`'s T-13 row scopes this task to row count with
+  tolerance evaluation only ("row count, distinct count, duplicate/null key
+  counts, tolerance evaluation" is the plan row's language — if you
+  implement more than total row count, document exactly what additional
+  metrics you added and why they were cheap/safe to include without scope
+  creep; when in doubt, implement row count only and flag the rest as
+  deferred rather than guessing at unspecified additional query shapes).
+- Do not touch `packages/extension/**` — T-13 is engine-only.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A mapping-suggestion test asserting
-  `suggestMappings` proposes `customer_id → CUSTOMER_ID` (case-insensitive
-  exact match) for a fixture pair of `ColumnDefinition[]` arrays — must
-  fail because `suggestMappings` doesn't exist yet. A second, separate
-  red-state case for normalization: a test asserting
-  `applyNormalization("  Alice  ", {trim: true, caseSensitive: false})`
-  equals `"alice"` — must fail because `applyNormalization` doesn't exist
-  yet.
-- **Command:** `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization`
-- **Expected failure reason:** Module resolution failure — neither
-  directory exists yet under `packages/engine/src/comparison-core/`.
+- **Test or check to add:** A test reproducing `Idea Prompt.md` section 2's
+  worked example almost exactly (source rows, target rows, and a
+  0.0100% tolerance producing a `FAIL` result with the difference/rate
+  computed correctly) — must fail because `compareVolume` doesn't exist
+  yet. A second red-state case: an in-tolerance pair of counts expected to
+  produce a `PASS`/non-failing result — must also fail for the same
+  reason.
+- **Command:** `npx vitest run packages/engine/src/comparison-core/volume`
+- **Expected failure reason:** Module resolution failure — the directory
+  doesn't exist yet under `packages/engine/src/comparison-core/`.
 - **Captured output:** Paste the actual failing command output and exit
   code into `IMPLEMENTATION-REPORT.md`, not a paraphrase.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization`
+- **Focused command:** `npx vitest run packages/engine/src/comparison-core/volume`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Both red-state cases pass; the full worked example
-  from `Idea Prompt.md` section 3 (`customer_id → CUSTOMER_ID`) and section
-  4 (`customer_name`, `order_amount`, `created_timestamp`,
-  `cancellation_date` rules) are each exercised by at least one test with
-  the exact literal values from those examples; the previously-passing 298
-  tests (per `PROGRESS-LEDGER.md`'s T-11 entry) still pass with no
-  regression; `npm run verify` exits 0.
+- **Expected evidence:** Both red-state cases pass; the worked example from
+  `Idea Prompt.md` section 2 is exercised with the exact literal numbers
+  from that example; an in-tolerance case passes; a percentage-tolerance
+  case and an absolute-tolerance case are each exercised separately; the
+  previously-passing 334 tests (per `PROGRESS-LEDGER.md`'s T-12 entry)
+  still pass with no regression; `npm run verify` exits 0.
 
 ## Handoff
 
@@ -106,18 +108,16 @@ its own completed task).
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-12-mapping-normalization`
+- **Commit or patch checkpoint:** Branch `task/T-13-volume-parity`
 
-**Note to reviewer:** scrutinize hardest whether `applyNormalization` (or
-whatever it's named) has any code path that writes back to a connector,
-mutates the input `ColumnDefinition`/record objects in place, or otherwise
-alters anything outside its own return value — per
-`IMPLEMENTATION-PLAN.md`'s T-12 review-gate column, "confirms normalization
-never mutates source data, only comparison-time values." Construct a
-concrete adversarial case (e.g. pass an object/array value through
-normalization and assert the original reference is unchanged afterward) 
-rather than accepting a code-read alone. Also verify `suggestMappings`
-genuinely does NOT propose a mapping for the abbreviation-based idea-doc
-examples (`cust_nm`, `created_dt`, `active_ind`) — a false-positive
-"confident" match on those would contradict the brief's explicit scope
-boundary.
+**Note to reviewer:** scrutinize hardest (a) whether the percentage-rate
+arithmetic matches the idea doc's worked example exactly (`-2,137 /
+12,405,128 = -0.01722...%`, rounding/sign conventions matter — re-derive
+this independently rather than trusting the implementer's own test
+assertion), (b) whether `AggregateDifference`'s refinement in `result.ts`
+followed the same additive, non-breaking pattern `SchemaDifference`/
+`ProfileDifference` used (no changes to sibling difference shapes), and (c)
+whether the implementer silently expanded scope into distinct/duplicate/
+null-key counts, count-by-partition, or min/max-key comparisons beyond
+plain row count — check the actual diff against the Prohibited Changes
+section above, not just the report's own characterization of scope.
