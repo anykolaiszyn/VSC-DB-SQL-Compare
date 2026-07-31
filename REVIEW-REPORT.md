@@ -1,84 +1,250 @@
-# ParityLens — Review Report T-10
+# ParityLens — Review Report T-11
 
-## Review independence
+## Review independence statement
 
-This review was conducted by a separate `reviewer` subagent instance with
-no memory of authoring the T-10 implementation. No implementation file,
-`TASK-BRIEF.md`, or `IMPLEMENTATION-REPORT.md` was edited during this
-review; only this `REVIEW-REPORT.md` was written, replacing the prior
-T-09 review report that previously occupied this path. No throwaway probe
-files were created during this review (all adversarial checks were done
-via read-only `grep`/inspection and independent re-derivation of claims);
-`git status --porcelain` confirms no residue beyond the pre-existing
-`PROGRESS-LEDGER.md`/`TASK-BRIEF.md` orchestrator edits that predate this
-review.
+This review was performed by a separate agent instance from whoever
+implemented T-11. No implementation code was written or edited by this
+reviewer; findings below are based on direct reading of the diff, direct
+reading of the current source on `task/T-11-results-webview-phase1`, a
+fresh independent `npm run verify` run, and a throwaway adversarial test
+file that was deleted before finishing (confirmed via `git status`).
 
-## Review scope
+## Scope reviewed
 
-- **Task objective:** Scaffold the VS Code extension host: activation
-  entry point, command registration, the "DATA PARITY" activity-bar tree
-  view (Connections / Comparisons / Recent Runs), and a `SecretStore`
-  wrapper around `vscode.SecretStorage`. No comparison logic.
-- **Files and interfaces reviewed:**
-  `packages/extension/src/activation/activate.ts` and `activate.test.ts`,
-  `packages/extension/src/views/parityTreeDataProvider.ts` and
-  `parityTreeDataProvider.test.ts`,
-  `packages/extension/src/secrets/secretStore.ts` and
-  `secretStore.test.ts`, `packages/extension/src/index.ts` (wiring-only
-  change), `packages/extension/package.json`, `package-lock.json`,
-  `TASK-BRIEF.md`, `IMPLEMENTATION-REPORT.md`, `AGENTS.md`.
-- **Evidence reviewed:** Commit `372089d` ("T-10: scaffold VS Code
-  extension shell (activation, tree view, SecretStore)"), the working
-  tree at that commit, and a fresh independent `npm run verify` run.
+- `TASK-BRIEF.md` (T-11, read in full).
+- `IMPLEMENTATION-REPORT.md` (claims treated as unverified until checked
+  against source).
+- Commits `308ad99` (implementation) and `9086e76` (report hash
+  correction) on `task/T-11-results-webview-phase1` vs `main`.
+- Full contents of:
+  - `packages/extension/src/webview/resultsWebview.ts`
+  - `packages/extension/src/webview/resultsWebview.test.ts`
+  - `packages/extension/src/statusbar/parityStatusBar.ts`
+  - `packages/extension/src/statusbar/parityStatusBar.test.ts`
+- `packages/shared/src/result.ts` (to confirm it is untouched and to
+  confirm the hand-built fixtures in both test files match the real
+  interface).
+- `IMPLEMENTATION-PLAN.md`'s T-11 row (to check the `activate.ts`
+  judgment call against the plan, not just the brief).
+- `PROGRESS-LEDGER.md` (to confirm no prior open finding is routed to
+  T-11; I-01/I-02 belong to T-03 and are unrelated).
 
-## Critical findings
+## Findings
 
-| ID | Finding | Evidence | Required resolution |
-| --- | --- | --- | --- |
-| NONE | — | — | — |
+### Critical
 
-## Important findings
+NONE.
 
-| ID | Finding | Evidence | Required resolution |
-| --- | --- | --- | --- |
-| NONE | — | — | — |
+### Important
 
-## Minor findings
+NONE.
 
-| ID | Finding | Evidence | Suggested resolution |
-| --- | --- | --- | --- |
-| M-01 | No `@vscode/test-electron` (real extension-host) run was performed; activation, tree-view registration, and `main: "./dist/index.js"` module loading have not been exercised inside a genuine VS Code process — only against a hand-mocked `vscode` module under Vitest. | `activate.test.ts`/`parityTreeDataProvider.test.ts` both `vi.mock("vscode", ...)`. Disclosed proactively in `IMPLEMENTATION-REPORT.md`'s "Test harness choice" section. Reviewer independently confirmed the mocked shapes (`TreeItem` constructor, `EventEmitter`, `TreeItemCollapsibleState`) match the real `@types/vscode@1.85.0` declarations in `node_modules/@types/vscode/index.d.ts`, and confirmed `npm run verify`'s `tsc -b --force` step type-checks `activate.ts`/`parityTreeDataProvider.ts` against those *real* declaration files (not the mock) — so the call-shape contract (`vscode.window.createTreeView<T>(viewId, options): TreeView<T>`) is genuinely verified at the type level, narrowing the actually-unverified surface to extension-host runtime loading (module resolution of `dist/index.js`, activation-event dispatch timing). | Track as required scope for whichever future task first produces a real packaged/loadable build (T-16 or later packaging task) — add a `@vscode/test-electron` (or equivalent) smoke test at that point, not before. |
+### Minor
+
+NONE.
+
+No issues were found at any severity. Rationale for each area scrutinized
+is in "Verification performed" below.
 
 ## Verification performed
 
-| Check | Exact command or inspection | Result |
-| --- | --- | --- |
-| Fresh full verification | `npm run verify` | Exit 0. `typecheck` (`tsc -b --force`) clean, `lint` (`eslint .`) clean, `test` (`vitest run`): `Test Files 11 passed (11)`, `Tests 294 passed (294)` — exact match to `IMPLEMENTATION-REPORT.md`'s claim, no discrepancy |
-| Arithmetic re-derivation of test counts | Independently summed engine test counts: `69+109+30+11+9+4+40` | 272; +11 (`packages/shared`) = 283 (pre-T-10 baseline); +11 (new `packages/extension` tests: 5 tree-provider + 3 secretStore + 3 activate) = 294. Matches report exactly. |
-| Red-state plausibility | `git show main:packages/extension/src/index.ts` | Confirms the T-01 placeholder (`export const PLACEHOLDER = true`) was the only content pre-T-10 — consistent with the claimed red-state failure reason ("`activate`, `ParityTreeDataProvider`, `SecretStore` do not exist yet") |
-| Credential-storage boundary (adversarial) | Read `secretStore.ts` in full; `grep -rn "globalState\|workspaceState" packages/extension/src` across the entire extension source tree, not just the secrets subdirectory | `secretStore.ts` holds only a private `vscode.SecretStorage` reference and delegates `get`/`set`/`delete` directly to `secrets.get`/`store`/`delete` — no other persistence path exists. The tree-wide grep matches only inside `secretStore.test.ts` (the deliberate negative-proof test using mocked `Memento`s) and a doc comment describing the constraint in prose; zero production-code hits. `activate.ts` was hand-traced separately and confirmed to construct `SecretStore` from `context.secrets` only, never passing `context.globalState`/`context.workspaceState` into any new code path. |
-| Test-harness gap assessment (adversarial, per brief's specific ask) | Compared mocked `vscode.TreeItem` constructor and `window.createTreeView` call shape against real `@types/vscode@1.85.0` declarations (`node_modules/@types/vscode/index.d.ts`, confirmed installed at that exact version) | Mock is faithful for the narrow surface exercised; the type-level contract for the real API is independently checked by `tsc -b --force` (part of `npm run verify`), not just satisfied by the mock's shape. See Minor finding M-01 for the residual gap this doesn't close. |
-| Scope/ownership | `git diff --stat main...HEAD` (or equivalent `git show 372089d --stat`) | Touches exactly: `packages/extension/src/activation/**` (new), `src/views/**` (new), `src/secrets/**` (new), `src/index.ts` (wiring-only, pre-authorized and disclosed), `package.json`/`package-lock.json` (dependency/manifest declaration, pre-authorized as "may be required"), plus `IMPLEMENTATION-REPORT.md`. No changes to `packages/shared/**` or `packages/engine/**`. |
-| Residue check | `git status --porcelain` after completing this review | Only pre-existing `PROGRESS-LEDGER.md`/`TASK-BRIEF.md` orchestrator-dispatch edits remain; no reviewer-created files left behind |
+### 1. Scope / file ownership
 
-## Prior-finding disposition
+`git diff main..HEAD --name-only` on the branch shows exactly:
 
-No prior open findings were scoped to be resolved by T-10.
-`PROGRESS-LEDGER.md`'s open findings at the time of this review (I-01/I-02,
-statement-safety residual gaps) concern `packages/engine`, which is outside
-T-10's file ownership and untouched by this task.
+```
+IMPLEMENTATION-REPORT.md
+packages/extension/src/statusbar/parityStatusBar.test.ts
+packages/extension/src/statusbar/parityStatusBar.ts
+packages/extension/src/webview/resultsWebview.test.ts
+packages/extension/src/webview/resultsWebview.ts
+```
 
-## Approval status
+- `git diff main..HEAD -- packages/shared/src/result.ts` → empty. Confirmed
+  the prohibited file is untouched.
+- `git diff main..HEAD -- packages/engine` → 0 lines. Confirmed.
+- `git diff main..HEAD -- packages/extension/src/activation packages/extension/src/views packages/extension/src/secrets` → 0 lines. Confirmed all three T-10-owned directories are untouched.
+- All four new/changed source files fall inside the brief's declared
+  ownership (`packages/extension/src/webview/**`,
+  `packages/extension/src/statusbar/**`). No scope expansion.
+- `PROGRESS-LEDGER.md`, `TASK-BRIEF.md`, `package-lock.json` show as
+  modified in working-tree `git status` but are **not** part of either
+  commit (`git show --stat` on both commits confirms neither touches
+  these three files) — consistent with the report's note that these are
+  pre-existing orchestrator-side uncommitted changes, not implementer
+  output.
 
-- **Status:** APPROVED
-- **Reviewer:** Claude Code Independent Reviewer subagent
-- **Date:** 2026-07-28
-- **Release or dependency impact:** T-10 complete. Unblocks T-11 (extends
-  the tree view with real connection/comparison/run data) and any future
-  connection-management task consuming `SecretStore`. One Minor finding
-  (M-01, no real extension-host smoke test) is tracked forward to T-16 or
-  the first packaging/publishing task rather than blocking this scaffold —
-  the credential-storage boundary the brief specifically flagged as its
-  top concern was independently traced end-to-end with no gaps, fresh
-  `npm run verify` reproduces the claimed 294/294 exactly, and scope stayed
-  within declared ownership throughout.
+### 2. The security-relevant claim: no reachable path to `vscode.workspace`, `SecretStorage`, a connector, or I/O beyond `ComparisonResult`
+
+Read `resultsWebview.ts` in full. Every `vscode` reference in the file is
+one of: `import type * as vscode` (line 1), or a type annotation
+(`vscode.ViewColumn`, `vscode.WebviewPanel`, `vscode.WebviewPanelOptions
+& vscode.WebviewOptions`) inside `showResultsWebview`'s parameter/return
+types. Grepped for `vscode\.|require\(|process\.|fs\.|readFile|SecretStorage|workspace`
+— all matches are type-only or in comments; zero runtime `vscode` calls.
+`renderResultsHtml` takes a single `ComparisonResult` parameter and
+returns a template-string built purely from that object's fields
+(`comparison`, `runId`, `status`, `summary`, `schemaDifferences`,
+`profileDifferences`) via a private `escapeHtml` helper — no other
+inputs, no imports beyond `type` imports. This independently confirms the
+report's claim rather than trusting it.
+
+`showResultsWebview` does perform one real `vscode` interaction, but only
+via an injected `createWebviewPanel` function parameter supplied by the
+(unwritten) caller — it never imports `vscode.window` itself. This is the
+one function in the module that is not "pure," and it is exactly the
+integration seam the brief anticipates ("plus whatever
+`vscode.WebviewPanel`/webview API surface is needed to actually display
+it"). It performs no credential, workspace, or connector access either —
+its only side effect is setting `panel.webview.html` from
+`renderResultsHtml(result)`.
+
+Read `parityStatusBar.ts` in full. Its only runtime `vscode` usage is
+`vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left)`
+inside `createParityStatusBarItem`. `formatParitySummary` takes only a
+`ComparisonSummary` and returns a template string — no `vscode` import
+touches it at all. `updateFromResult` reads only `result.summary`, per
+the brief's "Updates from a `ComparisonResult`'s `summary` field only."
+No `vscode.workspace`, `SecretStorage`, or connector reference anywhere
+in either file.
+
+**Adversarial probe:** constructed a `ComparisonResult` fixture with
+`<script>alert(...)</script>`, `"><script>...`, `<svg onload=alert(2)>`,
+and `<img src=x onerror=alert(4)>` payloads in `comparison`, `runId`,
+`columnName`, `message`, `sourceType`, `sourceValue`, and `targetValue`
+(including the `unknown`-typed profile fields, which the brief explicitly
+flags as needing `String(value)` handling). Ran this through
+`renderResultsHtml` in a throwaway test
+(`packages/extension/src/webview/__xss_probe.test.ts`, deleted after the
+run — confirmed via `git status --short` that only the pre-existing,
+out-of-scope `PROGRESS-LEDGER.md`/`TASK-BRIEF.md`/`package-lock.json`
+working-tree diffs remain, no probe residue). Result: `escapeHtml`
+correctly neutralized every payload — the rendered HTML contained none of
+`<script>`, `<svg onload`, `"><script>`, or `<img src=x onerror`
+unescaped. `escapeHtml`'s five-way replace (`&`, `<`, `>`, `"`, `'`)
+covers the injection vectors that matter for this sink (element and
+attribute-context breakout); there is no `javascript:`-URL sink or
+`innerHTML`-from-unescaped-source path in this module to probe further,
+since the module never touches the DOM directly — it only builds a string
+handed to `panel.webview.html` by the (out-of-scope, uninvoked) caller.
+`enableScripts: false` is hard-coded in `showResultsWebview`'s panel
+options, which is a second, independent layer against any script
+execution even if an escaping gap existed.
+
+Both claims in the brief's Interfaces table and Prohibited Changes
+section are satisfied: presentation-layer only, no I/O beyond the passed
+object plus the webview display API.
+
+### 3. `aggregateDifferences`/`rowDifferences` not rendered
+
+`resultsWebview.ts` never reads `result.aggregateDifferences` or
+`result.rowDifferences` anywhere — grepped and read the full file to
+confirm. Matches the brief's explicit Phase-1 boundary.
+
+### 4. `activate.ts` left untouched — judgment call review
+
+Read the brief's Prohibited Changes section verbatim: "Do not add any
+connection-management, run-triggering, or comparison YAML-editing UI —
+that is unscheduled/future scope, not T-11," and the Files-owned section:
+wiring `activate.ts` is permitted only as a "minimal,
+mechanically-necessary companion change" if needed to make T-11's code
+reachable, with no mandate that such wiring must happen.
+
+Cross-checked `IMPLEMENTATION-PLAN.md`'s T-11 row directly (not just the
+brief's paraphrase of it): the row's review-gate column reads "Independent
+reviewer confirms the webview only renders data passed to it (no direct
+connector/credential access from webview code)" — no command ID, trigger,
+or activation-wiring requirement is named anywhere in the row. The
+Sequencing section ("Extension lane: T-01 → T-10 → (waits for T-09 before
+T-11...)") likewise specifies no activation deliverable for T-11.
+
+T-16's row (`packages/extension/src/webview/**` "extends T-11's
+ownership; sequenced after T-11 merges") confirms activation wiring is
+expected to arrive with a future task, alongside the full diff
+viewer/export/SQL-preview UI — not as part of T-11's own scope.
+
+Given this, the implementer's reading is correct: no concrete
+command/trigger is specified anywhere in the brief or plan for T-11 to
+wire up, and inventing one (e.g. a `paritylens.showResults` command with
+no defined data source) would itself be undisclosed scope invention,
+arguably colliding with the "no run-triggering UI" prohibition. Leaving
+`activate.ts` untouched is the minimal, correct reading, not a silent gap
+— and the implementer disclosed it prominently rather than burying it,
+which is the behavior the brief's own risk-disclosure framing asks for.
+This does leave `showResultsWebview`/`createParityStatusBarItem` as
+currently-unreachable-from-the-running-extension exports, but that is an
+accurate reflection of an intentionally staged rollout (T-11 renders;
+a later task, per T-16's ownership note, wires triggering), not a defect
+in this task's own deliverable. Does not block approval.
+
+### 5. Interface contract fidelity
+
+- Status bar text format: `formatParitySummary({passed:18, warnings:2,
+  failed:1})` → confirmed by direct code read to produce exactly
+  `"Parity: 18 passed | 2 warnings | 1 failed"`, matching the brief's
+  literal example character-for-character (verified by reading the
+  template string in `parityStatusBar.ts` line 16, not just trusting the
+  test assertion).
+- `SchemaDifference`/`ProfileDifference` field consumption matches
+  `packages/shared/src/result.ts`'s actual current shape exactly (both
+  hand-built test fixtures were checked field-by-field against the real
+  interface definitions read directly from `result.ts`; no drift).
+- `sourceValue`/`targetValue` are correctly treated as `unknown` and
+  rendered via explicit `String(...)` before escaping, per the brief's
+  instruction not to assume a type at compile time.
+
+### 6. Fresh verification run (independent, not trusting the report)
+
+Ran `npm run verify` myself from a clean checkout of the branch:
+
+```
+> tsc -b --force            → clean, no errors
+> eslint .                  → clean, no errors
+> vitest run                → Test Files  13 passed (13)
+                               Tests       298 passed (298)
+```
+
+This matches the report's claimed "Exit 0... Test Files 13 passed (13),
+Tests 298 passed (298)" exactly — no discrepancy. Also independently
+confirmed `packages/extension/src/webview/resultsWebview.test.ts` (2
+tests) and `packages/extension/src/statusbar/parityStatusBar.test.ts` (2
+tests) both appear and pass in this run, matching the brief's Red-state
+evidence requirement (2 new focused tests, one per module).
+
+Arithmetic check: baseline claimed 294 (per `PROGRESS-LEDGER.md`'s T-10
+entry) + 4 new (2 webview + 2 status bar) = 298. Observed total is 298.
+Consistent.
+
+### 7. Report accuracy
+
+Every material claim in `IMPLEMENTATION-REPORT.md` checked against source
+or a fresh command was accurate: the "only `import type * as vscode`
+appears in `resultsWebview.ts`" claim, the vscode-surface claim for
+`parityStatusBar.ts`, the file list, the untouched-files list, the
+verification numbers, and the `enableScripts: false` claim (confirmed at
+`resultsWebview.ts` line 135). No overstatement or mischaracterization
+found.
+
+## Disposition of prior findings
+
+No open finding in `PROGRESS-LEDGER.md` is routed to T-11. I-01/I-02 (the
+project's two cited worked examples of the review gate catching real
+bugs) both belong to T-03 (statement-safety parser) and are unrelated to
+this task's scope. Nothing to re-verify here.
+
+## Final approval status
+
+**APPROVED**
+
+No Critical or Important findings. The webview-rendering and status-bar
+functions have no reachable path to `vscode.workspace`, `SecretStorage`,
+a connector, or any I/O beyond the `ComparisonResult` object and the
+injected webview display API, confirmed by direct source reading and an
+adversarial XSS probe with results independently reproduced (not merely
+trusted from the implementer's report). Scope and file ownership are
+clean against the brief and against `packages/shared/src/result.ts`,
+`packages/engine/**`, and T-10's owned directories. The `activate.ts`
+non-edit is the correct minimal reading of the brief and
+`IMPLEMENTATION-PLAN.md`'s T-11 row, disclosed rather than hidden, and
+does not block approval. Fresh `npm run verify` independently reproduces
+the report's claimed exit 0 / 298 tests with no discrepancy.
