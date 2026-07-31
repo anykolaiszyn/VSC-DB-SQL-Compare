@@ -122,8 +122,42 @@ export interface ProfileDifference extends DifferenceItem {
   /** Target-side value for this metric, where applicable (absent for a missingTargetValue finding, which has no target-side counterpart). */
   targetValue?: unknown;
 }
-/** Placeholder item shape for `ComparisonResult.aggregateDifferences`; refined by T-13. */
-export type AggregateDifference = DifferenceItem;
+/**
+ * Refined shape for `ComparisonResult.aggregateDifferences`, owned by T-13
+ * (see `DifferenceItem`'s doc comment above `SchemaDifference`: T-13 is the
+ * designated task that refines this specific placeholder, same additive,
+ * non-breaking pattern T-06 used for `SchemaDifference` and T-07 used for
+ * `ProfileDifference` -- extends `DifferenceItem` so `severity`/`message`
+ * are preserved, adds the row-count-comparison detail a volume-parity
+ * finding needs to be independently useful without requiring the consumer
+ * to re-parse `message`).
+ *
+ * T-13's `IMPLEMENTATION-PLAN.md` row scopes this task to "row count ...
+ * tolerance evaluation" -- this shape reports exactly that (total row
+ * count difference and rate against a configured tolerance), per `Idea
+ * Prompt.md` section 2's Layer 3 "Volume Parity" worked example. It does
+ * NOT cover distinct-key-count, duplicate-key-count, null-key-count,
+ * count-by-partition/date/segment, or min/max-key comparisons -- those
+ * remain out of scope for T-13 per `TASK-BRIEF.md`'s Prohibited Changes
+ * section and are left for a future task to add as additional optional
+ * fields or additional `AggregateDifference` items, without needing to
+ * change the fields defined here.
+ */
+export interface AggregateDifference extends DifferenceItem {
+  /** Row count observed on the source side. */
+  sourceCount: number;
+  /** Row count observed on the target side. */
+  targetCount: number;
+  /** `targetCount - sourceCount`. */
+  difference: number;
+  /** `(difference / sourceCount) * 100`, as a percentage (0 when `sourceCount` is 0 to avoid division by zero). */
+  differenceRate: number;
+  /** The tolerance this finding was evaluated against. `undefined` when no tolerance was supplied, meaning exact equality was required (see `compareVolume`'s doc comment in packages/engine/src/comparison-core/volume/volume.ts for this judgment call). */
+  tolerance?: {
+    percentage?: number;
+    absolute?: number;
+  };
+}
 /** Placeholder item shape for `ComparisonResult.rowDifferences`; refined by T-14. */
 export type RowDifference = DifferenceItem;
 
