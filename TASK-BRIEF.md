@@ -1,13 +1,11 @@
-# ParityLens — Task Brief T-11
+# ParityLens — Task Brief T-12
 
 ## Objective
 
-Implement the Phase-1-scope results webview and status bar summary: given a
-`ComparisonResult`, render its `schemaDifferences` and `profileDifferences`
-as tables in a VS Code webview panel, and show a `Parity: N passed | N
-warnings | N failed` summary in the status bar — using only the data passed
-into the rendering functions, with no direct connector or credential access
-from webview code.
+Implement column mapping (automatic suggestion by exact/case-insensitive/
+snake-camel/ordinal matching, per `Idea Prompt.md` section 3) and
+normalization rules (trim, case, whitespace collapse, numeric tolerance,
+date truncation/timezone, null equivalents, per `Idea Prompt.md` section 4).
 
 Note to whoever dispatches an implementer against this brief: when briefing
 the implementer, quote this document's load-bearing requirements verbatim
@@ -20,83 +18,86 @@ file as the sole authority wherever the two could be read to disagree.
 
 ## Dependencies
 
-- **Required completed tasks:** T-09 (orchestration planner, produces
-  `ComparisonResult`), T-10 (extension scaffold — activation, tree view,
-  `SecretStore`). Both COMPLETE/APPROVED per `PROGRESS-LEDGER.md`.
+- **Required completed tasks:** T-09 (orchestration planner). COMPLETE and
+  APPROVED per `PROGRESS-LEDGER.md`. (T-08's `NormalizationRule` and
+  `ColumnMappingEntry` types, which this task consumes, already exist and
+  are also COMPLETE/APPROVED.)
 - **Required decisions or approvals:** NONE beyond the already-approved
-  `IMPLEMENTATION-PLAN.md` row for T-11.
+  `IMPLEMENTATION-PLAN.md` row for T-12.
 
 ## Files owned
 
-- `packages/extension/src/webview/**`
-- `packages/extension/src/statusbar/**`
+- `packages/engine/src/comparison-core/mapping/**`
+- `packages/engine/src/comparison-core/normalization/**`
 
-Do not touch `packages/extension/src/activation/activate.ts`,
-`packages/extension/src/views/**`, or `packages/extension/src/secrets/**` —
-those are T-10's owned files. If wiring the webview/status bar into
-activation requires a change to `activate.ts` (e.g. registering a new
-command or subscribing the status bar item), that is a **minimal,
-mechanically-necessary companion change**, not new scope — following the
-precedent set in `PROGRESS-LEDGER.md`'s T-04/T-06 decisions (2026-07-27):
-note it explicitly and separately in the implementation report rather than
-folding it in silently, and keep it to the smallest edit that makes T-11's
-owned code reachable from activation.
+Do not touch `packages/engine/src/orchestration/definition/definition.ts`
+(T-08's owned file, defines `NormalizationRule`/`ColumnMappingEntry` that
+this task consumes read-only) or any other `comparison-core/*` sibling
+directory (`type-mapping/`, `schema-diff/`, `profiling/` — each owned by
+its own completed task).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `ComparisonResult` (`packages/shared/src/result.ts`) | Full shape: `comparison`, `runId`, `status`, `summary: {passed, warnings, failed}`, `rowCounts`, `schemaDifferences: SchemaDifference[]`, `profileDifferences: ProfileDifference[]`, `aggregateDifferences`, `rowDifferences`, `execution`. T-11 renders `schemaDifferences` and `profileDifferences` only — `aggregateDifferences`/`rowDifferences` stay empty until T-13/T-14/T-15 exist; do not build UI that assumes they're populated. | T-02 (shape), T-09 (producer) |
-| Consumed | `SchemaDifference` fields | `severity`, `message`, `columnName`, `kind` (`missing-in-target` \| `missing-in-source` \| `type-mismatch` \| `length-mismatch` \| `precision-mismatch` \| `scale-mismatch` \| `nullability-mismatch` \| `order-mismatch`), optional `sourceType`/`targetType` | T-06 |
-| Consumed | `ProfileDifference` fields | `severity`, `message`, `columnName`, `metric` (`distinctCount` \| `nullPercentage` \| `mostCommonValue` \| `newTargetValue` \| `missingTargetValue`), optional `sourceValue`/`targetValue` (typed `unknown` — render via `String(value)`, do not assume a numeric or string type at compile time) | T-07 |
-| Produced | Webview panel render function | Given a `ComparisonResult`, produces webview HTML/content showing schema differences and profile differences each as a table (one row per `DifferenceItem`, columns include at minimum `severity`, `columnName`, and the kind/metric-specific detail). Must not read `vscode.workspace`, `SecretStorage`, or invoke any connector — the function's only input is the `ComparisonResult` object (plus whatever `vscode.WebviewPanel`/webview API surface is needed to actually display it). | T-16 (extends in Phase 2) |
-| Produced | Status bar item | Text format `Parity: {summary.passed} passed \| {summary.warnings} warnings \| {summary.failed} failed`, matching `Idea Prompt.md`'s "Status bar" worked example (`Parity: 18 passed | 2 warnings | 1 failed`) literally in format. Updates from a `ComparisonResult`'s `summary` field only. | Consumers: user-visible; no other task currently consumes this programmatically |
+| Consumed | `ColumnDefinition[]` (`packages/shared/src/types.ts`) | Full shape: `name`, `ordinalPosition`, `nativeType`, `canonicalType`, `nullable`, `isPrimaryKeyCandidate`, optional `length`/`precision`/`scale`. Source and target sides each produce their own array via a connector's `getSchema()`. | T-02 |
+| Consumed | `NormalizationRule` (`packages/engine/src/orchestration/definition/definition.ts`) | `{ trim?, caseSensitive?, collapseWhitespace?, numericTolerance?: {absolute?, percentage?}, timezone?: {source, target}, truncateTo?, nullEquivalents?: string[] }` — every field optional, a rule may combine any subset. This is the existing, already-implemented shape from T-08; consume it as-is, do not redefine or duplicate it. | T-08 (producer of the type) |
+| Consumed | `ColumnMappingEntry` (same file) | Discriminated union: `{source, target}` (plain rename) or `{name, target, sourceExpression?, targetExpression?}` (derived mapping). T-12's `suggestMappings` produces *suggestions*, distinct from this type, which represents a user-authored/approved mapping already present in a `ParityDefinition`. Do not conflate the two — see Prohibited changes. | T-08 (producer of the type) |
+| Produced | `suggestMappings(source: ColumnDefinition[], target: ColumnDefinition[]): MappingSuggestion[]` | For each source column, suggests zero or one best-candidate target column using, in order of preference per `Idea Prompt.md` section 3: exact name match, case-insensitive match, snake_case↔camelCase equivalence, then ordinal position as a last-resort fallback. Each suggestion must report which strategy matched (so a caller/UI can show *why* a mapping was suggested) and must not silently auto-apply — per the idea doc, "Users must be able to approve, reject, or manually edit every mapping," meaning this function only proposes, it never mutates a `ParityDefinition`. Worked example from the idea doc to validate against literally: `customer_id → CUSTOMER_ID` (exact, case-insensitive), `cust_nm → CUSTOMER_NAME` is explicitly called out as *not* achievable by simple matching (abbreviation expansion is out of scope — do not attempt fuzzy/abbreviation matching; only implement the four listed strategies), `created_dt → CREATED_TIMESTAMP` (also abbreviation-based, expect no confident match), `active_ind → IS_ACTIVE` (also abbreviation-based, expect no confident match). Prove the exact/case-insensitive/snake-camel cases work correctly rather than claiming the abbreviation cases "mostly work" — they don't, and shouldn't. | T-16 (consumes for a future mapping-approval UI, unscheduled) |
+| Produced | `applyNormalization(value: unknown, rule: NormalizationRule): unknown` (or an equivalent name — document your exact choice in the report) | Applies exactly the rule fields present on `NormalizationRule` to a single value, returning the normalized value for comparison purposes only. Must implement, at minimum: `trim`, `caseSensitive: false` (case-fold strings), `collapseWhitespace`, `numericTolerance` (used at comparison time, not as a value transform — document how your implementation exposes this, e.g. a separate `valuesEqualWithinTolerance` helper, since tolerance is inherently a two-value comparison, not a single-value transform), `truncateTo` (date truncation, e.g. `"second"`), `timezone` conversion, and `nullEquivalents` (treat any value in the list as equivalent to null for comparison purposes). Match the idea doc section 4 worked example's rule shapes exactly (`customer_name: {trim, case_sensitive: false, collapse_whitespace: true}`, `order_amount: {numeric_tolerance: {absolute: 0.01}}`, `created_timestamp: {timezone: {source, target}, truncate_to: "second"}`, `cancellation_date: {null_equivalents: [...]}`). | T-13 (volume parity, tolerance evaluation), T-14 (row-level parity, applies normalization before comparing) |
 
 ## Prohibited changes
 
-- Do not modify `packages/shared/src/result.ts` — `SchemaDifference`,
-  `ProfileDifference`, `AggregateDifference`, and `RowDifference` are each
-  owned by a different, already-completed or future task (see
-  `CLAUDE.md`: "a refined difference shape is owned by the task that
-  created it"). T-11 only consumes these shapes, never edits them.
-- Do not implement `aggregateDifferences`/`rowDifferences` rendering as if
-  populated — those arrays are guaranteed empty until T-15 (Phase 2
-  planner) exists; building real UI against them now is out of scope and
-  would need rework once T-14 defines `RowDifference`'s real shape.
-- Do not add any connection-management, run-triggering, or comparison
-  YAML-editing UI — that is unscheduled/future scope, not T-11.
-- Do not touch `packages/engine/**` or `packages/shared/**` — T-11 is an
-  extension-only, presentation-layer task.
+- **Normalization must never mutate source or target data.** `Idea
+  Prompt.md` section 4 states explicitly: "These transformations should
+  apply only in the comparison engine. They should never alter the
+  underlying data." `applyNormalization` must be a pure function returning
+  a new normalized value for comparison purposes, never writing back to
+  any connector, record, or persisted structure. This is the reviewer's
+  primary scrutiny target — see Handoff below.
+- Do not modify `packages/engine/src/orchestration/definition/definition.ts`
+  — `NormalizationRule` and `ColumnMappingEntry` are T-08's owned types;
+  T-12 consumes them read-only. If a genuine gap is found (a field this
+  task needs but the type doesn't have), stop and flag it as a blocker
+  rather than editing T-08's file.
+- Do not implement AI-assisted/semantic mapping suggestions — `Idea
+  Prompt.md` section 14 explicitly excludes "AI-generated mappings" from
+  MVP scope.
+- Do not implement abbreviation/prefix/suffix-removal matching (e.g.
+  `cust_nm` → `CUSTOMER_NAME`) — only the four strategies named in this
+  brief's Interfaces table (exact, case-insensitive, snake-camel, ordinal)
+  are in scope; profile-similarity and value-overlap matching (also listed
+  in the idea doc as possible future strategies) are likewise out of scope
+  for this task.
+- Do not touch `packages/extension/**` — T-12 is engine-only.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A webview-rendering test asserting that a
-  `SchemaDifference` item present in a `ComparisonResult` fixture produces
-  a corresponding table row (assert on rendered content, e.g. the column
-  name and severity both appear in the produced HTML/content string) — this
-  must fail because the webview module doesn't exist yet. A second focused
-  test for the status bar: given a `ComparisonResult` with
-  `summary: {passed: 18, warnings: 2, failed: 1}`, the status bar item's
-  text equals `Parity: 18 passed | 2 warnings | 1 failed` — must fail
-  because the status bar module doesn't exist yet.
-- **Command:** `npx vitest run packages/extension`
-- **Expected failure reason:** Module resolution failure — `webview/**` and
-  `statusbar/**` do not exist under `packages/extension/src/` yet.
+- **Test or check to add:** A mapping-suggestion test asserting
+  `suggestMappings` proposes `customer_id → CUSTOMER_ID` (case-insensitive
+  exact match) for a fixture pair of `ColumnDefinition[]` arrays — must
+  fail because `suggestMappings` doesn't exist yet. A second, separate
+  red-state case for normalization: a test asserting
+  `applyNormalization("  Alice  ", {trim: true, caseSensitive: false})`
+  equals `"alice"` — must fail because `applyNormalization` doesn't exist
+  yet.
+- **Command:** `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization`
+- **Expected failure reason:** Module resolution failure — neither
+  directory exists yet under `packages/engine/src/comparison-core/`.
 - **Captured output:** Paste the actual failing command output and exit
   code into `IMPLEMENTATION-REPORT.md`, not a paraphrase.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/extension`
+- **Focused command:** `npx vitest run packages/engine/src/comparison-core/mapping packages/engine/src/comparison-core/normalization`
 - **Full command:** `npm run verify`
-- **Expected evidence:** All new webview/status-bar tests pass; a
-  `ComparisonResult` fixture with at least one `SchemaDifference` and one
-  `ProfileDifference` (reuse or extend an existing engine-package fixture
-  result shape rather than inventing an unrelated one, if a convenient one
-  already exists — otherwise a small hand-built literal matching the real
-  interface is fine) renders both as table rows; the previously-passing
-  294 tests (per `PROGRESS-LEDGER.md`'s T-10 entry) still pass with no
+- **Expected evidence:** Both red-state cases pass; the full worked example
+  from `Idea Prompt.md` section 3 (`customer_id → CUSTOMER_ID`) and section
+  4 (`customer_name`, `order_amount`, `created_timestamp`,
+  `cancellation_date` rules) are each exercised by at least one test with
+  the exact literal values from those examples; the previously-passing 298
+  tests (per `PROGRESS-LEDGER.md`'s T-11 entry) still pass with no
   regression; `npm run verify` exits 0.
 
 ## Handoff
@@ -105,14 +106,18 @@ owned code reachable from activation.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-11-results-webview-phase1`
+- **Commit or patch checkpoint:** Branch `task/T-12-mapping-normalization`
 
-**Note to reviewer:** scrutinize hardest whether the webview-rendering
-function has any path that reaches `vscode.workspace`, `SecretStorage`, a
-connector, or any I/O beyond the `ComparisonResult` object and the webview
-display API itself — the brief's Interfaces table states "webview only
-renders data passed to it," and `IMPLEMENTATION-PLAN.md`'s T-11 review-gate
-column says the reviewer must confirm "no direct connector/credential
-access from webview code." Also verify any `activate.ts` edit is genuinely
-minimal (wiring only) and not a reimplementation of T-10's activation
-logic.
+**Note to reviewer:** scrutinize hardest whether `applyNormalization` (or
+whatever it's named) has any code path that writes back to a connector,
+mutates the input `ColumnDefinition`/record objects in place, or otherwise
+alters anything outside its own return value — per
+`IMPLEMENTATION-PLAN.md`'s T-12 review-gate column, "confirms normalization
+never mutates source data, only comparison-time values." Construct a
+concrete adversarial case (e.g. pass an object/array value through
+normalization and assert the original reference is unchanged afterward) 
+rather than accepting a code-read alone. Also verify `suggestMappings`
+genuinely does NOT propose a mapping for the abbreviation-based idea-doc
+examples (`cust_nm`, `created_dt`, `active_ind`) — a false-positive
+"confident" match on those would contradict the brief's explicit scope
+boundary.
