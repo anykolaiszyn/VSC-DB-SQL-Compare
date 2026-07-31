@@ -161,7 +161,7 @@ Captured output (tail):
 ## Patch or commit identity
 
 - **Branch:** `task/T-13-volume-parity`
-- **Commit:** recorded after this report is written and staged — see the commit created immediately following this report (exact hash to be confirmed via `git log -1` after commit; this section is filled in accurately at commit time, not backdated).
+- **Commit:** `59adc9f6cfbb176144de770c8c240897ed6b4cc0` — "T-13: implement volume parity (compareVolume, AggregateDifference refinement)".
 
 ## Recommended next step
 
