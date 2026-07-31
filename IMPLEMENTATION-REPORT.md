@@ -116,7 +116,7 @@ Idea-doc worked examples exercised literally and passing:
 
 ## Patch or commit identity
 
-- **Commit:** (recorded after `git commit`; see final report update below or `git log` on this branch)
+- **Commit:** `7c04db7` ("T-12: implement column mapping suggestion and normalization rules")
 - **Branch:** `task/T-12-mapping-normalization`
 
 ## Recommended next step
