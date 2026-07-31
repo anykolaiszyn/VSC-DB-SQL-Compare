@@ -1,13 +1,14 @@
-# ParityLens — Task Brief T-13
+# ParityLens — Task Brief T-14
 
 ## Objective
 
-Implement volume parity per `Idea Prompt.md` section 2 ("Layer 3: Volume
-Parity") and section 12 ("Severity and Tolerance Model"): compare total row
-count (and, where cheaply derivable from the same query, distinct/null key
-counts) between source and target, evaluate the difference against a
-configured tolerance (exact equality / absolute / percentage / informational
-only), and classify the result per the severity model.
+Implement row-level parity per `Idea Prompt.md` section 2 ("Layer 6:
+Row-Level Parity"): key-based matching between source and target record
+sets, classifying every row into one of the categories the idea doc names —
+Matching, Missing from source, Missing from target, Duplicate in source,
+Duplicate in target, Matched key with differing values, Unable to compare,
+Ignored by rule — and, for matched rows, comparing each mapped column using
+T-12's normalization.
 
 Note to whoever dispatches an implementer against this brief: quote this
 document's load-bearing requirements verbatim rather than paraphrasing them.
@@ -21,71 +22,75 @@ two could be read to disagree.
 ## Dependencies
 
 - **Required completed tasks:** T-12 (column mapping + normalization).
-  COMPLETE and APPROVED per `PROGRESS-LEDGER.md`. (T-13 does not actually
-  consume T-12's `suggestMappings`/`applyNormalization` output directly —
-  volume parity compares row counts, not mapped column values — but
-  `IMPLEMENTATION-PLAN.md`'s dependency-ordering lists T-12 as the
-  prerequisite, satisfied.)
+  COMPLETE and APPROVED per `PROGRESS-LEDGER.md`. T-14 directly consumes
+  `applyNormalization`/`valuesEqualWithinTolerance` from
+  `packages/engine/src/comparison-core/normalization/normalization.ts` and
+  `ColumnMappingEntry` from
+  `packages/engine/src/orchestration/definition/definition.ts` (T-08's
+  type, consumed read-only, same as T-12 does).
 - **Required decisions or approvals:** NONE beyond the already-approved
-  `IMPLEMENTATION-PLAN.md` row for T-13.
+  `IMPLEMENTATION-PLAN.md` row for T-14.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/volume/**`
+- `packages/engine/src/comparison-core/row-level/**`
 
-Do not touch `packages/engine/src/comparison-core/profiling/**` (T-07's
-owned file — model your query-execution pattern on it for consistency, per
-the Interfaces table below, but do not import from or edit it beyond a
-normal read), `packages/engine/src/orchestration/**` (T-09's/T-15's owned
-files — T-13 produces a comparison function; wiring it into the planner's
-`runComparison` is explicitly T-15's job, not this task's), or
-`packages/shared/src/result.ts` beyond the one refinement named below.
+Do not touch `packages/engine/src/comparison-core/mapping/**` or
+`.../normalization/**` (T-12's owned files — consume their exports
+read-only via `import`), `packages/engine/src/orchestration/**` (T-09's/
+T-15's owned files — wiring `compareRows` into the planner is T-15's job,
+not this task's), or
+`packages/engine/src/orchestration/definition/definition.ts` (T-08's owned
+file, defines `ColumnMappingEntry`/`keys` that this task consumes
+read-only).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `DataPlatformConnector` (`packages/shared/src/connector.ts`) | No dedicated row-count method exists on this interface. Follow T-07's established pattern in `packages/engine/src/comparison-core/profiling/profiling.ts` (`profileColumn`): build your own `SELECT COUNT(*) ...` SQL string, resolve the query object reference the same way `resolveObjectReference` does, quote identifiers via `connector.quoteIdentifier`, and execute via `connector.executeQuery(input, executionOptions)`, consuming the single-row `AsyncIterable<RecordBatch>` result. Do not add a new method to the shared `DataPlatformConnector` interface — that would be an unowned change to `packages/shared/src/connector.ts` outside this task's file ownership. | T-04 (FixtureConnector, the only connector available for testing) |
-| Consumed | `ParityChecks.rowCount` (`packages/engine/src/orchestration/definition/definition.ts:85-91`) | Existing, already-implemented shape: `{ enabled: boolean, tolerance?: { percentage?: number, absolute?: number } }`. This is the tolerance configuration T-13 evaluates against. Consume read-only; do not modify `definition.ts`. Note the type only supports absolute/percentage tolerance and enabled/disabled — it has no explicit "exact equality" or "informational only" variant beyond what absolute/percentage-omitted or enabled:false already express; if you find a genuine gap, stop and flag it as a blocker rather than editing T-08's file. | T-08 (producer of the type) |
-| Produced | `compareVolume(source: DataPlatformConnector, target: DataPlatformConnector, sourceInput: QueryInput, targetInput: QueryInput, tolerance?: { percentage?: number; absolute?: number }): Promise<VolumeDifference>` (exact signature/name your choice — document it precisely in the report) | Executes a row-count query against both connectors, computes `difference = targetCount - sourceCount` and `differenceRate` (percentage), and classifies the result against the supplied tolerance per `Idea Prompt.md` section 2's worked example: `Source rows: 12,405,128 / Target rows: 12,402,991 / Difference: -2,137 / Difference rate: -0.0172% / Tolerance: 0.0100% / Result: FAIL`. Reproduce this exact worked example as a literal test case. When `tolerance` is omitted, treat as exact-equality (any nonzero difference fails) — document this judgment call explicitly in the report since the idea doc lists "informational comparison only" as a distinct mode this type doesn't cleanly express (see the Interfaces row above); do not guess silently. | T-15 (wires into planner), T-16 (renders in webview) |
-| Produced | `VolumeDifference` — new interface, extends or is assignable to the existing `AggregateDifference` placeholder alias in `packages/shared/src/result.ts:126` (`export type AggregateDifference = DifferenceItem;` — currently just an alias, explicitly reserved for T-13 to refine per that file's header comment and line 125's own doc comment: "Placeholder item shape for `ComparisonResult.aggregateDifferences`; refined by T-13") | Must report at minimum: `severity` and `message` (inherited from `DifferenceItem`), `sourceCount`, `targetCount`, `difference`, `differenceRate`, and the tolerance that was evaluated against. This is the ONE place `packages/shared/src/result.ts` may be edited by this task — refine `AggregateDifference` from the placeholder alias into a real interface, following the exact pattern `SchemaDifference` (T-06) and `ProfileDifference` (T-07) already established in that same file (extend `DifferenceItem`, add a doc comment explaining the shape, do not touch `SchemaDifference`/`ProfileDifference`/`RowDifference` in the same file). | T-15, T-16 |
+| Consumed | `RecordBatch` (`packages/shared/src/types.ts:110-117`) | `{ columns: string[], rows: unknown[][], rowCount: number }` — row-oriented result shape every connector's `executeQuery` yields. T-14 does not call a connector directly; it operates on already-fetched source/target row sets (an in-memory array of rows, or an async-iterable of `RecordBatch`, your choice — document which in the report). Fetching/streaming policy for very large row sets is explicitly out of scope for this task (no pagination/chunking strategy required yet — assume both sides fit in memory for now, matching the fixture-scale data this task will be tested against). | T-04 (fixture connector), consumed indirectly |
+| Consumed | `ColumnMappingEntry` / `keys: string[]` (`packages/engine/src/orchestration/definition/definition.ts:52-59,113`) | `keys` names the matching key column(s) (composite keys supported — an array, not a single string). `ColumnMappingEntry` names which source column maps to which target column, consumed read-only, same pattern as T-12. | T-08 (producer of the type) |
+| Consumed | `applyNormalization(value, rule)` / `valuesEqualWithinTolerance(a, b, tolerance)` (`packages/engine/src/comparison-core/normalization/normalization.ts`) | Existing, already-implemented pure functions. For matched rows, apply the relevant `NormalizationRule` (if any is configured for that column) to both source and target values before comparing, per `Idea Prompt.md`'s worked example: `STATUS: Shipped vs SHIPPED → "Match after normalization"`, `ORDER_AMOUNT: 125.3700 vs 125.37 → "Match"` (via `numericTolerance`/type coercion), `SHIP_DATE: "2026-07-20 00:00:00" vs "2026-07-20" → "Match"` (via normalization), `CUSTOMER_NAME: "Acme Inc." vs "Acme, Inc." → "Difference"` (no normalization rule closes this gap — must correctly report a difference, not silently pass). Reproduce this exact worked example (all four columns) as literal test cases. | T-12 (producer) |
+| Produced | `compareRows(sourceRows: RecordBatch \| unknown[][], targetRows: RecordBatch \| unknown[][], keys: string[], mapping: ColumnMappingEntry[], rules?: Record<string, NormalizationRule>): RowDifference[]` (exact signature your choice — document it precisely in the report) | Classifies every row from both sides into exactly one of the 8 categories named in the Objective, matching source-to-target by key (composite keys supported — multiple key columns concatenated/tupled for matching, not just the first). Duplicate detection: if a key value appears more than once on one side, classify all rows sharing that key on that side as "Duplicate in source"/"Duplicate in target" rather than attempting a 1:1 match. For matched (non-duplicate) key pairs, compare each mapped column per the Interfaces row above; if ANY mapped column differs after normalization, classify the row as "Matched key with differing values" and report which column(s) differed. "Unable to compare" is for a row where a mapped column's value cannot be normalized/compared (e.g. a normalization function throws, or a type is fundamentally incomparable) — do not let such an error crash `compareRows`; catch and classify instead. "Ignored by rule" is for a column-level or row-level exclusion the caller explicitly requests (a minimal `ignoreColumns?: string[]` parameter is sufficient scope for this — do not invent a full expression-based ignore-rule engine). | T-15 (wires into planner), T-16 (renders in webview), T-20 (future hash-comparison strategy, unscheduled) |
+| Produced | `RowDifference` — refine the existing placeholder alias in `packages/shared/src/result.ts:128` (`export type RowDifference = DifferenceItem;` — explicitly reserved for T-14 per that file's header comment) | Must report at minimum: `severity`/`message` (inherited from `DifferenceItem`), the row's key value(s), the classification category, and (for "Matched key with differing values") which column(s) differed with their source/target values. This is the ONE place `packages/shared/src/result.ts` may be edited by this task — follow the exact pattern `SchemaDifference` (T-06), `ProfileDifference` (T-07), and `AggregateDifference` (T-13) already established (extend `DifferenceItem`, add a doc comment, do not touch the other three difference shapes in the same file). | T-15, T-16 |
 
 ## Prohibited changes
 
-- Do not widen `SchemaDifference`, `ProfileDifference`, or `RowDifference`
-  in `result.ts` as a side effect — only `AggregateDifference` is this
-  task's to refine, per that file's own ownership comments.
+- Do not widen `SchemaDifference`, `ProfileDifference`, or
+  `AggregateDifference` in `result.ts` as a side effect — only
+  `RowDifference` is this task's to refine.
+- Do not modify `packages/engine/src/comparison-core/mapping/**` or
+  `.../normalization/**` — both are T-12's owned files; consume their
+  exports read-only via `import`.
 - Do not modify `packages/engine/src/orchestration/definition/definition.ts`
-  — `ParityChecks.rowCount` is T-08's owned type; T-13 consumes it
-  read-only. If a genuine gap is found, stop and flag it as a blocker
-  rather than editing T-08's file.
+  — T-08's owned type. If a genuine gap is found (a field this task needs
+  but the type doesn't have), stop and flag it as a blocker rather than
+  editing T-08's file.
 - Do not modify `packages/engine/src/orchestration/planner/**` — wiring
-  `compareVolume` into `runComparison` is T-15's explicitly scoped job
-  (`IMPLEMENTATION-PLAN.md` T-15 row), not T-13's. T-13 only produces the
-  comparison function; it does not call it from the planner.
-- Do not implement distinct-key-count, duplicate-key-count, null-key-count,
-  count-by-partition/date/segment, or min/max-key comparisons — `Idea
-  Prompt.md` section 2 lists these as part of "Layer 3: Volume Parity," but
-  `IMPLEMENTATION-PLAN.md`'s T-13 row scopes this task to row count with
-  tolerance evaluation only ("row count, distinct count, duplicate/null key
-  counts, tolerance evaluation" is the plan row's language — if you
-  implement more than total row count, document exactly what additional
-  metrics you added and why they were cheap/safe to include without scope
-  creep; when in doubt, implement row count only and flag the rest as
-  deferred rather than guessing at unspecified additional query shapes).
-- Do not touch `packages/extension/**` — T-13 is engine-only.
+  `compareRows` into `runComparison` is T-15's explicitly scoped job, not
+  T-14's. T-14 only produces the comparison function.
+- Do not implement hash-based row comparison (SQL-side row hashing to avoid
+  transferring full row data) — that is explicitly `IMPLEMENTATION-PLAN.md`
+  T-20's scope, listed as a separate future task.
+- Do not implement sampling strategies for row-level comparison on very
+  large datasets — that is explicitly T-21's scope.
+- Do not build a full expression-based ignore-rule engine — a minimal
+  `ignoreColumns?: string[]` parameter satisfies "Ignored by rule" for this
+  task; anything more elaborate is scope creep.
+- Do not touch `packages/extension/**` — T-14 is engine-only.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A test reproducing `Idea Prompt.md` section 2's
-  worked example almost exactly (source rows, target rows, and a
-  0.0100% tolerance producing a `FAIL` result with the difference/rate
-  computed correctly) — must fail because `compareVolume` doesn't exist
-  yet. A second red-state case: an in-tolerance pair of counts expected to
-  produce a `PASS`/non-failing result — must also fail for the same
-  reason.
-- **Command:** `npx vitest run packages/engine/src/comparison-core/volume`
+- **Test or check to add:** A test classifying a small hand-built fixture
+  row set (constructed directly in the test file, not requiring a live
+  connector) covering at least: one matching row, one missing-from-target
+  row, one missing-from-source row, one duplicate-key row on one side, and
+  one matched-key-with-differing-values row — must fail because
+  `compareRows` doesn't exist yet. A second red-state case: the idea doc's
+  literal `ORDER_ID = 1008924` worked example (all four columns) — must
+  also fail for the same reason.
+- **Command:** `npx vitest run packages/engine/src/comparison-core/row-level`
 - **Expected failure reason:** Module resolution failure — the directory
   doesn't exist yet under `packages/engine/src/comparison-core/`.
 - **Captured output:** Paste the actual failing command output and exit
@@ -93,13 +98,17 @@ files — T-13 produces a comparison function; wiring it into the planner's
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/engine/src/comparison-core/volume`
+- **Focused command:** `npx vitest run packages/engine/src/comparison-core/row-level`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Both red-state cases pass; the worked example from
-  `Idea Prompt.md` section 2 is exercised with the exact literal numbers
-  from that example; an in-tolerance case passes; a percentage-tolerance
-  case and an absolute-tolerance case are each exercised separately; the
-  previously-passing 334 tests (per `PROGRESS-LEDGER.md`'s T-12 entry)
+- **Expected evidence:** Both red-state cases pass with 100% correct
+  classification against the hand-built expected set (per
+  `DESIGN-SPEC.md`'s acceptance criterion 2, referenced in
+  `IMPLEMENTATION-PLAN.md`'s T-14 row); the idea doc's `ORDER_ID = 1008924`
+  worked example passes with the exact literal values/results shown
+  (`STATUS` → "Match after normalization", `ORDER_AMOUNT` → "Match",
+  `SHIP_DATE` → "Match", `CUSTOMER_NAME` → "Difference"); composite-key
+  matching is exercised by at least one test using two key columns; the
+  previously-passing 339 tests (per `PROGRESS-LEDGER.md`'s T-13 entry)
   still pass with no regression; `npm run verify` exits 0.
 
 ## Handoff
@@ -108,16 +117,17 @@ files — T-13 produces a comparison function; wiring it into the planner's
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-13-volume-parity`
+- **Commit or patch checkpoint:** Branch `task/T-14-row-level`
 
-**Note to reviewer:** scrutinize hardest (a) whether the percentage-rate
-arithmetic matches the idea doc's worked example exactly (`-2,137 /
-12,405,128 = -0.01722...%`, rounding/sign conventions matter — re-derive
-this independently rather than trusting the implementer's own test
-assertion), (b) whether `AggregateDifference`'s refinement in `result.ts`
-followed the same additive, non-breaking pattern `SchemaDifference`/
-`ProfileDifference` used (no changes to sibling difference shapes), and (c)
-whether the implementer silently expanded scope into distinct/duplicate/
-null-key counts, count-by-partition, or min/max-key comparisons beyond
-plain row count — check the actual diff against the Prohibited Changes
-section above, not just the report's own characterization of scope.
+**Note to reviewer:** per `IMPLEMENTATION-PLAN.md`'s T-14 review-gate
+column, "independently re-verify the classification against the hand-built
+expected set, not just re-running the same test" — construct your own
+adversarial fixture row set (not reusing the implementer's) covering edge
+cases: a key that is duplicated on BOTH sides simultaneously, a row where a
+mapped column value throws during normalization (must classify "Unable to
+compare," not crash), a composite key where the individual key columns
+match but not in combination, and an `ignoreColumns`-excluded column that
+genuinely differs (must NOT appear in "Matched key with differing values").
+Also verify `RowDifference`'s refinement in `result.ts` is purely additive
+(does not touch `SchemaDifference`/`ProfileDifference`/`AggregateDifference`),
+matching the precedent T-06/T-07/T-13 already established.
