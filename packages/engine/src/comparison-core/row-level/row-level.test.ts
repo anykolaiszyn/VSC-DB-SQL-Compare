@@ -1,0 +1,202 @@
+// T-14: row-level parity tests.
+//
+// Two red-state cases per TASK-BRIEF.md's "Red-state evidence" section:
+// 1. A hand-built fixture row set covering matching / missing-from-target /
+//    missing-from-source / duplicate-key-on-one-side / matched-key-differing
+//    rows.
+// 2. Idea Prompt.md section 2's literal ORDER_ID = 1008924 worked example
+//    (all four columns), reproduced verbatim.
+import { describe, expect, it } from "vitest";
+import type { ColumnMappingEntry } from "../../orchestration/definition/definition.js";
+import type { NormalizationRule } from "../../orchestration/definition/definition.js";
+import { compareRows } from "./row-level.js";
+
+describe("compareRows", () => {
+  describe("classification categories", () => {
+    // Columns: id, name, amount. Key: id.
+    const columns = ["id", "name", "amount"];
+    const mapping: ColumnMappingEntry[] = [
+      { source: "name", target: "name" },
+      { source: "amount", target: "amount" },
+    ];
+
+    it("classifies matching, missing, duplicate, and differing rows correctly", () => {
+      const sourceRows = [
+        [1, "Alice", 100], // matching
+        [2, "Bob", 200], // missing-from-target
+        [3, "Carl", 300], // matched-key-differing-values (name differs)
+        [4, "Dup", 400], // duplicate-in-source (id 4 appears twice on source)
+        [4, "Dup2", 401],
+      ];
+      const targetRows = [
+        [1, "Alice", 100], // matching
+        [3, "Carla", 300], // differs
+        [5, "Eve", 500], // missing-from-source
+      ];
+
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns, rows: targetRows, rowCount: targetRows.length },
+        ["id"],
+        mapping
+      );
+
+      const byCategory = (category: string) => results.filter((r) => r.category === category);
+
+      expect(byCategory("matching")).toHaveLength(1);
+      expect(byCategory("matching")[0]?.keyValues).toEqual([1]);
+
+      expect(byCategory("missing-from-target")).toHaveLength(1);
+      expect(byCategory("missing-from-target")[0]?.keyValues).toEqual([2]);
+
+      expect(byCategory("missing-from-source")).toHaveLength(1);
+      expect(byCategory("missing-from-source")[0]?.keyValues).toEqual([5]);
+
+      expect(byCategory("matched-key-differing-values")).toHaveLength(1);
+      const diffRow = byCategory("matched-key-differing-values")[0];
+      expect(diffRow?.keyValues).toEqual([3]);
+      expect(diffRow?.columnDifferences).toEqual([
+        { columnName: "name", sourceValue: "Carl", targetValue: "Carla" },
+      ]);
+
+      // Both duplicate-in-source rows (key 4) should be reported.
+      expect(byCategory("duplicate-in-source")).toHaveLength(2);
+      expect(byCategory("duplicate-in-source").map((r) => r.keyValues)).toEqual([[4], [4]]);
+    });
+
+    it("classifies a key duplicated only on the target side", () => {
+      const sourceRows = [[10, "Only", 1]];
+      const targetRows = [
+        [10, "Only", 1],
+        [10, "OnlyAgain", 1],
+      ];
+
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns, rows: targetRows, rowCount: targetRows.length },
+        ["id"],
+        mapping
+      );
+
+      const byCategory = (category: string) => results.filter((r) => r.category === category);
+      expect(byCategory("duplicate-in-target")).toHaveLength(2);
+      expect(byCategory("matching")).toHaveLength(0);
+    });
+
+    it("respects ignoreColumns: an excluded column that differs must not surface as matched-key-differing-values", () => {
+      const sourceRows = [[1, "Alice", 100]];
+      const targetRows = [[1, "AliceDiff", 100]];
+
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns, rows: targetRows, rowCount: targetRows.length },
+        ["id"],
+        mapping,
+        {},
+        { ignoreColumns: ["name"] }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("matching");
+    });
+
+    it("classifies unable-to-compare when normalization throws for a mapped column", () => {
+      const throwingRule: NormalizationRule = { truncateTo: "day" };
+      const sourceRows = [[1, "Alice", 100]];
+      // amount is expected to be a number; forcing a throw is simulated via
+      // a rule that only applies to strings safely -- to exercise the
+      // "Unable to compare" path deterministically, this test supplies a
+      // mapping to a column that does not exist in the row shape (name
+      // column index out of range on target), which the implementation
+      // must catch and classify as unable-to-compare rather than throwing.
+      const targetRows = [[1, "Alice"]]; // missing the "amount" column value entirely
+      const badColumns = ["id", "name"];
+
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns: badColumns, rows: targetRows, rowCount: targetRows.length },
+        ["id"],
+        mapping,
+        { amount: throwingRule }
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("unable-to-compare");
+    });
+
+    it("supports composite keys (two key columns)", () => {
+      const compositeColumns = ["order_id", "line_number", "sku"];
+      const compositeMapping: ColumnMappingEntry[] = [{ source: "sku", target: "sku" }];
+
+      const sourceRows = [
+        [100, 1, "SKU-A"],
+        [100, 2, "SKU-B"],
+      ];
+      const targetRows = [
+        [100, 1, "SKU-A"],
+        [100, 2, "SKU-C"],
+      ];
+
+      const results = compareRows(
+        { columns: compositeColumns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns: compositeColumns, rows: targetRows, rowCount: targetRows.length },
+        ["order_id", "line_number"],
+        compositeMapping
+      );
+
+      expect(results).toHaveLength(2);
+      const matching = results.find((r) => r.category === "matching");
+      expect(matching?.keyValues).toEqual([100, 1]);
+      const differing = results.find((r) => r.category === "matched-key-differing-values");
+      expect(differing?.keyValues).toEqual([100, 2]);
+      expect(differing?.columnDifferences).toEqual([
+        { columnName: "sku", sourceValue: "SKU-B", targetValue: "SKU-C" },
+      ]);
+    });
+  });
+
+  describe("Idea Prompt.md section 2 worked example: ORDER_ID = 1008924", () => {
+    // Column           Source                 Target                Result
+    // STATUS           Shipped                SHIPPED               Match after normalization
+    // ORDER_AMOUNT     125.3700               125.37                Match
+    // SHIP_DATE        2026-07-20 00:00:00    2026-07-20            Match
+    // CUSTOMER_NAME    Acme Inc.              Acme, Inc.             Difference
+    const columns = ["ORDER_ID", "STATUS", "ORDER_AMOUNT", "SHIP_DATE", "CUSTOMER_NAME"];
+    const mapping: ColumnMappingEntry[] = [
+      { source: "STATUS", target: "STATUS" },
+      { source: "ORDER_AMOUNT", target: "ORDER_AMOUNT" },
+      { source: "SHIP_DATE", target: "SHIP_DATE" },
+      { source: "CUSTOMER_NAME", target: "CUSTOMER_NAME" },
+    ];
+    const rules: Record<string, NormalizationRule> = {
+      STATUS: { caseSensitive: false },
+      SHIP_DATE: { truncateTo: "day" },
+    };
+
+    const sourceRows = [[1008924, "Shipped", 125.37, "2026-07-20 00:00:00", "Acme Inc."]];
+    const targetRows = [[1008924, "SHIPPED", 125.37, "2026-07-20", "Acme, Inc."]];
+
+    it("reports Match for STATUS, ORDER_AMOUNT, SHIP_DATE and Difference for CUSTOMER_NAME", () => {
+      const results = compareRows(
+        { columns, rows: sourceRows, rowCount: 1 },
+        { columns, rows: targetRows, rowCount: 1 },
+        ["ORDER_ID"],
+        mapping,
+        rules,
+        { numericTolerance: { ORDER_AMOUNT: { absolute: 0.01 } } }
+      );
+
+      expect(results).toHaveLength(1);
+      const result = results[0];
+      expect(result?.keyValues).toEqual([1008924]);
+      expect(result?.category).toBe("matched-key-differing-values");
+
+      // Only CUSTOMER_NAME should have failed to reconcile -- STATUS,
+      // ORDER_AMOUNT, and SHIP_DATE all match after normalization/tolerance
+      // and must NOT appear in columnDifferences.
+      expect(result?.columnDifferences).toEqual([
+        { columnName: "CUSTOMER_NAME", sourceValue: "Acme Inc.", targetValue: "Acme, Inc." },
+      ]);
+    });
+  });
+});

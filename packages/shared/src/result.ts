@@ -158,8 +158,68 @@ export interface AggregateDifference extends DifferenceItem {
     absolute?: number;
   };
 }
-/** Placeholder item shape for `ComparisonResult.rowDifferences`; refined by T-14. */
-export type RowDifference = DifferenceItem;
+/**
+ * The classification category a `RowDifference` finding reports, per `Idea
+ * Prompt.md` section 2 ("Layer 6: Row-Level Parity")'s exact eight-item
+ * list: "Matching, Missing from source, Missing from target, Duplicate in
+ * source, Duplicate in target, Matched key with differing values, Unable to
+ * compare, Ignored by rule."
+ */
+export type RowDifferenceCategory =
+  | "matching"
+  | "missing-from-source"
+  | "missing-from-target"
+  | "duplicate-in-source"
+  | "duplicate-in-target"
+  | "matched-key-differing-values"
+  | "unable-to-compare"
+  | "ignored-by-rule";
+
+/**
+ * Per-column detail for a `RowDifference` whose `category` is
+ * `"matched-key-differing-values"`, mirroring `Idea Prompt.md` section 2's
+ * `ORDER_ID = 1008924` worked example table (`Column | Source | Target |
+ * Result`).
+ */
+export interface RowColumnDifference {
+  /** Target-side column name this mapped column difference is about. */
+  columnName: string;
+  /** Source-side value, after normalization (if any rule applied). */
+  sourceValue: unknown;
+  /** Target-side value, after normalization (if any rule applied). */
+  targetValue: unknown;
+}
+
+/**
+ * Refined shape for `ComparisonResult.rowDifferences`, owned by T-14 (see
+ * `DifferenceItem`'s doc comment above `SchemaDifference`: T-14 is the
+ * designated task that refines this specific placeholder, same additive,
+ * non-breaking pattern T-06/T-07/T-13 already established for their own
+ * difference shapes -- extends `DifferenceItem` so `severity`/`message` are
+ * preserved, and adds the row-classification detail a row-level parity
+ * finding needs to be independently useful (e.g. rendered as a table row in
+ * the results webview) without requiring the consumer to re-parse
+ * `message`).
+ *
+ * Judgment call: `keyValues` is always populated with the matching key
+ * column value(s) for every category, including "missing-from-source" (the
+ * key only exists on the target side) and "missing-from-target" (the key
+ * only exists on the source side) -- the key value itself is still known
+ * and reportable in both cases, since it came from whichever side the row
+ * was found on. `columnDifferences` is only populated (non-empty) for the
+ * `"matched-key-differing-values"` category, per `Idea Prompt.md`'s worked
+ * example reporting which column(s) differed with their source/target
+ * values; every other category leaves it `undefined` rather than an empty
+ * array, so a consumer can branch on presence rather than length.
+ */
+export interface RowDifference extends DifferenceItem {
+  /** Classification category this row was placed into (one of the eight named in Idea Prompt.md section 2). */
+  category: RowDifferenceCategory;
+  /** The row's matching key value(s), in `keys` order (a single-element array for a simple key, multiple for a composite key). */
+  keyValues: unknown[];
+  /** Which mapped column(s) differed and their normalized source/target values. Only present when `category` is `"matched-key-differing-values"`. */
+  columnDifferences?: RowColumnDifference[];
+}
 
 /** Overall run status, per the `status` field in Idea Prompt.md's example. */
 export type ComparisonStatus = "passed" | "warning" | "failed" | "error";
