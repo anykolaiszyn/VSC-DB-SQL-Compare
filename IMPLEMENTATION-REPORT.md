@@ -123,8 +123,8 @@ was **not** touched — see "Assumptions and risks" below.
 
 ## Patch or commit identity
 
-- **Commit:** a70d9a3 (see `git log -1` on the branch below for the
-  authoritative hash if this value and the repository ever diverge)
+- **Commit:** `308ad991a7b3f7a9a2c61e1e4947b9208f68f934` (subject: "T-11:
+  Phase-1 results webview and status bar summary")
 - **Branch:** `task/T-11-results-webview-phase1`
 
 Note: `PROGRESS-LEDGER.md`, `TASK-BRIEF.md`, and `package-lock.json` showed
