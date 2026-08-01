@@ -50,6 +50,13 @@ For each task ID in the approved implementation plan, in dependency order:
      it into something looser.
    - Prohibited changes — name the adjacent files/shapes that look
      temptingly related but are out of scope.
+   - Any citation to another control file (a spec section, a task ID, a
+     prior commit hash) — quote the source line verbatim or omit the
+     citation entirely. A paraphrased citation has repeatedly turned out
+     wrong in practice (wrong section number, a fabricated commit hash);
+     it's never been the cause of a functional defect, but it wastes a
+     reviewer's time chasing a citation instead of the substance, so treat
+     "cite exactly or don't cite" as a hard rule for brief-writing.
    - Red-state and green-state evidence requirements — specific enough
      that "did the implementer actually prove this" is checkable.
    - Handoff: report locations, and a note to the reviewer about what
@@ -91,17 +98,72 @@ For each task ID in the approved implementation plan, in dependency order:
    implementer's own tests and agrees isn't doing independent review —
    it should write and run its own adversarial probes and its own
    from-scratch verification of any nontrivial arithmetic or claim.
-7. **If the reviewer returns CHANGES REQUIRED**, do not treat this as a
-   failure to route around. Update the ledger to record the exact finding
-   (severity, evidence, required resolution), then dispatch a **new
-   bounded implementer task** scoped only to that finding — same branch,
-   new commit, new red-state evidence reproducing the exact reported
-   bypass/gap before fixing it. Follow with a **fresh reviewer dispatch**
-   (same or different reviewer instance is fine here, since the point of
-   independence was already served in round one) that specifically
-   re-verifies the original finding by reproducing the original failing
-   case itself, not by trusting the fix report. Do not advance until this
-   comes back APPROVED with the finding explicitly marked resolved.
+7. **If the reviewer returns CHANGES REQUIRED, follow the round-1/round-2
+   procedure exactly — do not improvise a variant per task.** This is a
+   named, repeatable sub-procedure, not something to reason out fresh each
+   time a Critical finding lands:
+   1. **Record the finding on the trunk branch, not the task branch.**
+      Switch to trunk, append the finding to `PROGRESS-LEDGER.md`'s open
+      findings table (severity, evidence, required resolution, a
+      task-ID-prefixed finding ID such as `T-20-01`) and to the
+      task-register row (status → `CHANGES REQUIRED (round 1)`), commit
+      there. The task branch stays untouched by ledger edits — this keeps
+      the branch's diff scoped to actual code and avoids stale-branch
+      merge-base drift when the branch is later diffed against trunk.
+   2. **Dispatch a new, bounded implementer task scoped only to that
+      finding** — same task branch, new commit, new red-state evidence
+      that reproduces the exact reported bypass/gap before fixing it. Do
+      not fold in unrelated cleanup even if the implementer notices
+      something else while in the file.
+   3. **Dispatch a fresh reviewer instance** (a new instance specifically —
+      round two is exactly the case where "did the fix actually work" must
+      not be taken on the fixer's word) that re-verifies the original
+      finding by independently reproducing the original failing case
+      itself, not by trusting the fix report's claim that it's resolved.
+      Have it also spend some independent time re-probing the surrounding
+      area beyond just the one finding — round-2 reviews have repeatedly
+      surfaced a second, previously-undetected issue precisely because the
+      reviewer was already deep in the relevant code (e.g. a disclosed
+      risk turning out understated). Do not advance until round two comes
+      back APPROVED with the original finding explicitly marked resolved
+      in the ledger.
+   4. **Reconcile round two as a single ledger update**: task-register row
+      → `COMPLETE`/`APPROVED (round 2)` with the fresh verification count,
+      the original finding → `RESOLVED (confirmed by independent round-2
+      review, <date>)`, plus any new finding the round-2 reviewer
+      surfaced, filed as its own row rather than folded into the original.
+
+7a. **If an implementer's dispatch is interrupted by an infrastructure
+    failure (session/API/quota limit) rather than a design or scope
+    failure**, treat whatever work exists as real and worth preserving —
+    do not discard it and do not leave it sitting uncommitted on trunk.
+    Recovery procedure:
+    1. **Inspect before acting.** Read what's actually in the working
+       tree and run the task's verification command yourself to establish
+       the true state (e.g. "13 of 15 tests pass") — don't rely on
+       whatever partial status the interrupted dispatch happened to report
+       last.
+    2. **Create the task branch now if it doesn't exist yet**, and commit
+       the interrupted state as an explicit checkpoint with an honest
+       commit message disclosing exactly what's known-incomplete or
+       known-failing (e.g. "2 of 15 tests failing: injection-rejection
+       assertions need rework — see below" — not a message that reads as
+       if the work were finished).
+    3. **Restore trunk to clean** (`git checkout main -- <files>` for
+       anything that leaked there, or `git status` + stash if uncertain)
+       before doing anything else — an interrupted dispatch must never
+       leave trunk in an ambiguous state for the next thing that reads it.
+    4. **Dispatch a fresh implementer instance to resume from the
+       checkpoint**, with a prompt that points it at the specific
+       known-failing pieces rather than a generic "finish this task" — a
+       targeted pointer (e.g. "read `FixtureConnector.quoteIdentifier`'s
+       actual implementation before assuming the test's expectation is
+       correct") saves the resumed instance from re-deriving root cause
+       from scratch.
+    5. **Record the interruption and recovery as a decision-log entry**,
+       not just a passing mention — future orchestration benefits from
+       knowing this happened and why the checkpoint-and-resume approach
+       was chosen over discarding the work.
 8. **Reconcile.** Once approved: commit the review report on the task
    branch, merge to the trunk branch (`--no-ff`, so the task's history
    stays visible), install any new dependencies and re-run the full
