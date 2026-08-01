@@ -1,6 +1,5 @@
 {
   "name": "@paritylens/extension",
-  "private": true,
   "version": "0.0.1",
   "description": "ParityLens VS Code extension host",
   "license": "MIT",
@@ -37,7 +36,8 @@
     ]
   },
   "scripts": {
-    "test": "vitest run"
+    "test": "vitest run",
+    "package": "vsce package"
   },
   "dependencies": {
     "@paritylens/engine": "*",

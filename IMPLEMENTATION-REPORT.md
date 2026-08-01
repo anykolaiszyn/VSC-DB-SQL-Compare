@@ -1,264 +1,187 @@
-# ParityLens — Implementation Report T-24
+# ParityLens — Implementation Report T-25
 
 ## Status and objective
 
-- **Status:** COMPLETE (implementation only — not reviewed or approved)
-- **Objective:** Per `TASK-BRIEF.md`, add `"license": "MIT"` to all four
-  `package.json` files in the repo (root, `packages/shared`,
-  `packages/engine`, `packages/extension`) and add a root-level `LICENSE`
-  file with standard MIT license text, naming the project owner as
-  copyright holder and 2026 as the year. This is a metadata-only change
-  found during the prompt-07 Release license inventory; the license
-  choice (MIT) was owner-confirmed directly and required no further
-  decision.
+- **Status:** BLOCKED (partial — all in-scope changes made and verified;
+  a real `.vsix` was not produced because packaging fails on a manifest
+  field outside this task's declared file ownership)
+- **Objective:** Per `TASK-BRIEF.md`, "make a real, reproducible `.vsix`
+  buildable and actually build one from the current approved `main`
+  revision" by installing `@vscode/vsce`, resolving the `private: true`
+  blocker, adding `.vscodeignore`/`README.md`/a packaging script, and
+  producing and verifying a real `.vsix`.
+
+## Why this is blocked, not complete
+
+`TASK-BRIEF.md` item 2 anticipated exactly one blocker — `private: true`
+in `packages/extension/package.json` — and pre-authorized exactly one
+fix for it: removing that field (explicitly *not* authorizing any other
+field edit: "do not touch any other field"). I made that fix. Running
+`vsce package` afterward still fails, but on a **different** field:
+
+```
+ ERROR  Invalid extension "name": "@paritylens/extension" in package.json. Learn more: https://code.visualstudio.com/api/references/extension-manifest
+```
+
+This is not a warning with an override flag (I checked `vsce package
+--help` in full — the only override-style flags are things like
+`--allow-missing-repository`, `--allow-star-activation`,
+`--allow-package-secrets`; none address manifest `name`/`publisher`
+shape). Reading `@vscode/vsce`'s own source
+(`node_modules/@vscode/vsce/out/validation.js`, function
+`validateExtensionName`) confirms this is a hard, non-overridable
+requirement:
+
+```js
+const nameRegex = /^[a-z0-9][a-z0-9\-]*$/i;
+function validateExtensionName(name) {
+    if (!name) { throw new Error(`Missing extension "name"...`); }
+    if (!nameRegex.test(name)) {
+        throw new Error(`Invalid extension "name": "${name}" in package.json. ...`);
+    }
+    return name;
+}
+```
+
+VS Code extension manifest names cannot contain `@` or `/` — npm-scoped
+package names (`@paritylens/extension`) are categorically incompatible
+with the VS Code extension manifest format. There is also no `publisher`
+field in `packages/extension/package.json` at all, which
+`validatePublisher` in the same file will reject once `name` is fixed
+(`Missing extension "publisher": "<ID>"...`) — a second, separate
+blocker on the same file, also outside this task's ownership.
+
+**A genuinely interesting additional finding, disclosed for accuracy:**
+I also checked whether the installed `@vscode/vsce` (3.9.2) actually
+checks `private: true` in the manifest at all. It does not — I searched
+`node_modules/@vscode/vsce/out/*.js` for any reference to a manifest
+`private` field and found none (the only `private` hit in the whole
+package is in `secretLint.js`, an unrelated secretlint rule ID for
+detecting private *keys* in source, not the package.json `private`
+field). I confirmed this empirically too: with `private: true` restored
+and the `name` field still `@paritylens/extension`, `vsce package`
+produces the exact same `name` error above — `private` is never reached
+because `name` validation runs first and fails first. So the brief's
+premise that `private: true` is *the* blocker turned out to be
+incomplete: it may have been true in an older `vsce`/legacy `vsce`
+version (the brief itself notes `@vscode/vsce` is the modern replacement
+for the deprecated `vsce` package name, and validation logic has
+visibly changed between them), but in the currently-installable
+`@vscode/vsce@^3.9.2`, the `name` field is the actual, first-encountered
+blocker, and `private` is not checked at all by this version. I removed
+`private: true` anyway per the brief's explicit instruction (item 2's
+fallback path, (b)) since it is still semantically correct for this
+package (it is intended to be distributed) and doing so is harmless —
+but it did not by itself unblock packaging, and per my read of the
+source it may never have been the operative blocker for this vsce
+version.
+
+**Per my operating instructions, I am required to stop and flag this
+rather than self-authorize an ownership expansion.** Fixing `name`
+(e.g. to `paritylens-extension` or similar) and adding a `publisher`
+field are both edits to `packages/extension/package.json` fields the
+brief did not list as owned ("`private` field removal only, plus a new
+`scripts.package` entry — do not touch any other field") and did not
+anticipate needing. I did not make these edits. A revised task brief
+(or an amendment to this one) authorizing the `name`/`publisher` edits
+is needed before a real `.vsix` can be produced.
+
+**No `.vsix` was produced.** Item 6 of the brief (record file name,
+size, SHA-256 hash) and the unzip-and-inspect content verification
+therefore could not be completed — there is no artifact to inspect. This
+is disclosed here rather than fabricated.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `package.json` | Added `"license": "MIT"` after `description` | Brief scope: root package.json |
-| `packages/shared/package.json` | Added `"license": "MIT"` after `description` | Brief scope: shared package.json |
-| `packages/engine/package.json` | Added `"license": "MIT"` after `description` | Brief scope: engine package.json |
-| `packages/extension/package.json` | Added `"license": "MIT"` after `description` | Brief scope: extension package.json |
-| `LICENSE` (new) | Standard, unmodified MIT license text; copyright line `Copyright (c) 2026 Alex Nykolaiszyn` | Brief scope: new root LICENSE file |
-| `package-lock.json` | `license: "MIT"` mirrored into the four corresponding workspace entries | **Not in declared ownership — see "Out-of-scope edit" below.** Mechanical, unavoidable side effect of running `npm install` (required by brief step 4) after the package.json edits |
+| `package.json` (root) | Added `"@vscode/vsce": "^3.9.2"` to `devDependencies` | Brief item 1 — owner-approved one-time network install |
+| `package-lock.json` | Regenerated by `npm install --save-dev @vscode/vsce` | Lockfile side-effect of the above, not hand-edited |
+| `packages/extension/package.json` | Removed `"private": true`; added `"package": "vsce package"` under `scripts` | Brief item 2 fallback (b) — package is intended to be distributed, and `private` was not semantically accurate for it; brief item 5 — packaging script |
+| `packages/extension/.vscodeignore` (new) | Excludes `src/**`, `**/*.test.ts`, `**/*.test.js`, `**/*.test.js.map`, `tsconfig.json`, `tsconfig.tsbuildinfo`, `**/*.tsbuildinfo`, `node_modules/@types/**`, `**/*.map`, `.gitignore`, and itself | Brief item 3 |
+| `packages/extension/README.md` (new) | Short factual description: what ParityLens is, current state (Data Parity tree view, `paritylens.runComparison` command, fixture-backed comparisons only), VS Code engine requirement | Brief item 4 |
+| `.gitignore` (root) | Added `*.vsix` | Brief item 6 — do not commit built binary artifacts |
 
-## Out-of-scope edit — flagged explicitly
-
-`package-lock.json` is not listed under "Files owned" in `TASK-BRIEF.md`.
-Running `npm install` (which the brief explicitly requires in its
-Green-state section — "`npm install` should run without error after the
-`package.json` edits") caused npm to mirror each workspace's new
-`"license": "MIT"` field into `package-lock.json`'s corresponding
-`packages.*` entries (root, `packages/engine`, `packages/extension`,
-`packages/shared`). This is npm's standard lockfile-sync behavior, not an
-independent decision on my part — there is no way to run `npm install`
-after the package.json edits without npm making this exact update. The
-diff is purely four one-line `"license": "MIT"` additions mirroring the
-package.json changes; no dependency version or resolution changed. Per
-the implementer protocol ("if satisfying the brief mechanically forces a
-small edit outside the literal file list, make the minimal such edit,
-and call it out explicitly and separately") I kept this change rather
-than reverting it (reverting would leave the lockfile inconsistent with
-the package.json files it mirrors) and am flagging it here for reviewer
-judgment.
-
-Full diff of that file:
-
-```diff
---- a/package-lock.json
-+++ b/package-lock.json
-@@ -7,6 +7,7 @@
-     "": {
-       "name": "paritylens",
-       "version": "0.0.1",
-+      "license": "MIT",
-       "workspaces": [
-         "packages/*"
-       ],
-@@ -4280,6 +4281,7 @@
-     "packages/engine": {
-       "name": "@paritylens/engine",
-       "version": "0.0.1",
-+      "license": "MIT",
-       "dependencies": {
-         "@duckdb/node-api": "^1.5.5-r.2",
-         "@paritylens/shared": "*",
-@@ -4295,6 +4297,7 @@
-     "packages/extension": {
-       "name": "@paritylens/extension",
-       "version": "0.0.1",
-+      "license": "MIT",
-       "dependencies": {
-         "@paritylens/engine": "*",
-         "@paritylens/shared": "*"
-@@ -4309,7 +4312,8 @@
-     },
-     "packages/shared": {
-       "name": "@paritylens/shared",
--      "version": "0.0.1"
-+      "version": "0.0.1",
-+      "license": "MIT"
-     }
-   }
- }
-```
+No file outside this list was changed. No file under `packages/*/src/**`
+was touched. `packages/shared/package.json` and
+`packages/engine/package.json` were not touched — both retain
+`"private": true` unchanged (verified below).
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** Every package.json in the repo now declares an
-  explicit `"license": "MIT"` field. A root `LICENSE` file exists with
-  standard, unmodified MIT license text.
-- **Interfaces consumed:** None — no code interfaces were read or
-  depended on. This is a pure metadata change.
-- **Interfaces produced:** None — no code interfaces were added or
-  changed.
-
-## Assumptions and risks
-
-- **Assumptions:**
-  - Copyright holder name: the brief instructs using "Alex Nykolaiszyn"
-    (derived from the owner's email `alex.nykolaiszyn@gmail.com`) if
-    genuinely ambiguous, and to note the assumption rather than guess
-    silently. I used **"Alex Nykolaiszyn"** verbatim as the copyright
-    holder name in `LICENSE`. This is not a silent guess distinct from
-    the brief's own suggested fallback — it is exactly the fallback the
-    brief specifies — but flagging it here per the brief's own
-    instruction to note it.
-  - Copyright year: used **2026** per the brief's explicit instruction
-    ("the current year (2026)").
-- **Risks or limitations:**
-  - `package-lock.json` was touched as a mechanical side effect of the
-    required `npm install` step — see "Out-of-scope edit" section above.
-    This is the one known limitation/deviation from a strictly literal
-    reading of "Files owned"; I judged it unavoidable and disclosed it
-    rather than silently reverting or silently keeping it.
-  - No other risks identified. This is a metadata-only change with no
-    code or interface impact.
-- **Blockers:** None.
+- **Behavior delivered:** `@vscode/vsce` is installed and runnable
+  (`npx --no-install @vscode/vsce --version` → `3.9.2`). The
+  `private: true` blocker the brief anticipated is resolved.
+  `packages/extension/README.md` and `.vscodeignore` exist and are
+  correctly scoped. `npm run package` (from `packages/extension/`) is
+  wired up but currently fails — this is disclosed above, not hidden.
+- **Interfaces consumed:** None new (per brief — build/packaging tooling
+  only).
+- **Interfaces produced:** None new. No `.vsix` was produced (blocked).
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Red state (before) | `grep -n '"license"' package.json packages/*/package.json` | Exit 1, no matches (no `"license"` field anywhere) | Captured below |
-| Red state (before) | `ls LICENSE` | Exit 2, `ls: cannot access 'LICENSE': No such file or directory` | Captured below |
-| Baseline full verification (before any edit) | `npm run verify` | Exit 0 — `Test Files 22 passed \| 2 skipped (24)`, `Tests 404 passed \| 27 skipped (431)` | Captured below |
-| Focused green state (after) | `grep -n '"license"' package.json packages/*/package.json` | Exit 0, exactly 4 matches, all `"license": "MIT"` | Captured below |
-| Focused green state (after) | `cat LICENSE` | Well-formed, unmodified standard MIT text with copyright line | Captured below |
-| `npm install` (after edits) | `npm install` | Exit 0, `added 55 packages, and audited 316 packages` — confirms valid JSON, no syntax break | Captured below |
-| Full verification (after edits) | `npm run verify` | Exit 0 — `Test Files 22 passed \| 2 skipped (24)`, `Tests 404 passed \| 27 skipped (431)` — identical to baseline | Captured below |
+| Baseline (pre-change) | `npm run verify` | Exit 0. 404 passed, 27 skipped, 431 total | Captured in this session before any edit |
+| Red state — vsce not installed | `npx --no-install @vscode/vsce --version` | Failed before install (package absent); confirmed installed afterward → `3.9.2` | This session |
+| Red state — packaging with original manifest (`private: true`, scoped `name`, no `.vscodeignore`) | `cd packages/extension && npx --no-install @vscode/vsce package` | Exit 1: `ERROR  Invalid extension "name": "@paritylens/extension" in package.json. Learn more: https://code.visualstudio.com/api/references/extension-manifest` | This session, captured verbatim above |
+| Confirmation that `private:true` is not the operative blocker | Restored `private: true` temporarily with `name` still `@paritylens/extension`, ran `vsce package` again | Exit 1, identical `name` error — `private` never reached | This session; `private: true` was then re-removed to restore the intended in-scope state |
+| Focused check (packaging) | `cd packages/extension && npx --no-install @vscode/vsce package` (after `private` removal, `.vscodeignore` and `README.md` added) | Exit 1, same `name` error — **cannot proceed further within this task's file ownership** | This session |
+| Full verification | `npm run verify` | Exit 0. **404 passed, 27 skipped, 431 total** — unchanged from baseline | This session, tail of output: `Test Files  22 passed \| 2 skipped (24)` / `Tests  404 passed \| 27 skipped (431)` |
 
-### Red-state evidence (verbatim)
+No `.vsix` file exists anywhere in the working tree — there is nothing
+to hash or unzip. This is stated plainly rather than worked around.
 
-```
-$ grep -n '"license"' package.json packages/*/package.json
-(no output)
-exit: 1
+## Assumptions and risks
 
-$ ls LICENSE
-ls: cannot access 'LICENSE': No such file or directory
-exit: 2
-```
-
-### Baseline `npm run verify` (before edits, on branch `task/T-24-license-metadata` immediately after creation, before any file changed)
-
-```
-> paritylens@0.0.1 verify
-> npm run typecheck && npm run lint && npm run test
-
-> paritylens@0.0.1 typecheck
-> tsc -b --force
-
-> paritylens@0.0.1 lint
-> eslint .
-
-> paritylens@0.0.1 test
-> vitest run
-...
- Test Files  22 passed | 2 skipped (24)
-      Tests  404 passed | 27 skipped (431)
-   Start at  17:31:56
-   Duration  2.47s
-```
-Exit code: 0
-
-### Green-state evidence (verbatim, after edits)
-
-```
-$ grep -n '"license"' package.json packages/*/package.json
-package.json:6:  "license": "MIT",
-packages/engine/package.json:6:  "license": "MIT",
-packages/extension/package.json:6:  "license": "MIT",
-packages/shared/package.json:6:  "license": "MIT",
-```
-
-```
-$ cat LICENSE
-MIT License
-
-Copyright (c) 2026 Alex Nykolaiszyn
-
-Permission is hereby granted, free of charge, to any person obtaining a copy
-of this software and associated documentation files (the "Software"), to deal
-in the Software without restriction, including without limitation the rights
-to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
-copies of the Software, and to permit persons to whom the Software is
-furnished to do so, subject to the following conditions:
-
-The above copyright notice and this permission notice shall be included in all
-copies or substantial portions of the Software.
-
-THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
-IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
-FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
-AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
-LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
-OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
-SOFTWARE.
-```
-
-### `npm install` (verbatim, after edits)
-
-```
-added 55 packages, and audited 316 packages in 1s
-
-67 packages are looking for funding
-  run `npm fund` for details
-
-1 high severity vulnerability
-
-To address all issues, run:
-  npm audit fix
-
-Run `npm audit` for details.
-```
-Exit code: 0. Note: the "1 high severity vulnerability" audit warning is
-pre-existing transitive-dependency noise, unrelated to this task's
-license-metadata change, and out of scope per the brief ("Do not modify
-dependency versions").
-
-### Full `npm run verify` (verbatim, after edits)
-
-```
-> paritylens@0.0.1 verify
-> npm run typecheck && npm run lint && npm run test
-
-> paritylens@0.0.1 typecheck
-> tsc -b --force
-
-> paritylens@0.0.1 lint
-> eslint .
-
-> paritylens@0.0.1 test
-> vitest run
-...
- Test Files  22 passed | 2 skipped (24)
-      Tests  404 passed | 27 skipped (431)
-   Start at  17:32:31
-   Duration  2.50s
-```
-Exit code: 0. Test count identical to baseline (404 passed, 27 skipped,
-431 total) — confirms zero test-count change from this metadata-only
-edit, matching the brief's expected evidence exactly.
+- **Assumptions:** None beyond what's stated above. I did not guess at a
+  `name`/`publisher` value and apply it — that would be exactly the kind
+  of silent ownership expansion my instructions prohibit.
+- **Risks or limitations:**
+  - The extension cannot currently be packaged into a `.vsix` at all,
+    regardless of this task's changes, because of the `name` field
+    format and the missing `publisher` field. This is a pre-existing
+    condition of `packages/extension/package.json` that predates this
+    task; T-25 did not introduce it, but T-25 also could not resolve it
+    within its declared ownership.
+  - The brief's premise ("vsce package refuses a private: true manifest
+    by default") does not hold for the currently-installable
+    `@vscode/vsce@3.9.2` — see the detailed finding above. If a future
+    task revisits this, the `name`/`publisher` blocker should be treated
+    as the actual gate, not `private`.
+  - The "missing repository field" warning mentioned in the brief's
+    Dependencies section was never reached in my testing (packaging
+    fails before that stage), so I cannot confirm or deny it
+    independently of the `name`/`publisher` blocker being resolved
+    first.
+- **Blockers:** `packages/extension/package.json`'s `name` field
+  (`@paritylens/extension`, npm-scoped, invalid per VS Code's extension
+  manifest `nameRegex`) and missing `publisher` field. Both are outside
+  this task's file ownership ("do not touch any other field"). **A
+  revised `TASK-BRIEF.md` (or explicit ledger-recorded scope amendment)
+  authorizing edits to `name` and adding `publisher` in
+  `packages/extension/package.json` is required before a real `.vsix`
+  can be produced.**
 
 ## Patch or commit identity
 
-- **Commit:** `d5e483bf7cc331763bb545cfa60badac82a5027a` — "T-24: add MIT
-  license metadata to all packages and root LICENSE file"
-- **Branch:** `task/T-24-license-metadata` (created from `main`)
+- **Branch:** `task/T-25-extension-packaging`
+- **Commit:** created immediately after this report (see commit history
+  on this branch) so the report itself is included in the commit.
 
 ## Recommended next step
 
-Hand off to an independent `reviewer` subagent instance (per the brief's
-Handoff section) to write `REVIEW-REPORT.md`. The reviewer should, per
-the brief's own note-to-reviewer: (1) independently confirm all four
-package.json files are valid JSON and each declares `"license": "MIT"`;
-(2) independently compare `LICENSE`'s text against canonical MIT wording;
-(3) confirm no file outside the five declared owned paths was touched —
-**with the one disclosed exception of `package-lock.json`**, which I
-flag above as a mechanical, unavoidable consequence of the brief's own
-required `npm install` step, for the reviewer to explicitly judge
-acceptable or not; and (4) independently re-run `npm run verify` and
-confirm the test count is unchanged. I am not authorized to and have not
-self-approved this task.
+This task should go to independent review as BLOCKED, not COMPLETE. The
+in-scope work (vsce install, `.gitignore`, `.vscodeignore`, `README.md`,
+`private` removal, `scripts.package`) should be reviewed on its own
+merits, and the reviewer should independently confirm the `name`/
+`publisher` blocker is real (re-run `vsce package` themselves, read
+`validation.js` themselves) before the orchestrator decides whether to:
+(a) issue a revised task brief authorizing the `name`/`publisher` edit
+as a narrow follow-up (likely the fastest path — e.g.
+`"name": "paritylens"` or `"name": "extension"` plus a `publisher` ID
+decision, which is a product/ownership decision, not an implementation
+one), or (b) route it as a separate tracked task. I am not recommending
+self-approval or claiming this task complete in any sense beyond the
+in-scope, verified changes described above.

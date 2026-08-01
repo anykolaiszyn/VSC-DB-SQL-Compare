@@ -1,0 +1,11 @@
+.vscodeignore
+src/**
+**/*.test.ts
+**/*.test.js
+**/*.test.js.map
+tsconfig.json
+tsconfig.tsbuildinfo
+**/*.tsbuildinfo
+node_modules/@types/**
+**/*.map
+.gitignore
