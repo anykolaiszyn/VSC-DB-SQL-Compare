@@ -2,8 +2,8 @@
 
 ## Current lifecycle state
 
-- **Phase:** IMPLEMENTATION (task loop active)
-- **Exactly one task may be active:** NONE
+- **Phase:** INTEGRATION (prompt 06) — one bounded remediation task (T-22) active
+- **Exactly one task may be active:** T-22 (engine package export + run-comparison command wiring)
 - **Last updated:** 2026-08-01, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
@@ -34,6 +34,67 @@
 | T-20 | Hash-based comparison strategy | T-14 | Claude Code Implementer subagent | `packages/engine/src/comparison-core/hash-comparison/**` | COMPLETE | APPROVED (round 2) | `npm run verify` exit 0, 381/381 tests (408 total, 27 pre-existing live-DB-container skips), 2026-08-01; round 1 CHANGES REQUIRED on T-20-01 (Critical), round 2 fixed and independently re-reviewed/approved; re-verified post-merge on `main` |
 | T-21 | Sampling strategies | T-07 | Claude Code Implementer subagent | `packages/engine/src/comparison-core/sampling/**` | COMPLETE | APPROVED | `npm run verify` exit 0, 396/396 tests (423 total, 27 pre-existing live-DB-container skips), 2026-08-01, reviewed independently (0 Critical/Important, 2 accepted Minor); re-verified post-merge on `main` |
 | T-16b | SQL preview panel (deferred from T-16) | T-07, T-09, T-13, T-15, T-16 | Claude Code Implementer subagent | `packages/engine/src/comparison-core/volume/volume.ts` (extends T-13), `packages/engine/src/comparison-core/profiling/profiling.ts` (extends T-07), `packages/engine/src/orchestration/planner/planner.ts` (extends T-09/T-15), `packages/shared/src/result.ts` (`queriesUsed` field only), `packages/extension/src/webview/**` (extends T-11/T-16) | COMPLETE | APPROVED | `npm run verify` exit 0, 368/368 tests (395 total, 27 pre-existing live-DB-container skips), 2026-08-01, reviewed independently (0 Critical/Important, 2 accepted Minor); re-verified post-merge on `main` |
+| T-22 | Integration remediation: export real `@paritylens/engine` API from its package entry point; wire a `paritylens.runComparison` command (`parseDefinition` → `runComparison` → `showResultsWebview`, fixture-backed registries only) | T-04, T-08, T-08a, T-09, T-10, T-11, T-15, T-16, T-16b | Not yet assigned | `packages/engine/src/index.ts`, `packages/extension/src/activation/activate.ts` (extends T-10), `packages/extension/package.json` (`contributes.commands` only) | ACTIVE | NOT REQUESTED | NONE |
+
+## Integration evidence summary (prompt 06, 2026-08-01)
+
+- **Scope confirmed ready:** every task required for this integration
+  boundary (T-01–T-21 excluding deferred T-18, plus T-08a/T-16b) is
+  `COMPLETE`/`APPROVED` with fresh post-merge verification recorded; no
+  open Critical finding anywhere in the ledger; the two open Important
+  findings (T-20-02, T-20-04) were already explicitly accepted as
+  non-blocking debt at T-20's own reconciliation, not new integration
+  blockers.
+- **Fresh full verification:** `npm run verify` re-run on `main` at the
+  start of integration — 396 passed, 27 pre-existing live-DB-container
+  skips (423 total), exit 0. Matches T-21/T-16b's last recorded count
+  exactly, confirming no drift since the last task merged.
+- **Interface reconciliation performed:**
+  - `parseDefinition` → `runComparison` chain: already exercised end-to-end
+    from real YAML text (not hand-built `ParityDefinition` objects) in
+    `planner.test.ts`, including a combined all-four-checks-enabled case
+    (T-16b's `queriesUsed` test). Confirmed sufficient, no gap found here.
+  - `writeExport`'s safe-output-root containment: independently confirmed
+    against `DESIGN-SPEC.md`'s "Write safety" requirement by reading the
+    implementation directly (`path.relative`-based containment check,
+    resolved-root-equals-target also rejected). Matches the design
+    contract as written.
+  - **Real gap found:** `packages/extension/src/webview/resultsWebview.test.ts`
+    and `packages/extension/src/export/exporters.test.ts` both explicitly
+    disclose (in their own header comments) that they test against a
+    **hand-built** `ComparisonResult` literal, never a real `runComparison`
+    output. Confirmed via `grep` that no file in `packages/extension/src`
+    imports from `@paritylens/engine` or calls `runComparison` at all, and
+    that `packages/engine/src/index.ts` still contains only T-01's original
+    `export const PLACEHOLDER = true;` — so `packages/extension` cannot
+    even import the engine's real API today despite declaring it as a
+    dependency. No task among T-01–T-21 ever owned closing this loop;
+    T-10/T-11/T-16/T-16b's briefs each honestly and correctly scoped out
+    "comparison logic"/"results rendering [of a passed-in result]," but no
+    task's scope was ever "wire the two together."
+- **Combined-behavior probe (temporary, run and discarded — not committed):**
+  built a throwaway test in `packages/extension/src` using the same deep
+  relative-import pattern the existing test suites already rely on,
+  calling `parseDefinition` → `runComparison` (against `FixtureConnector`
+  instances backing the `sqlserver-customer` fixture pair, deliberately
+  mismatched per T-04) → `renderResultsHtml` and all three exporters, in
+  one continuous run. Result: `status: "failed"`, 9 `schemaDifferences`,
+  13 `rowDifferences`, `summary: {"passed":0,"warnings":7,"failed":16}` —
+  a real, non-trivial mismatch-detection result — rendered through
+  `renderResultsHtml` and exported through `exportToCsv`/`exportToJson`/
+  `exportToMarkdown` with no error and no shape mismatch. **This confirms
+  the two package boundaries are shape-compatible; the only gap is that no
+  code path in this repository actually connects them.** Probe file
+  deleted after use, `git status` confirmed clean before continuing.
+- **Disposition:** one cross-task finding routed to a new bounded task
+  (T-22, per `TASK-BRIEF.md`) rather than fixed inline during integration,
+  per prompt 06's own instruction ("Do not make broad unowned fixes during
+  integration"). T-22 is pure wiring of already-correct, already-tested
+  pieces — no comparison-core, connector-sdk, orchestration, webview, or
+  export logic is expected to change. Integration remains open pending
+  T-22's completion and independent review; `PROGRESS-LEDGER.md`'s phase
+  is `INTEGRATION` with T-22 as the one active remediation task, per
+  prompt 06's "Produce" section.
 
 ## Open findings
 
@@ -135,6 +196,7 @@ scannable. Only `OPEN`/`PARTIALLY RESOLVED` rows stay here.
 | 2026-08-01 | T-21's implementer session was interrupted mid-work by an API/session limit before committing or verifying anything — work was in an untracked working-tree state on `main` (`sampling.ts`/`sampling.test.ts`, substantially complete but with 2 of 15 tests failing). Rather than discard it, the orchestrator created `task/T-21-sampling` properly, committed the interrupted state as an explicit WIP checkpoint, restored `main` to clean, then dispatched a fresh implementer instance to resume from that checkpoint | Preserves real, mostly-correct work rather than re-deriving it from scratch, while keeping `main` clean and the task's branch/ownership discipline intact; the WIP commit message explicitly disclosed the two known-failing tests so the resuming implementer had an honest starting point, not a claimed-complete one | Lead Orchestrator | Establishes a new precedent: a mid-task agent interruption (session/API limit, not a design failure) is recovered by checkpointing on a proper task branch and resuming, not by discarding progress or leaving `main` dirty |
 | 2026-08-01 | T-21 resumed and completed (`buildSampleQuery` covering all six named strategies from `Idea Prompt.md`'s "Strategy A" — first-n, random, deterministic-hash, stratified, date-window, key-range — as pure SQL-text generation, never executing queries or threading `ExecutionOptions`, so the row-cap/timeout safety limits remain entirely the caller's responsibility). The resumed implementer investigated the 2 known-failing injection tests from the WIP checkpoint: read `FixtureConnector.quoteIdentifier`'s actual implementation, confirmed it correctly doubles embedded `"` characters, and concluded the malicious identifier becomes a safely-quoted, inert string rather than something that should throw synchronously at generation time — fixed the test expectations (not the production code) to assert the real safety property (safe quoting + `assertReadOnlyStatement` passes + execution-time DuckDB binder error + table survives), and removed leftover dead-code imports from an earlier draft. Independently reviewed and approved with 0 Critical/Important, 2 accepted Minor findings (T-21-01: `TABLESAMPLE SYSTEM (100 PERCENT)` performs no real sampling reduction, all reduction comes from the outer `LIMIT`; T-21-02: the `supportsTableSampling: false` fallback branch has no test coverage since no connector in the repo currently reports `false`); branch merged into `main` with `--no-ff` and re-verified green post-merge (396/396 non-skipped, 423 total, 27 pre-existing live-DB-container skips) | Reviewer did not accept the implementer's injection-safety conclusion at face value: independently read `quoteIdentifier`'s implementation, constructed its own adversarial identifier (not reusing the implementer's), and separately probed 5 additional parameter paths (`keyColumn`, `orderByColumn`, `startDate`, `startKey`, plus a `QueryInput`-level `{kind:"query", sql:"DELETE FROM..."}` mutation attempt) beyond what the implementer's own tests covered — the QueryInput-level probe surfaced a real but pre-existing, out-of-ownership gap (`assertReadOnlyStatement` doesn't catch subquery-nested DML, though DuckDB's own grammar rejects the malformed query anyway) already shared by `volume.ts`/`profiling.ts`/`FixtureConnector` itself, correctly judged not a T-21 regression. Reviewer also independently re-derived the row-cap review-gate proof by reading `FixtureConnector.executeQuery`'s actual wrapping logic (`SELECT * FROM (<sql>) AS fixture_query LIMIT <maxRows>`, applied unconditionally to every executed string) rather than trusting the implementer's test alone | Claude Code Implementer subagent (resumed after session-limit interruption); Claude Code Independent Reviewer subagent (recommendation); Lead Orchestrator checkpointed the interrupted WIP, dispatched the resume, and reconciled the completed task | T-21 complete. T-18 (Snowflake, still needing a trial-account-or-skip decision) is the only remaining task from the original `IMPLEMENTATION-PLAN.md` set not yet started |
 | 2026-08-01 | T-18 (Snowflake connector) deferred/skipped rather than pursued | Owner confirmed directly when asked (`AskUserQuestion`, "Skip T-18 (Recommended)") — SQL Server (T-17) and PostgreSQL (T-19) connectors are already complete/approved and validated against real containers, and no engine-layer or extension-layer task depends on Snowflake specifically (every connector implements the same `DataPlatformConnector` interface); obtaining a Snowflake trial account was the standing blocker since 2026-07-27 with no local-container equivalent available | Project owner | Every task in `IMPLEMENTATION-PLAN.md` (T-01 through T-21) is now either COMPLETE/APPROVED or DEFERRED — no task remains ACTIVE or NOT STARTED-and-unblocked. If Snowflake support is wanted later, T-18 can be reactivated by resolving its trial-account blocker and following T-17/T-19's established brief/implement/review pattern |
+| 2026-08-01 | Ran `multi-agent-idea-to-app/prompts/06-integration.md` (Integration phase) against the full approved task set. Confirmed step 1's precondition (every required task COMPLETE/APPROVED, no open Critical finding) directly from the ledger rather than assuming it; re-ran `npm run verify` fresh (396/396, matches last recorded count exactly). Found one genuine cross-task gap via a temporary, discarded probe: `packages/engine/src/index.ts` still only exports T-01's placeholder, so `packages/extension` cannot import `@paritylens/engine`'s real API, and no task ever wired a real `parseDefinition` → `runComparison` → `showResultsWebview` command — every extension-layer task tested rendering only against a hand-built `ComparisonResult` literal. The probe proved the two package boundaries are shape-compatible (a real `runComparison` result rendered/exported cleanly) — the only gap is that no code path connects them | Per prompt 06's own instruction ("Do not make broad unowned fixes during integration"), routed the finding to a new bounded task (T-22) rather than patching it inline; confirmed each individual task's own scope boundary (T-10/T-11/T-16/T-16b) was honest and correctly reviewed at the time — this is a plan-level gap (no task ever owned "wire the two together"), not any task's failure | Project owner (selected "New bounded task T-22" when asked); Lead Orchestrator wrote `TASK-BRIEF.md` and activated T-22 | Ledger phase set to `INTEGRATION` with T-22 as the one active remediation task; integration is not closed until T-22 completes and is independently reviewed, since prompt 07 (Release) step 1 explicitly requires integration work to be approved before release evidence can be collected |
 
 ## Cost notes
 

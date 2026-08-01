@@ -1,203 +1,167 @@
-# ParityLens — Task Brief T-21
+# ParityLens — Task Brief T-22
 
 ## Objective
 
-Implement sampling strategies, `IMPLEMENTATION-PLAN.md`'s T-21 row (quoted
-verbatim): "Implement sampling strategies (first-N, random, deterministic
-hash, stratified, date-window, key-range per idea doc 'Strategy A') for use
-when row-level or profile checks are configured with a sample strategy."
+Close a cross-task integration gap found during the prompt-06 Integration
+check (2026-08-01): no task in `IMPLEMENTATION-PLAN.md`'s original T-01
+through T-21 ever exported `@paritylens/engine`'s real API from its package
+entry point, and no task ever wired a real command connecting
+`parseDefinition` → `runComparison` → `showResultsWebview`/export. Every
+extension-layer task (T-10, T-11, T-16, T-16b) tested rendering/export
+against a **hand-built** `ComparisonResult` literal only, and every
+engine-layer test imported from deep relative paths inside
+`packages/engine/src/...`, never through `@paritylens/engine`'s declared
+package entry point — which still contains only T-01's original placeholder:
 
-`Idea Prompt.md`'s "Strategy A: Sample comparison" section (verbatim):
+```typescript
+// packages/engine/src/index.ts (current content, verbatim)
+export const PLACEHOLDER = true;
+```
 
-> Best for quick development checks.
-> First N rows
-> Random sample
-> Deterministic hash sample
-> Stratified sample
-> Date-window sample
-> Key-range sample
+This was not any individual task's failure — T-10's own brief explicitly
+scoped out "comparison logic" and "results rendering," and T-11/T-16/T-16b's
+briefs were explicitly scoped to render *a passed-in* `ComparisonResult`.
+Each task's own scope boundary was honest and correctly reviewed. But no
+task ever owned closing the loop, so the two package boundaries central to
+`DESIGN-SPEC.md`'s own data-flow section (steps 2-5: Orchestration API
+invokes checks, Extension Layer renders the result) have never actually
+been connected by real code.
 
-This task builds **query generation only**: given a sampling strategy and a
-`QueryInput`, produce the SQL text that would select the requested sample.
-It does not itself execute the query, does not wire sampling into the
-planner/`runComparison`, and does not modify any check (row-level/profile)
-to consume a sample automatically — matching this project's established
-precedent of a comparison-core capability landing before its planner
-integration (T-13 before T-15's wiring; T-20's `compareByHash` still has no
-planner wiring either).
+**What integration confirmed already works** (via a temporary, discarded
+probe using deep relative imports identical to what the existing test
+suites already do — this brief does not need to re-derive this, only wire
+the already-correct pieces together): a real `runComparison()` result
+(status `"failed"`, 9 `schemaDifferences`, 13 `rowDifferences`, produced
+from the `sqlserver-customer` fixture pair's deliberate mismatches) renders
+correctly through `renderResultsHtml` and exports correctly through all
+three of `exportToCsv`/`exportToJson`/`exportToMarkdown` with no shape
+mismatch. **This task is pure wiring, not new logic** — every function this
+task calls already exists, is already tested in isolation, and is already
+confirmed shape-compatible end-to-end. Do not modify any comparison-core,
+orchestration, or webview/export rendering logic — if you find yourself
+wanting to change behavior inside any of those to make the wiring work,
+stop and flag it as a scope violation rather than doing it.
 
-`IMPLEMENTATION-PLAN.md`'s literal Interfaces column for T-21 is
-`buildSampleQuery(strategy, input): GeneratedQuery` — a pure SQL-generating
-function, not an execution function. `GeneratedQuery` is not defined
-elsewhere in this codebase; design it yourself as a small local interface
-(see Interfaces section below for the minimum it must carry) within this
-task's owned directory, following `HashComparisonResult`'s own precedent
-(T-20) of defining a new result shape locally when no existing consumer
-requires it live in `packages/shared`.
+## Scope
 
-**The review gate is explicit and is the central correctness property of
-this task, quoted verbatim from `IMPLEMENTATION-PLAN.md`'s T-21 row:**
-"Independent reviewer confirms sampling never bypasses the row-cap/timeout
-safety limits from `DESIGN-SPEC.md`." Concretely: `buildSampleQuery` returns
-SQL text; when that text is actually executed (by a caller, not by this
-task), it must still go through the connector's existing
-`executeQuery(input, options: ExecutionOptions)` surface, where
-`ExecutionOptions.maxRows`/`timeoutMs` are enforced exactly as they are for
-every other query in this codebase (`DESIGN-SPEC.md`: default 100,000-row
-cap, 60s timeout, both overridable). A sampling strategy must never
-construct SQL that embeds its own unbounded row limit *in place of* the
-caller-supplied `maxRows`, and must never claim to make the row cap
-unnecessary (e.g. "TABLESAMPLE already limits rows so maxRows can be
-skipped" is exactly the kind of reasoning this brief prohibits) — a sample
-query is still subject to the same `ExecutionOptions` any other
-`QueryInput`/`executeQuery` call is subject to. If a strategy's generated
-SQL includes its own `LIMIT`/`TOP`/`SAMPLE` clause (e.g. first-N, or a
-platform's native `TABLESAMPLE`), that is fine and expected — the sample
-size itself is a query-shape concern — but it is additive to, never a
-replacement for, the caller's own `maxRows`/`timeoutMs` enforcement at
-execution time. Document this relationship explicitly in code comments and
-in `IMPLEMENTATION-REPORT.md`, since the reviewer will specifically probe
-it.
+Two pieces, both required:
 
-`ConnectorCapabilities.supportsTableSampling` (`packages/shared/src/connector.ts`)
-already exists. Some fixture/connector implementations may report `false`
-for it. Design `buildSampleQuery` to work for every strategy regardless of
-`supportsTableSampling` (e.g. key-range/date-window/first-N samples are
-expressible as ordinary `WHERE`/`ORDER BY`/`LIMIT` SQL with no native
-`TABLESAMPLE` dependency; only decide whether "random sample" specifically
-should branch on `supportsTableSampling` to prefer a platform-native
-`TABLESAMPLE`/`TABLESAMPLE SYSTEM`-style clause when available, falling
-back to an ORDER-BY-random-expression approach when not — if you take this
-branching approach, disclose the exact fallback SQL shape used for each
-case in `IMPLEMENTATION-REPORT.md` rather than silently picking one without
-explanation). Do not hardcode a single dialect's sampling syntax as if it
-were universal — this module works against the connector's public surface
-(`quoteIdentifier`, not raw SQL dialect assumptions), the same pattern
-T-13/T-14/T-15/T-20 already established.
-
-**Deterministic hash sample** must be genuinely deterministic and
-reproducible across two separate runs — this is the plan row's own
-red-state acceptance criterion ("two runs producing identical sample
-sets"). Reuse T-20's hashing approach where it makes sense (SHA-256 over a
-normalized value, or a native SQL hash function per dialect) but do not
-import from `hash-comparison/**` — that module computes hashes over fetched
-rows in JS after execution; this task generates *query text*, before
-execution, so a genuinely deterministic hash-based sample needs either a
-SQL-side deterministic hash expression (`hash(col)` in DuckDB,
-`HASHBYTES(...)` in SQL Server, `md5(...)` in PostgreSQL — same three
-dialects T-20 already named) used in a `WHERE hash(col) % N = 0`-style
-predicate, or an equivalent deterministic approach you design and disclose.
-If a truly platform-neutral deterministic-hash SQL expression isn't
-achievable without per-dialect branching, disclose that explicitly (same
-disclosure requirement T-20's brief imposed, and the same category of
-tradeoff — do not silently ship a DuckDB-only implementation under a
-general-sounding name).
-
-Note to whoever dispatches an implementer against this brief: quote this
-document's load-bearing requirements verbatim rather than paraphrasing
-them — a paraphrase that loosens a requirement is a known failure mode
-from this project's history (T-07's I-02 finding traced back to exactly
-this).
+1. **Export the real engine API** from `packages/engine/src/index.ts`
+   (currently the T-01 placeholder), following `packages/shared/src/index.ts`'s
+   own precedent exactly: a re-export-only file, no logic. At minimum,
+   re-export `parseDefinition`/`InvalidDefinitionError` (from
+   `orchestration/definition/definition.js`), `runComparison`/
+   `ConnectorRegistry`/`UnresolvedConnectionError` (from
+   `orchestration/planner/planner.js`), and `FixtureConnector` (from
+   `connector-sdk/fixture/fixture-connector.js`) — the pieces this task's
+   own command needs, plus anything else already exported from those
+   modules that a consumer would reasonably expect at the package root
+   (use judgment consistent with `packages/shared/src/index.ts`'s "re-export
+   the public surface" framing, but do not spend time auditing every
+   engine-internal symbol; the four named above are the hard requirement).
+2. **Register one new VS Code command** (e.g. `paritylens.runComparison`)
+   in `packages/extension/src/activation/activate.ts` (extends T-10's
+   ownership) plus a new `contributes.commands` entry in
+   `packages/extension/package.json`, that:
+   - Prompts the user (via `vscode.window.showOpenDialog` or a simple
+     `showQuickPick`/`showInputBox` — your judgment on the simplest correct
+     UX, this is not a polished feature) to select a `.paritylens` YAML
+     definition file from the open workspace.
+   - Reads the file, calls `parseDefinition`.
+   - Builds a `ConnectorRegistry` using **`FixtureConnector` only** — real
+     connection-profile resolution (SQL Server/Snowflake/PostgreSQL
+     credentials via `SecretStore`) is explicitly out of scope for this
+     task (no task has built connection-profile management yet; this is
+     unscheduled future work, not something to invent here). Document this
+     limitation plainly in the command (e.g. a code comment and/or a
+     user-visible notice) rather than silently only working for fixture
+     names.
+   - Calls `runComparison`, then `showResultsWebview` with the real result.
+   - On any error (`InvalidDefinitionError`, `UnresolvedConnectionError`,
+     or any other thrown error), shows a `vscode.window.showErrorMessage`
+     with the error's message — do not let an unhandled rejection surface
+     as a generic VS Code crash notification.
 
 ## Dependencies
 
-- **Required completed tasks:** T-07 (column profiling, COMPLETE/APPROVED —
-  per the plan row, sampling is "for use when row-level or profile checks
-  are configured with a sample strategy"; read `profiling.ts` to understand
-  how a profile check currently issues its queries, so `buildSampleQuery`'s
-  output shape is compatible with being substituted in as a future
-  `QueryInput`/pre-filter, even though wiring that substitution in is out
-  of this task's scope).
-- **Required decisions or approvals:** NONE beyond the already-approved
-  `IMPLEMENTATION-PLAN.md` T-21 row.
-- **Environment:** this task is fixture-only (`FixtureConnector`/DuckDB
-  in-process). It does not need the WSL/Docker live-database containers —
-  work and test entirely from your normal shell.
+- **Required completed tasks:** T-09/T-15 (planner, COMPLETE/APPROVED),
+  T-08/T-08a (definition parser, COMPLETE/APPROVED), T-10 (extension
+  scaffold/activation, COMPLETE/APPROVED), T-11/T-16/T-16b (webview/export,
+  COMPLETE/APPROVED), T-04 (FixtureConnector, COMPLETE/APPROVED).
+- **Required decisions or approvals:** NONE beyond this brief — this is a
+  bounded integration-gap fix, not a scope change to any approved
+  deliverable.
+- **Environment:** fixture-only, same as most prior tasks. No WSL/Docker
+  containers needed.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/sampling/**` (new directory)
+- `packages/engine/src/index.ts` (currently T-01's placeholder — this task
+  is the first to give it real content)
+- `packages/extension/src/activation/activate.ts` (extends T-10's
+  ownership — the only permitted edit is adding the new command
+  registration; do not restructure `activate()`'s existing tree-view/
+  SecretStore wiring)
+- `packages/extension/package.json` (`contributes.commands` array only —
+  do not edit `activationEvents`, `contributes.views`, or any other field)
 
-Do not touch `packages/engine/src/connector-sdk/safety/**` (T-03's owned
-file), `packages/engine/src/comparison-core/type-mapping/**` (T-05's owned
-file), `packages/engine/src/connector-sdk/fixture/**` (T-04's owned file —
-consume `FixtureConnector` read-only via `import`, do not modify it),
-`packages/engine/src/comparison-core/normalization/**` (T-12's owned file),
-`packages/engine/src/comparison-core/row-level/**` (T-14's owned file),
-`packages/engine/src/comparison-core/profiling/**` (T-07's owned file — read
-for pattern reference only, do not edit),
-`packages/engine/src/comparison-core/hash-comparison/**` (T-20's owned
-file — read for pattern reference only per the Objective section above, do
-not edit or import from it),
-`packages/engine/src/comparison-core/volume/**` (T-13's owned file),
-`packages/engine/src/orchestration/planner/**` (T-09/T-15's owned file —
-this task does not wire sampling into `runComparison`; that is future
-integration work, out of scope here, mirroring T-13's and T-20's own
-precedent of a comparison-core capability landing before its planner
-wiring), or any connector-sdk file (`sqlserver/**`/`postgres/**`).
-
-Do not modify `packages/shared/src/**` unless a genuine interface gap is
-found — if so, stop and flag it as a blocker rather than editing it
-directly; this task is expected to define `GeneratedQuery` and any sampling
-strategy types locally within `sampling/**`, following T-20's
-`HashComparisonResult` precedent (no `packages/shared` type needed since no
-external consumer exists yet, planner wiring being out of scope).
+Do not touch any file inside `packages/engine/src/comparison-core/**`,
+`packages/engine/src/connector-sdk/**` (other than importing from
+`fixture/fixture-connector.js`, read-only), `packages/engine/src/orchestration/**`
+(other than importing, read-only), `packages/extension/src/webview/**`,
+`packages/extension/src/export/**`, or `packages/extension/src/views/**` —
+this task imports and calls existing functions, it does not modify any of
+their internals.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `DataPlatformConnector` (`packages/shared/src/connector.ts`) | Existing, complete interface. Use `quoteIdentifier`/`getCapabilities().supportsTableSampling` only — this task does not call `executeQuery` itself, it only generates SQL text a future caller would execute | T-02 (producer) |
-| Consumed | `QueryInput` (`packages/shared/src/types.ts`) | Existing, complete discriminated union (`table`/`query`/`sqlFile`). `buildSampleQuery` takes an already-resolved `QueryInput` describing the object/query to sample from | T-02 (producer) |
-| Produced | `buildSampleQuery(strategy, input, connector, options): GeneratedQuery` (new, `packages/engine/src/comparison-core/sampling/sampling.ts` or similar) | `strategy` is a discriminated union over the six named strategies (`"first-n"`, `"random"`, `"deterministic-hash"`, `"stratified"`, `"date-window"`, `"key-range"` — choose exact string literals, document them, one options shape per strategy carrying whatever parameters that strategy needs, e.g. `n` for first-N, a hash modulus/bucket count for deterministic-hash, a stratification column for stratified, a date column + window bounds for date-window, a key column + range bounds for key-range). `GeneratedQuery` must carry at minimum the generated SQL text (as a `QueryInput`-compatible `{ kind: "query"; sql: string }` or equivalent) and enough metadata for a caller to understand what was sampled (strategy used, any parameters applied) — it does NOT carry or override `ExecutionOptions`; execution-time `maxRows`/`timeoutMs` remain entirely the caller's responsibility via the existing `executeQuery` contract, per the Objective section's central correctness property | This task (producer) |
+| Consumed | `parseDefinition`, `runComparison`, `ConnectorRegistry`, `FixtureConnector` | Existing, complete, already tested in isolation | T-08/T-09/T-04 (producers) |
+| Consumed | `showResultsWebview`, `renderResultsHtml` | Existing, complete, already tested against hand-built `ComparisonResult` literals | T-11/T-16 (producers) |
+| Produced | `@paritylens/engine`'s real package-root export surface | `packages/engine/src/index.ts` re-exports the symbols named in Scope item 1 above | This task (producer) |
+| Produced | `paritylens.runComparison` VS Code command | Registered in `activate()`, appears in the command palette, end-to-end wires fixture-backed comparison runs to the results webview | This task (producer) |
 
 ## Prohibited changes
 
-- Do not modify any file outside `packages/engine/src/comparison-core/sampling/**` except where explicitly authorized above (none currently — flag and stop if you believe you need to).
-- Do not execute any query yourself (no `executeQuery` calls) — this task produces SQL text only.
-- Do not wire this into `runComparison`/the planner, or into `profiling.ts`/`row-level.ts` — that is explicitly out of scope for this task.
-- Do not generate SQL that embeds a row limit intended to replace, rather than compose with, the caller's `ExecutionOptions.maxRows`/`timeoutMs` — see the Objective section's central correctness property.
-- Do not require or assume the live SQL Server/PostgreSQL test containers — this task is fixture-only.
+- Do not modify any comparison-core, connector-sdk, orchestration, webview,
+  or export logic — this task wires existing, already-correct pieces
+  together. If wiring reveals a real shape mismatch (it is not expected
+  to, per the integration probe's findings), stop and flag it as a
+  blocker rather than patching the mismatched side yourself.
+- Do not attempt real connection-profile resolution (SQL Server/Snowflake/
+  PostgreSQL credentials) — fixture-backed registries only, explicitly
+  disclosed as a known limitation.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** matching the plan row's own red-state
-  description verbatim: "test requesting a deterministic-hash sample
-  expecting reproducible row selection fails (function doesn't exist)."
-  Build this against one of the existing seeded fixture pairs
-  (`sqlserver-customer`, `snowflake-orders`, or `postgres-products` —
-  document your choice) rather than inventing new fixture data.
-- **Command:** `npx vitest run packages/engine/src/comparison-core/sampling`
-- **Expected failure reason:** Module/function does not exist yet.
-- **Captured output:** Paste the actual failing command output into
-  `IMPLEMENTATION-REPORT.md`, not a paraphrase.
+- **Test or check to add:** a test asserting the new command handler
+  function (extract it as an exported, directly-testable function separate
+  from the raw `vscode.commands.registerCommand` callback, same pattern
+  T-10/T-11 already use for testability without `@vscode/test-electron`)
+  runs `parseDefinition` → `runComparison` → `showResultsWebview` against a
+  real `.paritylens`-shaped YAML string and a `FixtureConnector`-backed
+  registry, and fails because the function doesn't exist yet.
+- **Command:** `npx vitest run packages/extension/src/activation`
+- **Expected failure reason:** Function/export does not exist yet.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/engine/src/comparison-core/sampling`
+- **Focused command:** `npx vitest run packages/extension/src/activation`
 - **Full command:** `npm run verify`
-- **Expected evidence:** matching the plan row's own acceptance framing
-  verbatim: "same test passes with two runs producing identical sample
-  sets" — for the deterministic-hash strategy specifically, generate the
-  query twice (or execute it twice against the fixture connector) and
-  confirm the resulting row selection is byte-identical both times. Add
-  coverage for all six named strategies, not just deterministic-hash,
-  proving each produces syntactically valid SQL that the fixture connector
-  can actually execute without error (run it through
-  `FixtureConnector.executeQuery` in the test to prove the generated SQL is
-  real, executable SQL, not just a plausible-looking string) and returns a
-  sensible result shape for that strategy (e.g. first-N returns at most N
-  rows; date-window returns only rows within the configured bounds; key-range
-  returns only rows within the configured key bounds). Add a specific test
-  proving the safety-limit relationship from the Objective section: execute
-  a generated sample query through `executeQuery` with a deliberately small
-  `ExecutionOptions.maxRows` and confirm the cap is still honored (i.e. the
-  sample query's own `LIMIT`/`TOP`/sample-size clause, if any, does not
-  prevent the connector's own row cap from applying) — this is the concrete
-  evidence for the review gate's required confirmation. All previously
-  passing tests (381 as of T-20) still pass with no regression. `npm run
-  verify` exits 0.
+- **Expected evidence:** the new command handler, called directly (not
+  through the VS Code command palette, consistent with how T-10/T-11 test
+  activation-adjacent code without a real extension host), produces a real
+  `ComparisonResult` from the `sqlserver-customer` (or another seeded)
+  fixture pair and passes it to `showResultsWebview`/`renderResultsHtml`
+  without error. Also add or extend a test proving `packages/engine/src/index.ts`
+  actually exports the four required symbols (e.g. a test file in
+  `packages/engine/src` importing from `./index.js` and asserting each
+  export is defined) — this is the direct evidence for Scope item 1, since
+  a missing export would otherwise only surface as a downstream import
+  failure in `packages/extension`. All previously passing tests (396 as of
+  T-16b/T-21) still pass with no regression. `npm run verify` exits 0.
 
 ## Handoff
 
@@ -205,31 +169,17 @@ external consumer exists yet, planner wiring being out of scope).
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-21-sampling`
+- **Commit or patch checkpoint:** Branch `task/T-22-engine-export-and-run-command`
 
-**Note to reviewer:** per `IMPLEMENTATION-PLAN.md`'s T-21 review-gate column
-verbatim: "Independent reviewer confirms sampling never bypasses the
-row-cap/timeout safety limits from `DESIGN-SPEC.md`." Do not just re-run the
-implementer's own safety-limit test — construct your own independent probe:
-generate a sample query for at least one strategy whose SQL includes its own
-size-limiting clause (e.g. first-N's `LIMIT`, or a `TABLESAMPLE`-based random
-sample if implemented), execute it through the real `FixtureConnector`
-with an `ExecutionOptions.maxRows` set *smaller* than the strategy's own
-requested sample size, and confirm the connector's cap — not the sample
-strategy's own clause — is what actually determines the final row count
-returned. Also verify: (1) the deterministic-hash strategy's reproducibility
-claim by generating/executing it yourself twice independently and diffing
-the row sets; (2) that no strategy's generated SQL bypasses
-`assertReadOnlyStatement` in a way that would let a mutating statement slip
-through disguised as a "sample" (construct at least one adversarial
-malformed-parameter case, e.g. attempting to inject SQL via a
-stratification/date/key-range parameter, and confirm it's either rejected
-or safely parameterized/escaped — this task doesn't call `executeQuery`
-itself, but the SQL it generates will eventually be executed by a caller
-that does go through `assertReadOnlyStatement`, so injected SQL text is
-still a real risk surface even though this task's own tests use
-`FixtureConnector` directly); (3) confirm no file outside `sampling/**` was
-touched and no planner/profiling/row-level wiring scope creep occurred; (4)
-confirm the `supportsTableSampling`-branching judgment call (if the
-implementer took one) was actually followed and disclosed as declared in
-`IMPLEMENTATION-REPORT.md`.
+**Note to reviewer:** this task's central risk is scope discipline, not
+correctness of any comparison logic (all of that is pre-existing and
+already reviewed). Confirm: (1) no file outside the three declared owned
+paths was touched; (2) `packages/engine/src/index.ts`'s new exports are
+genuinely re-exports only, no new logic; (3) the command handler correctly
+surfaces `InvalidDefinitionError`/`UnresolvedConnectionError` as a VS Code
+error message rather than an unhandled rejection (construct an adversarial
+case yourself — a malformed YAML file, and a YAML file referencing an
+unregistered connection name — and confirm both produce a clean,
+non-crashing error message rather than a thrown/unhandled exception); (4)
+the fixture-only limitation is genuinely disclosed to the user, not just in
+a code comment nobody sees at runtime.
