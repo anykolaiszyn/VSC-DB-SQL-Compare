@@ -325,9 +325,7 @@ only the minimal happy path.
 ## Patch or commit identity
 
 - **Branch:** `task/T-17-sqlserver-connector`
-- **Commit:** see `git log -1` after this report is committed (this
-  report is staged together with the implementation commit, per the
-  Implementer contract's commit-checkpoint requirement)
+- **Commit:** `62fed961bbe46ccc10815d1c4f2fd550176c8b75`
 
 ## Recommended next step
 
