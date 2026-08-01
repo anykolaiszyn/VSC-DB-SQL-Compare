@@ -1,189 +1,169 @@
-# ParityLens — Task Brief T-16b
+# ParityLens — Task Brief T-20
 
 ## Objective
 
-Deliver the SQL preview panel that was explicitly descoped from T-16 (see
-`PROGRESS-LEDGER.md`'s 2026-07-31 "Descoped T-16's SQL preview panel"
-decision entry): the extension must be able to show the user the actual
-SQL that will be (or was) executed for a comparison's schema/profile/
-volume/row-level checks, **before or alongside** execution, per
-`DESIGN-SPEC.md`'s SQL-preview requirement.
+Implement hash-based comparison, `IMPLEMENTATION-PLAN.md`'s T-20 row:
+"table/partition/key-range/row/column hash levels, progressive narrowing
+per idea doc 'Strategy C', as an alternative to full row-level pull for
+large datasets."
 
-T-16's investigation found the root blocker: no engine interface exposes
-generated SQL as a string. Three files build SQL privately and execute it
-immediately inline, with no seam for a caller to just ask "what would you
-run":
+`Idea Prompt.md`'s "Strategy C: Hash comparison" section (verbatim,
+quote this rather than paraphrase it) describes the approach:
 
-- `packages/engine/src/comparison-core/volume/volume.ts` — `countRows`
-  builds `SELECT COUNT(*) AS row_count FROM <objectRef>` inline (line
-  ~188) and immediately executes it.
-- `packages/engine/src/comparison-core/profiling/profiling.ts` —
-  `profileColumn` issues **between 2 and 5 separate queries per column**
-  depending on canonical type (always a general metrics query plus
-  `computeMostCommonValue`'s query; then one of
-  `computeStringMetrics`/`computeNumericMetrics`/`computeDateMetrics`/
-  `computeBooleanMetrics`, each of which may itself issue more than one
-  query — read the actual functions, don't assume a 1:1 shape). There is
-  no single "the SQL" for a profiled column; a preview must show the
-  **list** of queries that column's profile will issue.
-- `packages/engine/src/orchestration/planner/planner.ts` — `fetchAllRows`
-  builds `SELECT * FROM <objectRef> [WHERE <where>]` inline (line ~289)
-  for row-level comparison and immediately executes it.
+> Compute deterministic hashes over normalized values.
+> `HASH(normalized_column_1, normalized_column_2, ...)`
+> Possible levels: Entire table hash, Partition hash, Key-range hash, Row
+> hash, Column hash.
+> Whole-table hashes alone are limited: they prove something differs but
+> do not explain what differs. The useful pattern is progressive
+> narrowing: Table hash differs → Compare monthly partition hashes → June
+> differs → Compare key-range hashes → IDs 5,000,000–5,100,000 differ →
+> Run row-level comparison.
 
-Per the user's explicit direction on how to close this gap (recorded
-below in Dependencies), the fix is **not** a new centralized SQL-builder
-module. Each of the three files above gets a small additional **exported,
-pure, string-returning function** that the existing execution code path
-now calls internally (so the executed SQL and the previewed SQL are
-provably the same code, not two independently-maintained copies — this
-was the specific drift risk the original T-16 deferral decision flagged
-as a reason *not* to have the extension re-derive SQL independently).
+This task implements the **hash computation and comparison mechanics**
+for these levels — it does not implement automatic progressive
+"narrowing" orchestration logic (deciding to escalate from table → to
+partition → to key-range → to row-level automatically) unless doing so
+is trivial given the shapes you build; if it's not trivial, stop that
+scope at "the caller can call `compareByHash` again at a narrower level
+themselves using the returned mismatch information," and document that
+choice explicitly rather than silently building less than the doc's
+narrative implies. `IMPLEMENTATION-PLAN.md`'s literal Interfaces column
+for T-20 is `compareByHash(source, target, level): HashComparisonResult`
+— a single comparison at a given level, not an auto-escalating pipeline.
+That literal signature is authoritative over the doc's narrative framing.
 
-This task therefore has **four** file-ownership zones, three of them
-extending existing owned files rather than a single clean new directory —
-read the Files owned section carefully.
+`ConnectorCapabilities.supportsNativeHashing` (`packages/shared/src/connector.ts`)
+already exists and every current connector (`FixtureConnector`,
+`SqlServerConnector`, `PostgresConnector`) already reports `true` for it
+— you do not need to add a new connector method; build hash SQL against
+the existing public `DataPlatformConnector` surface
+(`executeQuery`/`quoteIdentifier`), the same pattern T-13's `compareVolume`
+and T-14/T-15's row-fetching already use. DuckDB (the fixture connector's
+backing engine) supports a `hash()` function; SQL Server and PostgreSQL
+each have their own hash functions (`HASHBYTES`/`md5` respectively) —
+since this task is fixture-only (see Dependencies), you do not need to
+make it work against the live SQL Server/PostgreSQL containers, but do
+not hardcode a DuckDB-only SQL dialect assumption into a function meant
+to be platform-general either; if a truly platform-neutral hash
+expression isn't achievable without per-dialect branching, disclose that
+explicitly as a design tradeoff in `IMPLEMENTATION-REPORT.md` rather than
+silently shipping a DuckDB-only implementation under a general-sounding
+name.
+
+Note to whoever dispatches an implementer against this brief: quote this
+document's load-bearing requirements verbatim rather than paraphrasing
+them — a paraphrase that loosens a requirement is a known failure mode
+from this project's history (T-07's I-02 finding traced back to exactly
+this).
 
 ## Dependencies
 
-- **Required completed tasks:** T-07 (profiling, COMPLETE/APPROVED), T-09
-  (planner Phase 1, COMPLETE/APPROVED), T-13 (volume, COMPLETE/APPROVED),
-  T-15 (planner Phase 2, COMPLETE/APPROVED), T-16 (webview + export,
-  COMPLETE/APPROVED — this task extends its webview ownership again, the
-  same way T-16 itself extended T-11's).
-- **Required decisions or approvals:** The refactor shape (export builder
-  functions in place in each of the three existing owned files, rather
-  than a new centralized SQL-preview module) was chosen directly by the
-  project owner via `AskUserQuestion` on 2026-08-01, specifically to keep
-  the diff minimal and avoid introducing a new ownership boundary for one
-  feature. This constitutes each of T-07/T-09/T-13/T-15's implicit
-  authorization to extend their files for this narrowly-scoped purpose —
-  document this authorization explicitly in `IMPLEMENTATION-REPORT.md` if
-  any of those files' original reviewers would otherwise read their
-  brief's ownership as exclusive-forever.
+- **Required completed tasks:** T-14 (row-level parity, COMPLETE/APPROVED
+  — per the plan row, this task consumes "Row-level matching contracts
+  from T-14"; specifically, `compareByHash`'s row/column-level hash
+  results should be usable as an input to `compareRows` or structured
+  compatibly enough that a caller could hand off from hash-level
+  detection to T-14's row-level classification, per the doc's progressive
+  narrowing narrative — read `row-level.ts`'s `RowDifference`/
+  `RowColumnDifference` shapes before designing `HashComparisonResult`,
+  don't invent an incompatible parallel shape). T-05 (canonical type
+  mapping, for normalizing values before hashing, consistent with
+  "normalized_column_1" in the doc's `HASH(...)` example — reuse T-12's
+  `applyNormalization` for this, do not reimplement normalization).
+- **Required decisions or approvals:** NONE beyond the already-approved
+  `IMPLEMENTATION-PLAN.md` T-20 row.
+- **Environment:** this task is fixture-only (`FixtureConnector`/DuckDB
+  in-process). It does not need the WSL/Docker live-database containers
+  T-17/T-19 needed — work and test entirely from your normal shell.
 
 ## Files owned
 
-- `packages/engine/src/comparison-core/volume/volume.ts` — **extend
-  only**: add one new exported function, e.g.
-  `buildRowCountSql(connector: DataPlatformConnector, input: QueryInput): string`,
-  that returns exactly the SQL string `countRows` already builds
-  internally. Refactor `countRows` to call this new function rather than
-  building the string twice.
-- `packages/engine/src/comparison-core/profiling/profiling.ts` — **extend
-  only**: add one new exported function, e.g.
-  `buildProfileQueries(connector: DataPlatformConnector, column: ColumnDefinition, options: ProfileOptions): string[]`,
-  that returns the **ordered list** of every SQL string `profileColumn`
-  would issue for that column (general metrics, most-common-value, and
-  whichever type-specific metrics query/queries apply — mirror
-  `profileColumn`'s own type-dispatch logic exactly, don't reimplement a
-  parallel simplified version that can drift from it). Refactor the
-  internal query-building call sites to source their SQL from this same
-  function (or from shared helpers this function itself calls) rather
-  than maintaining two independent string-construction paths.
-- `packages/engine/src/orchestration/planner/planner.ts` — **extend
-  only**: add one new exported function, e.g.
-  `buildFetchAllRowsSql(connector: DataPlatformConnector, side: ParityDefinition["source"]): string`,
-  that returns exactly the SQL string `fetchAllRows` already builds
-  internally. Refactor `fetchAllRows` to call it.
-- `packages/extension/src/webview/**` (extends T-11's/T-16's ownership
-  again) — render a new "Query Preview" section in `renderResultsHtml`
-  (or a clearly-separated new exported function alongside it, your call,
-  document the choice) showing the SQL that was used to produce the
-  displayed result. This is a **post-hoc preview of SQL already run**,
-  not a pre-execution confirmation gate — `ComparisonResult` doesn't
-  currently carry the queries used to produce it (see the new interface
-  requirement below), and adding an actual execution-blocking
-  confirmation UI is out of scope here (no command/trigger wiring exists
-  yet for initiating a comparison at all — same boundary T-11's review
-  already established for activation wiring). Keep `renderResultsHtml`
-  pure, no new `vscode` import, matching T-11/T-16's existing contract
-  exactly.
-- `packages/shared/src/result.ts` — **narrow, additive-only edit**: add
-  an optional `queriesUsed` (or similarly named) field to
-  `ComparisonResult` (or a sub-shape it references) capturing the SQL
-  strings actually issued for the run, populated by the planner. This is
-  the one shared-type edit this task is authorized to make; do not touch
-  `SchemaDifference`/`ProfileDifference`/`AggregateDifference`/
-  `RowDifference` or any other existing field.
-- `packages/engine/src/orchestration/planner/planner.ts` also needs a
-  **second** change beyond `buildFetchAllRowsSql` above: wire the new
-  builder functions from volume.ts/profiling.ts/planner.ts itself into
-  `runComparison` so the collected SQL strings populate the new
-  `queriesUsed` field on the returned `ComparisonResult`. This is still
-  within this task's planner.ts ownership already declared above — not a
-  new zone.
+- `packages/engine/src/comparison-core/hash-comparison/**` (new
+  directory)
 
-Do not touch any other file in `packages/engine/src/comparison-core/**`
-or `packages/engine/src/connector-sdk/**` (including
-`sqlserver/**`/`postgres/**`/`fixture/**`/`safety/**`) — this task only
-needs read access to `DataPlatformConnector`'s public surface
-(`quoteIdentifier`), exactly as `countRows`/`fetchAllRows` already use it
-today.
+Do not touch `packages/engine/src/connector-sdk/safety/**` (T-03's owned
+file), `packages/engine/src/comparison-core/type-mapping/**` (T-05's
+owned file), `packages/engine/src/connector-sdk/fixture/**` (T-04's owned
+file — consume `FixtureConnector` read-only via `import`, do not modify
+it), `packages/engine/src/comparison-core/normalization/**` (T-12's owned
+file — consume `applyNormalization` read-only via `import`),
+`packages/engine/src/comparison-core/row-level/**` (T-14's owned file —
+read it for the `RowDifference`/`RowColumnDifference` shapes and pattern
+reference, do not edit it or import from its internals beyond its public
+exports), `packages/engine/src/comparison-core/volume/**` (T-13's owned
+file), `packages/engine/src/orchestration/planner/**` (T-09/T-15's owned
+file — this task does not wire hash comparison into `runComparison`; that
+is future integration work, out of scope here, matching the precedent
+`IMPLEMENTATION-PLAN.md` already set of shipping a comparison-core
+capability before its planner wiring in a later task — see T-13 landing
+before T-15 wired it in), or any connector-sdk file
+(`sqlserver/**`/`postgres/**`).
+
+Do not modify `packages/shared/src/**` unless a genuine interface gap is
+found — if so, stop and flag it as a blocker rather than editing it
+directly; this task is expected to define its own result types locally
+within `hash-comparison/**` (matching `RowDifference`'s own precedent of
+being a `packages/shared` type only because T-14 needed it referenced
+from `ComparisonResult` — `HashComparisonResult` has no such external
+consumer yet since planner wiring is out of scope here, so it likely
+belongs entirely within this task's own directory; if you judge otherwise,
+disclose the reasoning).
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Produced | `buildRowCountSql(connector, input): string` (`volume.ts`) | Pure function, no I/O, returns the exact string `countRows` would execute for that input | This task (producer); webview (consumer, indirectly via `queriesUsed`) |
-| Produced | `buildProfileQueries(connector, column, options): string[]` (`profiling.ts`) | Pure function, no I/O, returns the ordered list of every SQL string `profileColumn` would issue for that column, matching its real type-dispatch logic | This task (producer); webview (consumer, indirectly via `queriesUsed`) |
-| Produced | `buildFetchAllRowsSql(connector, side): string` (`planner.ts`) | Pure function, no I/O, returns the exact string `fetchAllRows` would execute for that side | This task (producer); webview (consumer, indirectly via `queriesUsed`) |
-| Produced | `ComparisonResult.queriesUsed` (new optional field, `packages/shared/src/result.ts`) | Populated by `runComparison`, holding the SQL strings actually issued during that run (source and target, per check type run) | This task (producer); webview (consumer) |
-| Produced | Extended `renderResultsHtml` (or a new sibling export) rendering a "Query Preview" section from `ComparisonResult.queriesUsed` when present | Pure function, `escapeHtml`-sanitized like every other field T-11/T-16 already render, no new `vscode` import | This task (producer) |
+| Consumed | `DataPlatformConnector` (`packages/shared/src/connector.ts`) | Existing, complete interface. Use `executeQuery`/`quoteIdentifier` only, matching T-13/T-14/T-15's established pattern of building SQL against the connector's public surface | T-02 (producer) |
+| Consumed | `applyNormalization(value, rule): NormalizedValue` (`packages/engine/src/comparison-core/normalization/normalization.ts`) | Existing, complete, reviewed. Apply to column values before hashing, matching the doc's `normalized_column_1` framing in its `HASH(...)` example | T-12 (producer) |
+| Consumed | `RowDifference`/`RowColumnDifference` (`@paritylens/shared`, refined by T-14) | Existing, complete shapes — read for compatibility reference when designing this task's own result types, per the Dependencies section above | T-14 (producer) |
+| Produced | `compareByHash(source, target, level, options): HashComparisonResult` (new, `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts` or similar) | `level` is one of the five from the doc: `"table"`, `"partition"`, `"key-range"`, `"row"`, `"column"` (choose exact string literals, document them). Returns whether the hashes matched at that level and, when they didn't, enough structured information to identify *what* narrower unit to compare next (e.g. which partition, which key range, which row, which column) — this is the "progressive narrowing" payload the doc describes, even though this task doesn't auto-escalate itself | This task (producer) |
 
 ## Prohibited changes
 
-- Do not modify `packages/engine/src/connector-sdk/safety/**`,
-  `packages/engine/src/comparison-core/type-mapping/**`,
-  `packages/engine/src/connector-sdk/fixture/**`,
-  `packages/engine/src/connector-sdk/sqlserver/**`, or
-  `packages/engine/src/connector-sdk/postgres/**`.
-- Do not modify `SchemaDifference`, `ProfileDifference`,
-  `AggregateDifference`, or `RowDifference` in
-  `packages/shared/src/result.ts` — only the new `queriesUsed` addition is
-  authorized there.
-- Do not add any actual execution-blocking "confirm before running" UI —
-  this task is a post-hoc preview of SQL that was used, not a
-  pre-execution gate (no comparison-triggering command exists yet to gate
-  in the first place).
-- Do not reimplement SQL-building logic a second time anywhere (e.g.
-  inside the webview) — the webview must only ever display strings that
-  originated from the three new engine-layer builder functions, never
-  independently reconstruct SQL from a `QueryInput`/`ColumnDefinition`.
-  This is the exact drift risk the original T-16 deferral decision was
-  written to avoid.
+- Do not modify any file outside `packages/engine/src/comparison-core/hash-comparison/**` except where explicitly authorized above (none currently — flag and stop if you believe you need to).
+- Do not add automatic multi-level escalation/orchestration logic beyond a single `compareByHash` call at a given level, unless genuinely trivial — see Objective section for the exact boundary and required disclosure if you judge it's not trivial.
+- Do not wire this into `runComparison`/the planner — that is explicitly out of scope for this task.
+- Do not require or assume the live SQL Server/PostgreSQL test containers — this task is fixture-only.
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A test asserting `buildRowCountSql` returns
-  the same SQL string `countRows` actually executes against a fixture
-  connector — must fail because the function doesn't exist yet. A second:
-  `buildProfileQueries` for a numeric column returns a list containing at
-  least the general-metrics and numeric-metrics query strings — must
-  fail. A third: `runComparison` against fixture data with schema/profile/
-  volume/row-level checks enabled produces a `ComparisonResult` with a
-  populated `queriesUsed` — must fail (field doesn't exist).
-- **Command:**
-  `npx vitest run packages/engine/src/comparison-core/volume packages/engine/src/comparison-core/profiling packages/engine/src/orchestration/planner`
-- **Expected failure reason:** Functions/field do not exist yet.
+- **Test or check to add:** A test comparing two fixture partitions by
+  hash, matching the plan row's own red-state description: "test
+  comparing two fixture partitions by hash expecting a mismatch at
+  partition 2 fails (function doesn't exist)." Build this against one of
+  the existing seeded fixture pairs (`sqlserver-customer`,
+  `snowflake-orders`, or `postgres-products` — whichever has, or can be
+  most naturally partitioned into, a case with a known planted mismatch
+  you can target; read `packages/engine/fixtures/**` first to pick the
+  right one and document your choice) rather than inventing new fixture
+  data, unless the existing fixtures genuinely can't support a
+  partition-level mismatch case — if so, disclose why and what minimal
+  fixture addition was needed.
+- **Command:** `npx vitest run packages/engine/src/comparison-core/hash-comparison`
+- **Expected failure reason:** Module/function does not exist yet.
 - **Captured output:** Paste the actual failing command output into
-  `IMPLEMENTATION-REPORT.md`.
+  `IMPLEMENTATION-REPORT.md`, not a paraphrase.
 
 ## Green-state and full verification
 
-- **Focused command:** same as above, now passing.
+- **Focused command:** `npx vitest run packages/engine/src/comparison-core/hash-comparison`
 - **Full command:** `npm run verify`
-- **Expected evidence:** All red-state cases now pass; the SQL strings
-  the new builder functions return are byte-for-byte identical to what
-  the corresponding execution code path actually sends to the connector
-  (verify this directly — e.g. capture the SQL a `FixtureConnector` spy
-  receives via `executeQuery` and assert equality against the builder's
-  output, not just that both look plausible); `renderResultsHtml`'s new
-  section renders `queriesUsed` correctly and escapes it; all previously
-  passing tests (386 as of T-19) still pass with no regression;
-  `npm run verify` exits 0. This task does not depend on the WSL/Docker
-  test containers — everything here is fixture-only (`FixtureConnector`),
-  no live-database work is in scope.
+- **Expected evidence:** The red-state case now passes, matching the
+  plan row's acceptance framing ("matches idea doc's progressive-
+  narrowing example structure"). Add a case proving hash comparison and
+  full row-level comparison (T-14's `compareRows`) **agree** on the same
+  fixture mismatch — i.e. wherever `compareByHash` reports a row-level or
+  column-level hash mismatch, `compareRows` independently classifies that
+  same row/column as differing, and wherever hashes match, `compareRows`
+  reports no difference for that row — this directly anticipates the
+  plan row's stated review-gate requirement ("independent reviewer
+  confirms hash comparison and full row-level comparison agree on the
+  same fixture mismatch case"), so make sure your own test suite already
+  proves it, not just something the reviewer has to construct from
+  scratch. All previously passing tests (368 as of T-16b) still pass with
+  no regression. `npm run verify` exits 0.
 
 ## Handoff
 
@@ -191,20 +171,25 @@ today.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-16b-sql-preview`
+- **Commit or patch checkpoint:** Branch `task/T-20-hash-comparison`
 
-**Note to reviewer:** the central risk on this task is exactly the drift
-risk the original T-16 deferral was written to avoid — verify, don't
-trust, that the previewed SQL and the executed SQL are the *same string
-from the same code path*, not two independently-written string templates
-that merely look similar today and can silently diverge tomorrow. Trace
-each of the three execution call sites (`countRows`, `profileColumn`'s
-various metric computations, `fetchAllRows`) and confirm they call the
-new builder function rather than duplicating its string-building logic.
-Also confirm `profileColumn`'s type-dispatch branching
-(String/Integer-Decimal-FloatingPoint/Date-family/Boolean) is mirrored
-exactly by `buildProfileQueries`, not approximated — construct your own
-column of each canonical type and diff the actual queries issued against
-`buildProfileQueries`'s output for that same column. Confirm
-`renderResultsHtml` still has zero reachable path to `vscode.workspace`/
-`SecretStorage`/a connector, matching T-11/T-16's established contract.
+**Note to reviewer:** per `IMPLEMENTATION-PLAN.md`'s T-20 review-gate
+column verbatim: "Independent reviewer confirms hash comparison and full
+row-level comparison agree on the same fixture mismatch case." Don't just
+re-run the implementer's own agreement test — construct at least one
+additional fixture scenario yourself (a different mismatch than the
+implementer's chosen worked example, ideally including at least one case
+where hashes match at a coarser level but a narrower level reveals a
+planted mismatch, exercising the progressive-narrowing framing) and
+independently verify `compareByHash` and `compareRows` agree on it. Also
+verify: (1) hashing genuinely applies normalization first (construct a
+case where two differently-formatted-but-equivalent values, e.g. "125.37"
+vs "125.3700" or "Shipped" vs "SHIPPED", hash to the same value after
+normalization — if hashing operates on raw unnormalized values, that's a
+real defect against the doc's explicit "HASH(normalized_column_1, ...)"
+requirement, not a nitpick); (2) confirm no file outside
+`hash-comparison/**` was touched, and no planner-wiring scope creep
+occurred; (3) confirm the level-escalation-scope judgment call (documented
+in the Objective section above) was actually followed as declared in
+`IMPLEMENTATION-REPORT.md`, not silently over- or under-built relative to
+what was disclosed.
