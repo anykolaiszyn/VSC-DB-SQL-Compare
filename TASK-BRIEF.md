@@ -1,126 +1,121 @@
-# ParityLens — Task Brief T-15
+# ParityLens — Task Brief T-16
 
 ## Objective
 
-Extend the Orchestration API's planner (`runComparison`, T-09's file) to
-execute Phase-2 checks — volume parity (T-13's `compareVolume`) and
-row-level parity (T-14's `compareRows`) — honoring `checks.rowCount.enabled`
-and `checks.rowLevel.enabled` from the parsed `ParityDefinition`, and
-populate `ComparisonResult.rowCounts`, `.aggregateDifferences`, and
-`.rowDifferences` from real results instead of the empty/default placeholder
-values T-09 left in place.
+Extend the results webview to render the two Phase-2 difference arrays
+(`aggregateDifferences`, `rowDifferences`) that T-15 now populates, and add
+a new export module that writes a `ComparisonResult` to CSV, JSON, and
+Markdown files under the configured safe output root.
+
+**Explicit scope reduction from `IMPLEMENTATION-PLAN.md`'s T-16 row:** the
+plan row also lists "SQL preview panel showing generated queries before
+execution." Investigation before this brief was written found no existing
+engine interface exposes generated SQL as a string — `volume.ts`,
+`profiling.ts`, and `planner.ts`'s `fetchAllRows` each build a SQL string
+privately and execute it immediately inline, with no shared preview
+surface, and all three are files this task is prohibited from touching
+(see Prohibited changes). The project owner was asked directly and chose
+to **defer SQL preview to a future follow-up task** rather than widen this
+task's file ownership into the engine layer or have the extension
+independently re-derive SQL (risking drift from what actually executes).
+Do not implement any SQL preview UI in this task. Record this deferral as
+a new, explicit row/decision in `PROGRESS-LEDGER.md` during activation (a
+future task, e.g. a new T-16b, will own adding a `buildXQuery`-style
+string-returning function to each engine file's owned scope and a preview
+surface that consumes it) — this is not a silent scope cut, it is a
+recorded, owner-approved one.
 
 Note to whoever dispatches an implementer against this brief: quote this
-document's load-bearing requirements verbatim rather than paraphrasing them.
-A paraphrase that loosens a requirement is a known failure mode from this
-project's history (T-07's I-02 finding traced back to exactly this) — the
-implementer treats the paraphrase as authoritative and a real requirement
-quietly drops. If a dispatch prompt must summarize this brief for brevity,
-it should still point back to this file as the sole authority wherever the
-two could be read to disagree.
+document's load-bearing requirements verbatim rather than paraphrasing
+them. A paraphrase that loosens a requirement is a known failure mode from
+this project's history (T-07's I-02 finding traced back to exactly this).
 
 ## Dependencies
 
-- **Required completed tasks:** T-09 (orchestration planner, Phase 1),
-  T-13 (volume parity), T-14 (row-level parity). All COMPLETE and APPROVED
-  per `PROGRESS-LEDGER.md`.
-- **Required decisions or approvals:** NONE beyond the already-approved
-  `IMPLEMENTATION-PLAN.md` row for T-15.
-- **Carried-forward findings to address:** T-13-01 (Minor, undocumented
-  precedence when `ParityChecks.rowCount.tolerance` supplies both
-  `percentage` and `absolute`) and T-14-02 (Minor, already resolved inside
-  `compareRows` itself — no action needed here beyond passing `rules`
-  through so the fallback actually engages) are both explicitly flagged in
-  `PROGRESS-LEDGER.md` as relevant to this task. Do not silently ignore
-  T-13-01 — either resolve the ambiguity explicitly in how you call
-  `compareVolume` (document which of `percentage`/`absolute` wins when a
-  definition supplies both, matching whatever `compareVolume`'s own
-  `evaluateTolerance` already does — read `volume.ts` directly rather than
-  guessing) or flag it as still-open in your report.
+- **Required completed tasks:** T-11 (results webview, Phase 1), T-15
+  (orchestration planner Phase 2). Both COMPLETE and APPROVED per
+  `PROGRESS-LEDGER.md`.
+- **Required decisions or approvals:** SQL-preview deferral, confirmed
+  directly by the project owner (see Objective above) — no other approval
+  needed beyond the already-approved `IMPLEMENTATION-PLAN.md` T-16 row
+  (as scoped down by that deferral).
 
 ## Files owned
 
-- `packages/engine/src/orchestration/planner/**` (extends T-09's
-  ownership; T-09 is complete and merged, so this task now owns further
-  changes to this directory)
+- `packages/extension/src/webview/**` (extends T-11's ownership; T-11 is
+  complete and merged, so this task now owns further changes to this
+  directory)
+- `packages/extension/src/export/**` (new directory, first task to own it)
 
-Do not touch `packages/engine/src/comparison-core/volume/**` (T-13's owned
-file, consume `compareVolume`/`VolumeDifference`/`VolumeTolerance` read-only
-via `import`), `packages/engine/src/comparison-core/row-level/**` (T-14's
-owned file, consume `compareRows`/`RowCompareOptions`/`RowSet` read-only via
-`import`), `packages/engine/src/comparison-core/mapping/**` or
-`.../normalization/**` (T-12's owned files), or
-`packages/engine/src/orchestration/definition/definition.ts` (T-08's owned
-file — `ParityChecks.rowCount`/`.rowLevel`, `ColumnMappingEntry`, `keys`,
-and the per-column `rules` shape are all consumed read-only).
+Do not touch `packages/engine/**` at all — this task is extension-only,
+consuming `ComparisonResult` (and its sub-shapes) read-only via
+`import type` from `@paritylens/shared`. Do not touch
+`packages/extension/src/activation/**`, `.../views/**`, `.../secrets/**`,
+or `.../statusbar/**` (owned by T-10/T-11's other files respectively) —
+if activation needs a new command to invoke export, add the minimal
+wiring only if strictly necessary and flag it clearly in the
+implementation report rather than assuming it's in scope.
 
 ## Interfaces
 
 | Direction | Interface | Contract | Producer or consumer |
 | --- | --- | --- | --- |
-| Consumed | `compareVolume(source, target, sourceInput, targetInput, tolerance?): Promise<VolumeDifference>` (`packages/engine/src/comparison-core/volume/volume.ts`) | Existing, already-implemented and reviewed. `VolumeDifference` is an alias for `AggregateDifference`. Call once per comparison run when `checks.rowCount?.enabled === true`, passing `definition.checks.rowCount.tolerance` straight through (the shape is structurally assignable to `VolumeTolerance` per that file's own header comment) and `{ kind: "table", object: definition.source.object }` / target equivalent as the `QueryInput` args, matching the exact pattern T-09 already uses for `getSchema` calls in this same file. | T-13 (producer) |
-| Consumed | `compareRows(sourceRows, targetRows, keys, mapping, rules?, options?): RowDifference[]` (`packages/engine/src/comparison-core/row-level/row-level.ts`) | Existing, already-implemented and reviewed. Synchronous, not async — takes already-fetched row data (a `RecordBatch` for each side), not a connector. Call when `checks.rowLevel?.enabled === true`: fetch full row data for both sides via `source.executeQuery`/`target.executeQuery` (matching the pattern already used elsewhere in this file for schema/profile queries — build a plain `SELECT` over `definition.source.object`/`.target.object`, or reuse `definition.source.where`/`.target.where` if present, since `ParitySide.where` is an existing, already-parsed field this task may read), consume the resulting `AsyncIterable<RecordBatch>` fully into row sets, then call `compareRows` with `definition.keys`, `definition.columnMapping`, and `definition.rules` (all existing `ParityDefinition` fields from T-08, consumed read-only, same as T-09 already does for `columnMapping` in `runProfileChecks`). | T-14 (producer) |
-| Produced | `ComparisonResult.rowCounts` (`packages/shared/src/result.ts`, existing shape, not owned by this task to redefine) | Populate from `compareVolume`'s returned `VolumeDifference.{sourceCount, targetCount, difference}` when `checks.rowCount.enabled`; leave at `{ source: 0, target: 0, difference: 0 }` (T-09's existing default) when the check is disabled — do not fabricate a value for a check that didn't run. | T-16 (webview), T-15 itself (planner) |
-| Produced | `ComparisonResult.aggregateDifferences` / `.rowDifferences` (existing shapes, owned by T-13/T-14 respectively, not this task) | Populate `aggregateDifferences` with `[compareVolume's result]` (a single-element array — one row-count check per run, matching `AggregateDifference`'s array type) when row-count checking is enabled; populate `rowDifferences` with `compareRows`'s full returned array when row-level checking is enabled. Both stay empty when their respective check is disabled — this is the exact behavior T-09's existing "Phase 2/3 scope boundary" comment in `planner.ts` describes as deferred to this task. | T-16 (webview) |
+| Consumed | `ComparisonResult` and all sub-shapes (`AggregateDifference`, `RowDifference`, `RowColumnDifference`, `RowDifferenceCategory`) (`packages/shared/src/result.ts`) | Existing, complete, owned by T-13/T-14. Read-only `import type`. `aggregateDifferences` is a 0-or-1-element array (per T-13's doc comment: "one row-count check per run"). `rowDifferences` can be large — render every item, but do not assume any upper bound. | T-13/T-14 (producer) |
+| Extended | `renderResultsHtml(result: ComparisonResult): string` (`packages/extension/src/webview/resultsWebview.ts`) | Existing pure function from T-11. Extend it to also render `aggregateDifferences` (a "Volume Parity" section, mirroring the existing schema/profile table pattern: one row per item showing severity/sourceCount/targetCount/difference/differenceRate/message) and `rowDifferences` (a "Row-Level Differences" section: one row per item showing severity/category/keyValues (joined, e.g. comma-separated)/message, with `columnDifferences` rendered as a nested sub-list or sub-table only when present — i.e. only for `"matched-key-differing-values"` items). Must remain a pure function: no new `vscode` API usage, no I/O beyond building the returned string, per T-11's established and reviewer-scrutinized contract ("only renders data passed to it"). Preserve all of T-11's existing behavior for `schemaDifferences`/`profileDifferences` — do not change those two functions except as strictly necessary for shared table styling. | This task (producer, extending T-11) |
+| Produced (new) | An export function per format, e.g. `exportToCsv(result: ComparisonResult): string`, `exportToJson(result: ComparisonResult): string`, `exportToMarkdown(result: ComparisonResult): string` (`packages/extension/src/export/**`) | Each is a pure function returning file content as a string (mirroring `renderResultsHtml`'s pure-function pattern) — do not have these functions perform file I/O themselves. A separate, thin function (e.g. `writeExport(uri, content, safeOutputRoot)` or similar) performs the actual file write and must validate the resolved write path is contained under the safe output root before writing, rejecting (throwing) if the resolved path would escape it (path traversal check — e.g. reject `../` segments that resolve outside the root, matching `DESIGN-SPEC.md`'s "Write safety" principle: "All engine writes ... are contained under a configurable safe output root ... verified before write"). CSV must include row-difference rows with at least severity/category/keyValues/message columns. JSON should serialize the full `ComparisonResult` (or a documented equivalent subset — document the choice). Markdown should be human-readable, mirroring the webview's section structure. | This task (producer) |
 
 ## Prohibited changes
 
-- Do not modify `AggregateDifference`, `RowDifference`, `SchemaDifference`,
-  or `ProfileDifference` in `packages/shared/src/result.ts` — all four are
-  complete, owned by their respective tasks (T-13, T-14, T-06, T-07). If a
-  genuine shape gap is found, stop and flag it as a blocker rather than
-  editing that file.
-- Do not modify `compareVolume`/`compareRows` or any file under
-  `comparison-core/volume/**`, `comparison-core/row-level/**`,
-  `comparison-core/mapping/**`, or `comparison-core/normalization/**` —
-  all are complete and reviewed; T-15 is integration-only.
-- Do not modify `packages/engine/src/orchestration/definition/definition.ts`
-  — T-08's owned file, consumed read-only.
-- Do not change T-09's existing Phase-1 behavior (connectivity
-  short-circuit, schema/profile check execution, `summary`/`status`
-  derivation logic) except as strictly necessary to also fold in
-  volume/row-level findings' severities into the same `summarizeFindings`/
-  `deriveStatus` computation — read `planner.ts`'s existing
-  `summarizeFindings`/`deriveStatus` functions directly and extend the
-  `allFindings` array they already consume, rather than duplicating or
-  reimplementing that logic for the new check types.
-- Do not implement a distinct "informational-only" row-count tolerance mode
-  beyond what `compareVolume` itself already supports — that gap (if it is
-  one) belongs to `definition.ts`/T-13's territory, not this task's.
-- Do not touch `packages/extension/**` — T-15 is engine-only.
+- Do not modify anything under `packages/engine/**` — this task is
+  extension-only. If a genuine gap is found in `ComparisonResult` or its
+  sub-shapes, stop and flag it as a blocker rather than editing
+  `packages/shared/src/result.ts`.
+- Do not implement SQL preview UI or any SQL-string-generation code in
+  this task — explicitly deferred per the Objective section above.
+- Do not change `renderResultsHtml`'s or `showResultsWebview`'s existing
+  Phase-1 rendering behavior for `schemaDifferences`/`profileDifferences`
+  beyond incidental shared-styling changes.
+- Do not add a general-purpose templating engine, charting library, or
+  other new runtime dependency — plain string-building HTML/CSV/Markdown,
+  consistent with T-11's existing zero-dependency approach, unless a
+  genuine blocker requires otherwise (flag and justify explicitly if so).
 - Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Test or check to add:** A test running `runComparison` against two
-  fixture connectors with `checks.rowCount.enabled: true` and
-  `checks.rowLevel.enabled: false` in the definition, asserting the
-  returned `ComparisonResult.rowCounts` and `.aggregateDifferences` are
-  populated (not the empty defaults) — must fail because the planner
-  doesn't route to `compareVolume` yet. A second red-state case: the same
-  with `checks.rowLevel.enabled: true` asserting `.rowDifferences` is
-  populated — must also fail for the same reason (planner doesn't route to
-  `compareRows` yet).
-- **Command:** `npx vitest run packages/engine/src/orchestration/planner`
-- **Expected failure reason:** Existing planner tests still pass (T-09's
-  behavior is untouched), but the new red-state assertions fail because
-  `rowCounts`/`aggregateDifferences`/`rowDifferences` remain at their
-  Phase-1 empty defaults.
+- **Test or check to add:** A webview test asserting that a
+  `ComparisonResult` with a non-empty `aggregateDifferences` entry (e.g. a
+  volume-parity failure) renders as a table row containing its
+  `sourceCount`/`targetCount`/`differenceRate` — must fail because
+  `renderResultsHtml` doesn't render that array yet. A second red-state
+  case: a `ComparisonResult` with a `rowDifferences` entry of category
+  `"matched-key-differing-values"` including `columnDifferences` — must
+  fail because it isn't rendered yet. A third red-state case: an export
+  test asserting `exportToCsv`/`exportToJson`/`exportToMarkdown` exist and
+  produce content containing a known row-difference's key values — must
+  fail because the export module doesn't exist yet. A fourth: a test
+  asserting a write attempt with a path that resolves outside the safe
+  output root is rejected — must fail because no path-validation function
+  exists yet.
+- **Command:** `npx vitest run packages/extension`
+- **Expected failure reason:** T-11's existing schema/profile tests still
+  pass; new assertions fail because the corresponding rendering/export/
+  path-validation code doesn't exist yet.
 - **Captured output:** Paste the actual failing command output and exit
   code into `IMPLEMENTATION-REPORT.md`, not a paraphrase.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/engine/src/orchestration/planner`
+- **Focused command:** `npx vitest run packages/extension`
 - **Full command:** `npm run verify`
-- **Expected evidence:** Both new red-state cases pass; a test confirming
-  that disabling a Phase-2 check in the definition actually skips it (no
-  silent execution — e.g. `checks.rowCount.enabled: false` still yields
-  the empty `{ source: 0, target: 0, difference: 0 }` default, not a
-  real computed value) per `IMPLEMENTATION-PLAN.md`'s T-15 review-gate
-  column; all of T-09's existing Phase-1 tests still pass unmodified
-  (connectivity short-circuit, schema, profile); the previously-passing
-  347 tests (per `PROGRESS-LEDGER.md`'s T-14 entry) still pass with no
+- **Expected evidence:** All four red-state cases now pass; a test
+  confirming `aggregateDifferences`/`rowDifferences` render nothing extra
+  (e.g. "No volume differences." / "No row-level differences.") when
+  empty, mirroring T-11's existing empty-state pattern for schema/profile
+  tables; a test confirming the path-traversal rejection actually throws
+  rather than silently writing outside the root; all of T-11's existing
+  Phase-1 webview tests still pass unmodified; the previously-passing
+  350 tests (per `PROGRESS-LEDGER.md`'s T-15 entry) still pass with no
   regression; `npm run verify` exits 0.
 
 ## Handoff
@@ -129,25 +124,19 @@ and the per-column `rules` shape are all consumed read-only).
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-15-orchestration-phase2`
+- **Commit or patch checkpoint:** Branch `task/T-16-diff-viewer-export`
 
-**Note to reviewer:** per `IMPLEMENTATION-PLAN.md`'s T-15 review-gate
-column, "confirms disabling a check in the definition actually skips it (no
-silent execution)" — construct your own test disabling each of
-`checks.rowCount`/`checks.rowLevel` independently (not reusing the
-implementer's own disabled-check test) and confirm no query is issued to
-either connector for the disabled check (an easy way to verify: use a spy/
-mock connector, similar to the "adversarial spy-connector probe" T-09's own
-review already used for the connectivity short-circuit — check
-`PROGRESS-LEDGER.md`'s T-09 decision-log entry for that precedent). Also
-verify the `rowCounts`/`aggregateDifferences`/`rowDifferences` population
-logic doesn't silently swallow a `compareVolume`/`compareRows` throw (should
-the run fail loudly, or should it be caught similarly to how connectivity
-failures short-circuit? — the brief does not prescribe this; check what the
-implementer chose and whether it's reasonable and documented, not
-unspecified-and-silent). Finally, confirm `summary`/`status` correctly
-reflect a Phase-2 failure (e.g. a row-count check that fails tolerance
-should be able to flip `status` to `"failed"` and increment
-`summary.failed`, exactly as schema/profile findings already do) by
-constructing a case where only a row-count/row-level finding fails, with
-schema and profile both passing or disabled.
+**Note to reviewer:** per `IMPLEMENTATION-PLAN.md`'s T-16 review-gate
+column, "confirms export paths cannot escape the safe output root
+(path traversal check)" — construct your own adversarial path (e.g. a
+relative path with `../../` segments, or an absolute path outside the
+root) and confirm the write function actually rejects it rather than
+trusting the implementer's own test. Also confirm `renderResultsHtml`
+remains a pure function with no new `vscode` import beyond types (grep
+the diff for `from "vscode"` outside type-only imports). Confirm the
+SQL-preview deferral was not quietly reinterpreted as "implement a
+partial version" — there should be zero SQL-generation code in this
+diff. Finally, confirm CSV/JSON/Markdown outputs are independently
+sampled against a hand-built `ComparisonResult` fixture (not reused
+from the implementer's own fixture) and actually contain the expected
+row/column values, not just non-empty strings.
