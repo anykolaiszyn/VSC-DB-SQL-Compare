@@ -392,3 +392,262 @@ occurred; (4) confirm the escalation-scope judgment call documented
 above was actually followed, not silently over- or under-built. This
 implementer does not have authority to mark this task complete/approved
 or to update `PROGRESS-LEDGER.md`.
+
+---
+
+## Round 2 (T-20-01 fix)
+
+### Status and objective
+
+- **Status:** COMPLETE (implementation and self-verification only — not
+  reviewed or approved; see Recommended next step). This section is
+  appended, not a replacement for the round-1 content above, per this
+  round's dispatch instructions.
+- **Objective:** Resolve `REVIEW-REPORT.md`'s Critical finding
+  **T-20-01**: `compareByHash` did not honor `numericTolerance`
+  before hashing, causing it to disagree with T-14's `compareRows` on
+  `Idea Prompt.md`'s own canonical numeric-formatting example
+  (`"125.3700"` vs `"125.37"` with `rules: { AMOUNT: { numericTolerance:
+  { absolute: 0.01 } } } }` configured).
+
+### Changed files (round 2)
+
+| File | Change | Reason |
+| --- | --- | --- |
+| `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts` | Modified | Added `canonicalizeForHash`, `coerceNumericForHash`, `roundToStep`, `roundToSignificantFigures`, `percentageToSignificantFigures`; wired into `fetchNormalizedRows` so a column with `rule.numericTolerance` configured is canonicalized (bucketed) before its value enters the hashed tuple. Extended header comment with full round-2 rationale, judgment calls, and boundary-risk disclosure. |
+| `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts` | Modified | Added a `describe("compareByHash: numericTolerance (T-20-01 regression)")` block (3 tests) and a generalized `fixtureWithStringVariant` fixture-building helper (parallels the existing `fixtureWithCasingVariant`); widened `fetchAllRows`'s parameter type from `FixtureConnector` to the `DataPlatformConnector` interface so it can be reused with the new helper's ad hoc adapter connectors (round-1 helper is `FixtureConnector`-typed only because it happened to only ever be called with one; no behavior change, purely a type-signature widening within this task's own file, disclosed here per the implementer protocol's requirement to call out such minimal forced edits explicitly). |
+
+No file outside `packages/engine/src/comparison-core/hash-comparison/**`
+was touched. `git status --short` before committing showed only these
+two modified files.
+
+### Canonicalization approach chosen
+
+A SHA-256 digest has no concept of "equal within tolerance" — two byte
+strings either hash identically or they don't. `row-level.ts`'s
+comparison-based pattern (`coerceNumericString` +
+`valuesEqualWithinTolerance`, T-14-01) compares a *pair* of values; it
+cannot be reused as-is because hashing needs a canonical single *value*
+per side, computed independently, that happens to collide for
+within-tolerance pairs.
+
+`canonicalizeForHash(value, tolerance)` (new, in
+`hash-comparison.ts`), called from `fetchNormalizedRows` only when
+`rules[columnName].numericTolerance` is configured for that column
+(mirroring T-14-01's own "only when a numeric tolerance is actually
+configured" guard, so no other column's behavior changes):
+
+1. `coerceNumericForHash(value)` — reuses `row-level.ts`'s
+   `coerceNumericString` guard logic (trims, then `Number(...)`,
+   rejecting empty strings and non-finite results) so genuinely
+   non-numeric text is never corrupted into `NaN`; returns `undefined`
+   for anything not numeric-looking, in which case the already-
+   normalized value passes through unchanged.
+2. **Absolute tolerance** (`{ absolute: X }`): `roundToStep(value, X)`
+   rounds to the nearest multiple of `X`, then re-rounds to a fixed
+   decimal-place count derived from `X` to avoid floating-point
+   representation artifacts (e.g. `0.1 + 0.2 !== 0.3`) reintroducing
+   spurious differences between values that rounded to the
+   mathematically same bucket. Verified directly:
+   ```
+   > roundToStep(125.37, 0.01)   -> 125.37
+   > roundToStep(125.3700, 0.01) -> 125.37   (both sides converge)
+   ```
+3. **Percentage tolerance** (`{ percentage: P }`, judgment call): there
+   is no natural "round to nearest bucket" for a percentage tolerance
+   the way there is for an absolute one, because the tolerance window's
+   absolute width depends on the value's own magnitude. Chosen approach:
+   round to a fixed number of significant figures, `sigFigs =
+   clamp(round(2 - log10(P / 100)), 1, 15)` — e.g. `P = 1` (1%) → 4
+   significant figures, `P = 50` → 2 significant figures. This is a
+   disclosed approximation, not an exact reproduction of
+   `valuesEqualWithinTolerance`'s relative-difference formula (`|a-b| /
+   max(|a|,|b|) * 100 <= percentage`); see the boundary-risk disclosure
+   below for how closely they actually agree.
+
+If neither `absolute` nor `percentage` is set on a present
+`numericTolerance` object, canonicalization is skipped and the
+already-normalized value is used unchanged (equivalent to no tolerance
+configured).
+
+### Boundary-risk disclosure (required by this round's brief) — verified by direct computation
+
+**Absolute tolerance:** because `roundToStep`'s bucket width equals
+`tolerance.absolute` exactly, two values within tolerance of each
+other can still straddle a bucket edge and land in *different* buckets
+— a false **disagreement**, not a false agreement. Verified example
+(`node -e`, pasted output):
+```
+> Math.abs(125.364 - 125.370)                    -> 0.006000000000000227  (within 0.01 tolerance)
+> roundToStep(125.364, 0.01)                      -> 125.36
+> roundToStep(125.370, 0.01)                      -> 125.37   (different bucket)
+```
+`compareRows` would call `125.364`/`125.370` "matching" (diff 0.006 ≤
+0.01); `compareByHash` would report a hash mismatch for this specific
+pair. This is a real, disclosed limitation. The converse — two values
+*more* than `tolerance.absolute` apart landing in the same bucket (a
+false hash-level **agreement**) — cannot occur for absolute tolerance:
+by construction, any two values sharing a bucket differ by strictly
+less than one bucket-width, i.e. strictly less than `tolerance.absolute`.
+
+**Percentage tolerance:** searched directly (a brute-force scan across
+tolerance percentages 1/5/10/25/50/100 and a wide range of value
+magnitudes) for a false-agreement counterexample (two values more than
+`percentage`% apart landing in the same significant-figure bucket) and
+found none. A closed-form bound explains why: for a value of magnitude
+class `10^(k-1)`, `sigFigs`-significant-figure rounding produces a
+bucket width of `10^(k-sigFigs)`, so two values sharing a bucket differ
+by strictly less than `10^(2-sigFigs)` percent of the larger value's
+magnitude class. `percentageToSignificantFigures`'s formula is
+constructed so `10^(2-sigFigs) <= P` empirically held for every tested
+`P`. **This is not a mathematical proof for every possible P/value
+combination** — `round()` in the sigFigs formula and edge effects near
+exact powers of ten were not exhaustively proven, only empirically
+checked across the ranges above — so percentage-tolerance
+canonicalization is disclosed as *empirically safe within what was
+tested, not formally guaranteed*, which is a materially weaker
+assurance than the absolute-tolerance case's proof-by-construction.
+
+**Practical implication (disclosed):** absolute-tolerance hashing can
+under-report agreement (false mismatch near a bucket edge) but not
+over-report it (no observed or provable false match); percentage-
+tolerance hashing has the same empirically-observed property but
+without a closed-form guarantee. A caller needing exact
+tolerance-boundary fidelity, especially under percentage tolerance,
+should use `compareRows` (T-14) directly rather than `compareByHash`.
+
+### Red-state evidence (round 2)
+
+**Command:**
+```
+npx vitest run packages/engine/src/comparison-core/hash-comparison
+```
+
+**Captured failing output (before the fix, both new regression tests
+failing for the predicted reason — T-20-01 reproduced exactly):**
+```
+ ❯ packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts (13 tests | 2 failed) 325ms
+   × compareByHash: numericTolerance (T-20-01 regression) > hashes '125.3700' and '125.37' identically once numericTolerance: { absolute: 0.01 } is configured (previously reported a mismatch -- REVIEW-REPORT.md T-20-01) 38ms
+     → expected { keyValues: [ 1 ], …(2) } to be undefined
+   × compareByHash: numericTolerance (T-20-01 regression) > agrees with compareRows (T-14) on the identical numericTolerance scenario -- direct regression test for T-20-01 33ms
+     → expected false to be true // Object.is equality
+
+AssertionError: expected { keyValues: [ 1 ], …(2) } to be undefined
+- Expected:
+undefined
++ Received:
+Object {
+  "keyValues": Array [ 1 ],
+  "sourceHash": "d203f2d04a8cbd48c8cca687f154131bb30aa66426e7084973834f25a28d48d5",
+  "targetHash": "6541b06ad2b1d12b47afcd094ab0b1f4d3ef1bbcad06a1fb4d1b4e5de077bb7a",
+}
+
+ Test Files  1 failed (1)
+      Tests  2 failed | 11 passed (13)
+```
+Note: the third new test (out-of-tolerance mismatch case) already
+passed at red-state, since no canonicalization existed yet and an
+out-of-tolerance mismatch is correctly reported either way — this
+confirms that test alone was not vacuous.
+
+### Green-state evidence (round 2)
+
+**Focused command:**
+```
+npx vitest run packages/engine/src/comparison-core/hash-comparison
+```
+**Output:**
+```
+ ✓ packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts (13 tests) 331ms
+
+ Test Files  1 passed (1)
+      Tests  13 passed (13)
+```
+All 13 tests pass (10 from round 1, unchanged and unmodified, plus 3
+new T-20-01 regression tests).
+
+**Full verification command:**
+```
+npm run verify
+```
+**Output (relevant tail):**
+```
+> paritylens@0.0.1 typecheck
+> tsc -b --force
+(no errors)
+
+> paritylens@0.0.1 lint
+> eslint .
+(no errors)
+
+> paritylens@0.0.1 test
+> vitest run
+...
+ ✓ packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts (13 tests) 490ms
+ ✓ packages/engine/src/orchestration/planner/planner.test.ts (8 tests) 458ms
+ ✓ packages/engine/src/connector-sdk/fixture/fixture-connector.test.ts (40 tests) 1019ms
+
+ Test Files  19 passed | 2 skipped (21)
+      Tests  381 passed | 27 skipped (408)
+```
+Exit code 0. 381 passed (378 round-1 baseline + 3 new), 27 skipped —
+no regression in any previously passing test, matching the round-1
+baseline exactly plus the 3 new tests. The 2 skipped test files are the
+pre-existing SQL Server/PostgreSQL live-container integration suites,
+unrelated to this task (same as round 1).
+
+### Assumptions and judgment calls (round 2)
+
+1. **Canonicalization applies only when `rule.numericTolerance` is
+   present on that column's rule** — a column with no rule, or a rule
+   with no `numericTolerance` field, is unaffected; behavior for every
+   round-1 test (string casing/whitespace, progressive narrowing,
+   table/partition/row/column/key-range levels) is unchanged, confirmed
+   by all 10 round-1 tests still passing unmodified.
+2. **Percentage-tolerance significant-figure formula** — documented
+   above as a disclosed approximation, not an exact match to
+   `valuesEqualWithinTolerance`'s formula. Empirically checked, not
+   formally proven safe against false agreement for all inputs.
+3. **`fetchAllRows`'s parameter type widened from `FixtureConnector` to
+   `DataPlatformConnector`** in the test file — required so the new
+   regression tests' ad hoc adapter connectors (built the same way
+   round 1's `fixtureWithCasingVariant`/`buildConnector` already does)
+   could reuse the existing helper rather than duplicating it. This is
+   a test-file-only, same-task-owned-file change with no behavioral
+   effect (the function's body is unchanged; only its parameter type
+   annotation is widened to the interface `FixtureConnector` already
+   implements), but is called out explicitly per the implementer
+   protocol's instruction to disclose any edit not a literal 1:1 match
+   to the brief's minimal description, even when fully within
+   ownership.
+4. **No changes to `row-level.ts`, `normalization.ts`, or any file
+   outside `hash-comparison/**`** — confirmed by `git status --short`
+   and `git diff --stat` before committing (see Patch or commit
+   identity below).
+
+### Patch or commit identity (round 2)
+
+- **Branch:** `task/T-20-hash-comparison` (unchanged from round 1)
+- **Round-1 commits (unchanged, preserved):** `d09f3d3` (implementation),
+  `eee234a` (report), `8eb97ba` (reviewer's `REVIEW-REPORT.md` —
+  historical record of round 1, not modified by this round)
+- **Round-2 commit:** see `git log` on this branch after this report is
+  committed — a new commit containing exactly
+  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts`,
+  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts`,
+  and this updated `IMPLEMENTATION-REPORT.md`.
+
+### Recommended next step (round 2)
+
+Independent review by the `reviewer` subagent (a separate instance from
+this implementer, and not assumed to be the same instance that reviewed
+round 1). The reviewer should specifically: (1) independently re-derive
+or spot-check the boundary-risk arithmetic above rather than trusting
+it as asserted; (2) construct at least one additional numeric-tolerance
+scenario beyond this round's worked example, ideally including a
+percentage-tolerance case; (3) confirm the false-disagreement example
+(125.364 vs 125.370) is reproducible against the shipped code; (4)
+confirm no file outside `hash-comparison/**` was touched in this round;
+(5) confirm `REVIEW-REPORT.md` was not modified (it is preserved as
+round 1's historical record). This implementer does not have authority
+to mark this task complete/approved or to update `PROGRESS-LEDGER.md`.

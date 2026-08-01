@@ -302,6 +302,91 @@ describe("compareByHash applies normalization before hashing", () => {
   });
 });
 
+describe("compareByHash: numericTolerance (T-20-01 regression)", () => {
+  // Round-2 follow-up. REVIEW-REPORT.md's Critical finding T-20-01:
+  // compareByHash disagreed with compareRows (T-14) on Idea Prompt.md's own
+  // canonical numeric-tolerance example -- "125.3700" (source) vs "125.37"
+  // (target), with `numericTolerance: { absolute: 0.01 }` configured on the
+  // column. Reproduced here with a dedicated one-row-per-side DuckDB fixture
+  // pair (same pattern as fixtureWithCasingVariant below, generalized to
+  // carry an arbitrary string value per side via fixtureWithStringVariant),
+  // so this exercises compareByHash's real fetch-and-hash code path, not a
+  // hand-rolled reimplementation.
+  it("hashes '125.3700' and '125.37' identically once numericTolerance: { absolute: 0.01 } is configured (previously reported a mismatch -- REVIEW-REPORT.md T-20-01)", async () => {
+    const { source, target } = await fixtureWithStringVariant("AMOUNT", "125.3700", "125.37");
+
+    const withoutTolerance = await compareByHash(source, target, "row", {
+      table: "variant_source",
+      targetTable: "variant_target",
+      keyColumns: ["ID"],
+      columns: ["AMOUNT"],
+    });
+    // Raw strings genuinely differ -- confirms this fixture pair actually
+    // exercises a real mismatch absent any tolerance configuration (i.e.
+    // the test below isn't vacuously passing because the values were
+    // already identical).
+    expect(withoutTolerance.mismatches.find((m) => m.keyValues?.[0] === 1)).toBeDefined();
+
+    const withTolerance = await compareByHash(source, target, "row", {
+      table: "variant_source",
+      targetTable: "variant_target",
+      keyColumns: ["ID"],
+      columns: ["AMOUNT"],
+      rules: { AMOUNT: { numericTolerance: { absolute: 0.01 } } },
+    });
+    // Fixed: with numericTolerance configured, "125.3700" and "125.37"
+    // canonicalize to the same pre-hash representation and therefore hash
+    // identically -- no mismatch entry for key 1.
+    expect(withTolerance.mismatches.find((m) => m.keyValues?.[0] === 1)).toBeUndefined();
+    expect(withTolerance.matched).toBe(true);
+  });
+
+  it("agrees with compareRows (T-14) on the identical numericTolerance scenario -- direct regression test for T-20-01", async () => {
+    const { source, target } = await fixtureWithStringVariant("AMOUNT", "125.3700", "125.37");
+    const rule = { numericTolerance: { absolute: 0.01 } };
+
+    const hashResult = await compareByHash(source, target, "row", {
+      table: "variant_source",
+      targetTable: "variant_target",
+      keyColumns: ["ID"],
+      columns: ["AMOUNT"],
+      rules: { AMOUNT: rule },
+    });
+    expect(hashResult.matched).toBe(true);
+
+    const sourceRows = await fetchAllRows(source, "variant_source", ["ID", "AMOUNT"]);
+    const targetRows = await fetchAllRows(target, "variant_target", ["ID", "AMOUNT"]);
+    const rowDifferences = compareRows(
+      sourceRows,
+      targetRows,
+      ["ID"],
+      [{ source: "AMOUNT", target: "AMOUNT" }],
+      { AMOUNT: rule }
+    );
+
+    // compareRows classifies key 1 as "matching" (within tolerance);
+    // compareByHash must agree -- no hash mismatch for key 1 either.
+    expect(rowDifferences).toHaveLength(1);
+    expect(rowDifferences[0]?.category).toBe("matching");
+    expect(hashResult.mismatches.find((m) => m.keyValues?.[0] === 1)).toBeUndefined();
+  });
+
+  it("still reports a mismatch when the numeric difference exceeds the configured tolerance", async () => {
+    const { source, target } = await fixtureWithStringVariant("AMOUNT", "125.37", "126.50");
+
+    const result = await compareByHash(source, target, "row", {
+      table: "variant_source",
+      targetTable: "variant_target",
+      keyColumns: ["ID"],
+      columns: ["AMOUNT"],
+      rules: { AMOUNT: { numericTolerance: { absolute: 0.01 } } },
+    });
+
+    expect(result.matched).toBe(false);
+    expect(result.mismatches.find((m) => m.keyValues?.[0] === 1)).toBeDefined();
+  });
+});
+
 /** Builds a minimal, dedicated one-row-per-side DuckDB fixture pair (two
  * fresh FixtureConnector-compatible connectors backed by their own
  * in-memory DuckDB instance, reusing FixtureConnector's public constructor
@@ -382,13 +467,94 @@ async function fixtureWithCasingVariant(): Promise<{
   };
 }
 
+/** Round-2 (T-20-01) generalization of `fixtureWithCasingVariant`'s DuckDB
+ * fixture-building pattern: builds a one-row-per-side pair with a single
+ * caller-chosen column (typed VARCHAR so it can carry numeric-looking
+ * strings like "125.3700" as well as free text) seeded with an arbitrary
+ * source/target value pair, wrapped in the same minimal
+ * DataPlatformConnector-shaped adapter `fixtureWithCasingVariant` uses.
+ * Table names are namespaced "variant_source"/"variant_target" to match
+ * this file's new numericTolerance regression tests. */
+async function fixtureWithStringVariant(
+  columnName: string,
+  sourceValue: string,
+  targetValue: string
+): Promise<{
+  source: import("@paritylens/shared").DataPlatformConnector;
+  target: import("@paritylens/shared").DataPlatformConnector;
+}> {
+  const { DuckDBInstance } = await import("@duckdb/node-api");
+
+  async function buildConnector(tableName: string, value: string): Promise<import("@paritylens/shared").DataPlatformConnector> {
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    await connection.run(`CREATE TABLE ${tableName} (ID INTEGER NOT NULL, ${columnName} VARCHAR(100) NOT NULL)`);
+    await connection.run(`INSERT INTO ${tableName} VALUES (1, '${value}')`);
+
+    return {
+      async testConnection() {
+        return { success: true };
+      },
+      async getCatalogs() {
+        return [{ name: "memory" }];
+      },
+      async getSchemas() {
+        return [{ name: "main", catalog: "memory" }];
+      },
+      async getObjects() {
+        return [{ name: tableName, kind: "table" as const, catalog: "memory", schema: "main" }];
+      },
+      async getSchema() {
+        return [];
+      },
+      async *executeQuery(input, options) {
+        if (input.kind !== "query") {
+          throw new Error("test adapter only supports { kind: 'query' }");
+        }
+        const capped = `SELECT * FROM (${input.sql}) AS t LIMIT ${options.maxRows}`;
+        const reader = await connection.runAndReadAll(capped);
+        yield {
+          columns: reader.columnNames(),
+          rows: reader.getRowsJS() as unknown[][],
+          rowCount: reader.getRowsJS().length,
+        };
+      },
+      getCapabilities() {
+        return {
+          supportsApproximateDistinct: false,
+          supportsNativeHashing: true,
+          supportsTableSampling: false,
+          supportsQueryCancellation: false,
+          supportsArrowResults: false,
+          supportsInformationSchema: false,
+          supportsTemporaryTables: false,
+          supportsServerSideProfiling: false,
+        };
+      },
+      quoteIdentifier(identifier: string) {
+        return `"${identifier.replace(/"/g, '""')}"`;
+      },
+      buildProfileQuery() {
+        return { sql: "", parameters: [] };
+      },
+    };
+  }
+
+  return {
+    source: await buildConnector("variant_source", sourceValue),
+    target: await buildConnector("variant_target", targetValue),
+  };
+}
+
 /** Test-local row fetch helper (does not reuse planner.ts's fetchAllRows,
  * which is private to that module and outside this task's file ownership --
  * this is a minimal fetch, not a reimplementation of compareByHash's own
  * internal fetch logic, used purely to build an independent compareRows
- * input for the cross-check above). */
+ * input for the cross-check above). Accepts any `DataPlatformConnector`
+ * (widened in round 2 to also accept the ad hoc adapters
+ * `fixtureWithStringVariant` builds, not just `FixtureConnector`). */
 async function fetchAllRows(
-  connector: FixtureConnector,
+  connector: import("@paritylens/shared").DataPlatformConnector,
   table: string,
   columns: string[]
 ): Promise<{ columns: string[]; rows: unknown[][]; rowCount: number }> {

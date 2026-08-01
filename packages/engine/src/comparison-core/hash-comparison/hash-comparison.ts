@@ -30,6 +30,94 @@
 // Stopping at a single-level `compareByHash` per the literal Interfaces
 // signature was judged the correct, disclosed boundary.
 //
+// Round 2 (REVIEW-REPORT.md Critical finding T-20-01): compareByHash
+// previously called only applyNormalization before hashing, which
+// deliberately never applies `numericTolerance` (normalization.ts's own
+// header comment: "numericTolerance is documented on NormalizationRule but
+// is inherently a two-value comparison, not a single-value transform...
+// intentionally NOT applied here"). A SHA-256 digest has no native concept
+// of "equal within tolerance" -- two byte strings either hash identically
+// or they don't -- so `row-level.ts`'s comparison-based approach
+// (`coerceNumericString` + `valuesEqualWithinTolerance`, T-14-01) cannot be
+// reused as-is for hashing; hashing needs a canonical *value*, not a
+// pairwise comparison. `canonicalizeForHash` (below) closes this gap: for
+// any column with `options.rules[columnName].numericTolerance` configured,
+// a numeric-looking string is coerced to a number (reusing the same
+// non-numeric-text guard as `row-level.ts`'s `coerceNumericString` -- see
+// that function's comment for why) and then rounded to a canonical bucket
+// derived from the configured tolerance, so within-tolerance values
+// collapse to the same pre-hash representation and hash identically. This
+// reproduces Idea Prompt.md's own ORDER_AMOUNT "125.3700" vs "125.37"
+// example (also `row-level.ts`'s T-14-01 worked case) agreeing between
+// compareByHash and compareRows, per TASK-BRIEF.md's Interfaces-table
+// requirement that normalization run "before hashing, matching the doc's
+// `normalized_column_1` framing."
+//
+// Judgment call -- absolute tolerance: `{ absolute: X }` canonicalizes by
+// rounding to the nearest multiple of X (e.g. X = 0.01 rounds 125.3700 and
+// 125.37 both to 125.37), matching the doc's own worked example exactly.
+//
+// Judgment call -- percentage tolerance: there is no natural "round to
+// nearest bucket" for a percentage tolerance the way there is for an
+// absolute one, because the bucket width itself depends on the value being
+// bucketed (a percentage tolerance widens as the magnitude grows). This
+// module canonicalizes `{ percentage: P }` by rounding to a fixed number of
+// significant figures derived from P: sigFigs = clamp(round(2 -
+// log10(P/100)), 1, 15) -- e.g. P = 1 (1%) rounds to roughly 3-4 significant
+// figures, P = 0.1 (0.1%) rounds to roughly 5. This is a disclosed
+// approximation, not an exact reproduction of valuesEqualWithinTolerance's
+// percentage formula (`|a-b| / max(|a|,|b|) * 100 <= percentage`);
+// significant-figure rounding and relative-tolerance bucketing agree in the
+// common case but are not mathematically identical, so compareByHash and
+// compareRows can disagree near a percentage-tolerance boundary in a way
+// they cannot for absolute tolerance (see the boundary-risk disclosure
+// below and in IMPLEMENTATION-REPORT.md's round-2 section).
+//
+// Boundary-risk disclosure (inherent to any bucketing approach; every claim
+// below was verified by direct computation, not asserted from theory alone
+// -- see IMPLEMENTATION-REPORT.md's round-2 section for the exact
+// commands/output):
+//
+// - Absolute tolerance -- false DISAGREEMENT is possible, false agreement
+//   is NOT: `roundToStep`'s bucket width equals `tolerance.absolute`
+//   exactly, so two values within tolerance of each other can still
+//   straddle a bucket edge and land in different buckets. Verified example:
+//   with `{ absolute: 0.01 }`, 125.364 and 125.370 differ by 0.006 (within
+//   the 0.01 tolerance -- `valuesEqualWithinTolerance` calls this pair
+//   equal) but round to buckets 125.36 and 125.37 respectively -- different
+//   buckets, so `compareByHash` would report a mismatch `compareRows` does
+//   not. Because no bucket can ever be wider than `tolerance.absolute`
+//   itself, the converse -- two values MORE than `absolute` apart landing
+//   in the same bucket, a false hash-level *agreement* -- cannot occur for
+//   absolute tolerance: any two values in the same bucket are, by
+//   construction, strictly less than one bucket-width (i.e. less than
+//   `tolerance.absolute`) apart.
+// - Percentage tolerance -- checked directly, false agreement was NOT
+//   found within a wide search, and a closed-form bound explains why: for
+//   a value of magnitude 10^(k-1) or larger, `roundToSignificantFigures`
+//   with `sigFigs` significant figures gives a bucket width of
+//   10^(k-sigFigs), so two values in the same bucket differ by strictly
+//   less than 10^(2-sigFigs) percent of the larger value's magnitude class.
+//   `percentageToSignificantFigures`'s formula (`sigFigs = round(2 -
+//   log10(P/100))`) is constructed so `10^(2-sigFigs)` stays at or below
+//   the configured `P` for every tolerance value tried (1, 5, 10, 25, 50,
+//   100 -- see IMPLEMENTATION-REPORT.md), meaning the same
+//   never-wider-than-tolerance property the absolute case has empirically
+//   held for percentage tolerance too, for these bounds. This is NOT a
+//   mathematical proof for every possible P/value combination (rounding's
+//   `round()` in the sigFigs formula and magnitude-boundary edge effects
+//   near powers of ten were not exhaustively proven) -- only empirically
+//   checked -- so percentage-tolerance canonicalization is disclosed as
+//   *unproven*, not guaranteed safe, even though no false-agreement
+//   counterexample was found.
+//
+// This is a real, disclosed limitation of canonicalize-then-hash: it cannot
+// be made to agree with `valuesEqualWithinTolerance`'s exact pairwise
+// comparison for every possible pair, only for the common/typical case the
+// doc's own example represents. A caller needing exact tolerance-boundary
+// fidelity should use `compareRows` (T-14) directly rather than
+// `compareByHash`.
+//
 // Design tradeoff disclosed per TASK-BRIEF.md's explicit instruction ("if a
 // truly platform-neutral hash expression isn't achievable without
 // per-dialect branching, disclose that explicitly... rather than silently
@@ -254,7 +342,12 @@ async function fetchNormalizedRows(
     for (const columnName of options.columns) {
       const raw = rawByColumn.get(columnName);
       const rule = rules[columnName];
-      valuesByColumn.set(columnName, rule ? applyNormalization(raw, rule) : raw);
+      const normalized = rule ? applyNormalization(raw, rule) : raw;
+      // T-20-01 fix: canonicalize under the column's configured
+      // numericTolerance (if any) so within-tolerance values collapse to
+      // the same pre-hash representation -- see this file's header comment
+      // for the full rationale and disclosed limitations.
+      valuesByColumn.set(columnName, rule?.numericTolerance ? canonicalizeForHash(normalized, rule.numericTolerance) : normalized);
     }
 
     return {
@@ -264,6 +357,92 @@ async function fetchNormalizedRows(
       partitionValue: options.partitionColumn ? rawByColumn.get(options.partitionColumn) : undefined,
     };
   });
+}
+
+/**
+ * Canonicalizes a value under a numeric tolerance so within-tolerance
+ * values collapse to the same pre-hash representation (T-20-01 fix -- see
+ * this file's header comment for the full rationale, the absolute- vs
+ * percentage-tolerance judgment calls, and the disclosed
+ * false-agreement-near-boundary risk). Non-string, non-numeric, or
+ * non-numeric-looking-string values pass through unchanged (mirrors
+ * `row-level.ts`'s `coerceNumericString` guard: never coerce genuinely
+ * non-numeric text, so a column with a numericTolerance rule but a
+ * non-numeric value still hashes on its normalized value as-is rather than
+ * being corrupted into `NaN`).
+ */
+function canonicalizeForHash(value: unknown, tolerance: { absolute?: number; percentage?: number }): unknown {
+  const numeric = coerceNumericForHash(value);
+  if (numeric === undefined) {
+    return value;
+  }
+
+  if (tolerance.absolute !== undefined && tolerance.absolute > 0) {
+    return roundToStep(numeric, tolerance.absolute);
+  }
+
+  if (tolerance.percentage !== undefined && tolerance.percentage > 0) {
+    return roundToSignificantFigures(numeric, percentageToSignificantFigures(tolerance.percentage));
+  }
+
+  // Tolerance object present but both fields empty/zero -- no bucketing
+  // possible; fall through to the normalized value unchanged (equivalent
+  // to no tolerance being configured for canonicalization purposes).
+  return value;
+}
+
+/** Coerces a numeric-looking value to a JS number for canonicalization
+ * purposes, or returns `undefined` when the value is not numeric-looking
+ * (mirrors `row-level.ts`'s `coerceNumericString`, generalized to also
+ * accept an already-numeric value unchanged). */
+function coerceNumericForHash(value: unknown): number | undefined {
+  if (typeof value === "number") {
+    return Number.isFinite(value) ? value : undefined;
+  }
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/** Rounds `value` to the nearest multiple of `step` (e.g. step 0.01 rounds
+ * 125.3700 and 125.37 both to 125.37), then re-rounds to a fixed number of
+ * decimal places derived from `step` to avoid floating-point representation
+ * artifacts (e.g. 0.1 + 0.2 !== 0.3) reintroducing spurious differences
+ * between two values that rounded to the mathematically same bucket. */
+function roundToStep(value: number, step: number): number {
+  const rounded = Math.round(value / step) * step;
+  const decimals = Math.min(12, Math.max(0, Math.ceil(-Math.log10(step)) + 2));
+  return Number(rounded.toFixed(decimals));
+}
+
+/** Rounds `value` to `sigFigs` significant figures (e.g. 3 sigFigs: 125.37
+ * -> 125). `0` is a fixed point with no meaningful significant-figure
+ * rounding and is returned unchanged. */
+function roundToSignificantFigures(value: number, sigFigs: number): number {
+  if (value === 0) {
+    return 0;
+  }
+  const magnitude = Math.floor(Math.log10(Math.abs(value))) + 1;
+  const decimals = Math.min(12, Math.max(0, sigFigs - magnitude));
+  const factor = Math.pow(10, decimals);
+  return Math.round(value * factor) / factor;
+}
+
+/** Derives a significant-figure count from a percentage tolerance for
+ * canonicalization purposes -- see this file's header comment's
+ * percentage-tolerance judgment call for the formula's rationale and its
+ * disclosed inexactness relative to `valuesEqualWithinTolerance`'s exact
+ * relative-difference formula. Clamped to [1, 15] (15 being the practical
+ * limit of IEEE-754 double precision). */
+function percentageToSignificantFigures(percentage: number): number {
+  const sigFigs = Math.round(2 - Math.log10(percentage / 100));
+  return Math.min(15, Math.max(1, sigFigs));
 }
 
 async function consumeQuery(
