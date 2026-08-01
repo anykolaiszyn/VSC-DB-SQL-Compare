@@ -37,6 +37,7 @@
     "@paritylens/shared": "*"
   },
   "devDependencies": {
+    "@types/node": "^22.20.1",
     "@types/vscode": "^1.85.0"
   }
 }
