@@ -19,3 +19,8 @@ This is a development / pre-release build. What exists today:
 ## Requirements
 
 - VS Code `^1.85.0`.
+
+## Publisher
+
+This build ships under a placeholder publisher ID (`parity-lens-dev`)
+pending real Marketplace registration.

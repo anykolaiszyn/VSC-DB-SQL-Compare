@@ -3,6 +3,8 @@ src/**
 **/*.test.ts
 **/*.test.js
 **/*.test.js.map
+**/*.test.d.ts
+**/*.test.d.ts.map
 tsconfig.json
 tsconfig.tsbuildinfo
 **/*.tsbuildinfo
