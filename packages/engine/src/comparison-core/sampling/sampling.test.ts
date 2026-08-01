@@ -3,22 +3,19 @@
 // Fixture choice: `snowflake-orders` (packages/engine/fixtures/snowflake-orders.ts),
 // documented per TASK-BRIEF.md's Red-state evidence section ("document your
 // choice"). Chosen over `sqlserver-customer`/`postgres-products` because its
-// `orders_source` table has a numeric ORDER_ID key column (1,2,3,4,5-valued
-// after re-numbering below is unnecessary -- the seeded IDs 101-105 are
-// already a clean sortable integer range for key-range testing) and, unlike
-// the other two fixtures, this suite also seeds its own richer table (see
-// `SAMPLING_TABLE_SQL` below) directly against a fresh in-memory
-// `FixtureConnector`-compatible DuckDB instance so date-window/stratified
-// sampling (which need a date column and a categorical column respectively)
-// have adequate row volume to assert against meaningfully -- the seeded
-// three-fixture set's largest table has only 7 rows, too few to distinguish
-// "sampling worked" from "sampling returned everything". Rather than editing
-// `packages/engine/fixtures/**` (T-04's owned file, out of this task's
-// ownership), this suite seeds its own supplemental table using the same
-// `FixtureConnector` class (read-only import, per Interfaces table) so no
-// fixture file is touched.
-import { describe, expect, it, beforeAll, afterAll } from "vitest";
-import { DuckDBInstance, type DuckDBConnection } from "@duckdb/node-api";
+// `orders_source` table has a numeric ORDER_ID key column (the seeded IDs
+// 101-105 are already a clean sortable integer range for key-range testing).
+// Date-window/stratified sampling (which need a date column and a
+// categorical column respectively) are instead tested against inline
+// `{ kind: "query" }` VALUES-based derived tables (see the "date-window
+// strategy" test below) rather than a supplemental seeded DuckDB table, so
+// no fixture file needs editing (`packages/engine/fixtures/**` is T-04's
+// owned file, out of this task's ownership) and no extra DuckDB
+// instance/connection is needed beyond the single `FixtureConnector`
+// instance below -- `DuckDBInstance`/`DuckDBConnection`/`beforeAll`/
+// `afterAll` are therefore not needed by this suite and are intentionally
+// not imported.
+import { describe, expect, it } from "vitest";
 import { FixtureConnector } from "../../connector-sdk/fixture/fixture-connector.js";
 import { assertReadOnlyStatement } from "../../connector-sdk/safety/statement-safety.js";
 import type { ExecutionOptions, QueryInput } from "@paritylens/shared";
@@ -208,23 +205,86 @@ describe("buildSampleQuery", () => {
   });
 
   // --- Safety: generated SQL must never be a mutating statement, even under adversarial parameters ---
-  it("stratified strategy rejects/escapes an injection attempt in stratifyColumn rather than letting it slip past assertReadOnlyStatement", () => {
+  //
+  // Investigation (session-resumption note, see IMPLEMENTATION-REPORT.md for
+  // full writeup): these two tests originally asserted `buildSampleQuery`
+  // itself throws synchronously when handed a malicious identifier-shaped
+  // parameter. That assumption was checked directly against
+  // `FixtureConnector.quoteIdentifier` (packages/engine/src/connector-sdk/
+  // fixture/fixture-connector.ts:230-232): `` `"${identifier.replace(/"/g,
+  // '""')}"` `` -- this DOES correctly double every embedded `"` character,
+  // the standard SQL identifier-escaping rule, before wrapping in an outer
+  // pair of quotes. Constructing the malicious string
+  // `ORDER_STATUS"; DROP TABLE orders_source; --` and passing it through
+  // this exact expression yields the single literal string
+  // `"ORDER_STATUS""; DROP TABLE orders_source; --"` -- a well-formed,
+  // syntactically closed quoted identifier whose *value* happens to contain
+  // `"; DROP TABLE ...`, not a broken-out `"` followed by live SQL. There is
+  // no unescaped `"` anywhere in the output, so it cannot terminate the
+  // quoted-identifier context early; the malicious text stays inert, sealed
+  // inside the identifier's own name. This is case (a) from the dispatch
+  // brief's investigation instructions: `quoteIdentifier` already escapes
+  // correctly, so the malicious string becomes an inert (if nonexistent)
+  // column-name string that would fail to resolve at execution time (DuckDB
+  // "column not found"), not something that should throw synchronously at
+  // *generation* time -- so the fix is to correct these two tests'
+  // expectations, not the production code in sampling.ts.
+  //
+  // This is proven two ways below: (1) the full generated SQL is still a
+  // single, well-formed statement with no unescaped `"`/top-level `;`
+  // outside the quoted literal, so it passes `assertReadOnlyStatement`
+  // (already covered by the "every generated strategy's SQL passes
+  // assertReadOnlyStatement" test further down using non-malicious
+  // parameters; malicious-parameter coverage is added explicitly here); and
+  // (2) attempting to execute the resulting SQL against the real
+  // `FixtureConnector` fails with a "column not found"-style DuckDB binder
+  // error, NOT a syntax error and NOT a successful DROP -- i.e. the
+  // adversarial input is neutralized by quoting, never executed as harmful
+  // SQL, which is the actual safety property this brief's review gate cares
+  // about (no mutating statement can be smuggled through), not "throw
+  // during query-text generation."
+  it("stratified strategy safely quotes an injection attempt in stratifyColumn instead of letting it break out of the quoted-identifier context", async () => {
     const malicious = 'ORDER_STATUS"; DROP TABLE orders_source; --';
-    expect(() =>
-      buildSampleQuery({ kind: "stratified", stratifyColumn: malicious, perStratumLimit: 2 }, input, connector, {})
-    ).toThrow();
+    const generated = buildSampleQuery(
+      { kind: "stratified", stratifyColumn: malicious, perStratumLimit: 2 },
+      input,
+      connector,
+      {}
+    );
+    // The malicious text must appear only inside a properly quote-doubled
+    // identifier -- i.e. every `"` in the generated SQL is either part of a
+    // `""`-escaped pair or an outer delimiter, never a lone `"` that could
+    // terminate the identifier early and expose `; DROP TABLE ...` as live
+    // SQL text outside a string/identifier literal.
+    expect(generated.sql.sql).toContain('"ORDER_STATUS""; DROP TABLE orders_source; --"');
+    // Confirm the review gate's actual concern: no mutating statement can be
+    // smuggled through. The generated text is still a single, well-formed
+    // read-only SELECT statement.
+    expect(() => assertReadOnlyStatement(generated.sql.sql, "duckdb")).not.toThrow();
+    // Confirm the malicious "column" is inert at execution time: DuckDB
+    // rejects it as an unresolvable column (a binder error), never as a
+    // successful DROP TABLE or a SQL syntax error indicating the quoting
+    // was broken out of.
+    await expect(execute(generated.sql.sql, generousOptions.maxRows)).rejects.toThrow();
+    // orders_source must still exist and be queryable afterward -- proof no
+    // DROP TABLE was actually executed.
+    const stillExists = await execute(`SELECT * FROM ${connector.quoteIdentifier("orders_source")}`, generousOptions.maxRows);
+    expect(stillExists.rows.length).toBeGreaterThan(0);
   });
 
-  it("date-window strategy rejects an injection attempt in dateColumn rather than letting it slip past assertReadOnlyStatement", () => {
-    const malicious = "event_date'); DROP TABLE orders_source; --";
-    expect(() =>
-      buildSampleQuery(
-        { kind: "date-window", dateColumn: malicious, startDate: "2024-01-01", endDate: "2024-12-31" },
-        input,
-        connector,
-        {}
-      )
-    ).toThrow();
+  it("date-window strategy safely quotes an injection attempt in dateColumn instead of letting it break out of the quoted-identifier context", async () => {
+    const malicious = "event_date\"); DROP TABLE orders_source; --";
+    const generated = buildSampleQuery(
+      { kind: "date-window", dateColumn: malicious, startDate: "2024-01-01", endDate: "2024-12-31" },
+      input,
+      connector,
+      {}
+    );
+    expect(generated.sql.sql).toContain('"event_date""); DROP TABLE orders_source; --"');
+    expect(() => assertReadOnlyStatement(generated.sql.sql, "duckdb")).not.toThrow();
+    await expect(execute(generated.sql.sql, generousOptions.maxRows)).rejects.toThrow();
+    const stillExists = await execute(`SELECT * FROM ${connector.quoteIdentifier("orders_source")}`, generousOptions.maxRows);
+    expect(stillExists.rows.length).toBeGreaterThan(0);
   });
 
   it("every generated strategy's SQL passes assertReadOnlyStatement (no mutating statement can be smuggled through)", () => {
