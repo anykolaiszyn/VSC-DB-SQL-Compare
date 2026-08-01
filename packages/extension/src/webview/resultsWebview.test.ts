@@ -42,6 +42,42 @@ const SAMPLE_RESULT: ComparisonResult = {
   execution: { sourceDurationMs: 10, targetDurationMs: 12, comparisonDurationMs: 3 }
 };
 
+/**
+ * T-16 fixture: a ComparisonResult with a non-empty aggregateDifferences
+ * entry (volume-parity failure) and a rowDifferences entry of category
+ * "matched-key-differing-values" including columnDifferences, per
+ * TASK-BRIEF.md's Red-state evidence section.
+ */
+const SAMPLE_RESULT_WITH_PHASE2: ComparisonResult = {
+  ...SAMPLE_RESULT,
+  aggregateDifferences: [
+    {
+      severity: "Failure",
+      message: "Row count differs beyond tolerance.",
+      sourceCount: 1000,
+      targetCount: 950,
+      difference: -50,
+      differenceRate: -5,
+      tolerance: { percentage: 1 }
+    }
+  ],
+  rowDifferences: [
+    {
+      severity: "Warning",
+      message: "Row ORDER_ID=1008924 has differing values.",
+      category: "matched-key-differing-values",
+      keyValues: [1008924],
+      columnDifferences: [
+        {
+          columnName: "TotalAmount",
+          sourceValue: 199.99,
+          targetValue: 189.99
+        }
+      ]
+    }
+  ]
+};
+
 describe("renderResultsHtml", () => {
   it("renders a schemaDifferences item as a table row containing its column name and severity", () => {
     const html = renderResultsHtml(SAMPLE_RESULT);
@@ -57,5 +93,30 @@ describe("renderResultsHtml", () => {
     expect(html).toContain("CustomerName");
     expect(html).toContain("Warning");
     expect(html).toContain("distinctCount");
+  });
+
+  it("renders an aggregateDifferences item as a table row containing sourceCount/targetCount/differenceRate", () => {
+    const html = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+
+    expect(html).toContain("1000");
+    expect(html).toContain("950");
+    expect(html).toContain("-5");
+  });
+
+  it("renders a rowDifferences item of category matched-key-differing-values including its columnDifferences", () => {
+    const html = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+
+    expect(html).toContain("matched-key-differing-values");
+    expect(html).toContain("1008924");
+    expect(html).toContain("TotalAmount");
+    expect(html).toContain("199.99");
+    expect(html).toContain("189.99");
+  });
+
+  it("renders empty-state messages when aggregateDifferences and rowDifferences are empty", () => {
+    const html = renderResultsHtml(SAMPLE_RESULT);
+
+    expect(html).toContain("No volume differences.");
+    expect(html).toContain("No row-level differences.");
   });
 });
