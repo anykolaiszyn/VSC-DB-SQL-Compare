@@ -6,3 +6,4 @@ out/
 coverage/
 *.tsbuildinfo
 .vscode-test/
+*.vsix
