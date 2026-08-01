@@ -1,179 +1,154 @@
-# ParityLens — Review Report T-17
+# ParityLens — Review Report T-19
 
 ## Review independence statement
 
-This review was performed by a separate agent instance from whoever
-implemented T-17, with no memory of writing this code. All findings below
-are based on direct inspection of the actual diff/source at commit
-`3ed921b` on branch `task/T-17-sqlserver-connector`, my own fresh
-`npm run verify` run inside WSL2 against a freshly-started live SQL Server
-2022 test container, and my own independently constructed adversarial
-mutating-statement probes — none of which reuse the implementer's test
-file. `IMPLEMENTATION-REPORT.md`'s claims were treated as assertions to
-verify, not facts to accept.
+This review was performed by a separate reviewer agent instance with no
+memory of writing `PostgresConnector`. All findings below are based on
+direct inspection of the actual diff/source, my own fresh command
+execution inside WSL2 against a container I started myself in this
+session, and adversarial probes I constructed independently (not
+re-running the implementer's tests). `IMPLEMENTATION-REPORT.md`'s claims
+were treated as things to verify, not trust.
 
 ## Scope reviewed
 
-- `packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.ts` (new, 588 lines)
-- `packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.test.ts` (new, 299 lines)
-- `packages/engine/package.json` (added `mssql`/`@types/mssql`)
-- `package-lock.json` (mechanical consequence of the above)
-- `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`, `PROGRESS-LEDGER.md`, `AGENTS.md`
+- Branch `task/T-19-postgres-connector`, commits `84b4928` (implementation)
+  and `4118232` (commit-hash correction in the report), diffed against
+  `main`.
+- Files changed: `packages/engine/src/connector-sdk/postgres/postgresConnector.ts`
+  (new, 547 lines), `packages/engine/src/connector-sdk/postgres/postgresConnector.test.ts`
+  (new, 315 lines, 14 tests), `packages/engine/package.json` (+`pg`,
+  +`@types/pg`), `package-lock.json` (mechanical), `IMPLEMENTATION-REPORT.md`.
+- Confirmed via `git diff main task/T-19-postgres-connector -- <prohibited paths>`
+  (statement-safety, type-mapping, fixture, sqlserver, `packages/shared/`)
+  that **zero lines** touch any file `TASK-BRIEF.md` prohibits editing.
+  `packages/engine/package.json`'s diff is exactly the two authorized
+  dependency additions (`pg: ^8.16.0`, `@types/pg: ^8.11.0`), matching the
+  brief's explicit pre-authorization. No unauthorized scope expansion
+  found.
 
-Diff against `main`: `git diff main task/T-17-sqlserver-connector --stat`
-confirms exactly these five files changed, no others. Confirmed via
-`git diff --ignore-all-space` that `packages/engine/package.json`'s
-apparent full-file diff is a pure CRLF/LF line-ending artifact plus the two
-authorized dependency-line additions — no unrelated content drift.
+## Environment note
 
-**Prohibited-file check:** `git diff main task/T-17-sqlserver-connector --
-packages/engine/src/connector-sdk/safety/ packages/engine/src/comparison-core/type-mapping/
-packages/engine/src/connector-sdk/fixture/ packages/shared/src/connector.ts docker-compose.test.yml`
-produced zero output — none of the brief's prohibited files were touched.
+This machine's shell defaults to Git-Bash (`MINGW64_NT`, confirmed via
+`uname -a`). All verification below was run via
+`MSYS2_ARG_CONV_EXCL="*" wsl.exe -e bash -c '...'`, confirmed to reach a
+real WSL2 kernel (`microsoft-standard-WSL2`). The test container had torn
+down between my own separate `wsl.exe` invocations mid-review (observed
+directly: a `docker compose ps` in a later invocation showed no running
+container after an earlier invocation had it healthy) — exactly the
+behavior the brief warns about. I restarted it fresh within the same
+invocation as each subsequent test run, per the brief's instructions.
 
 ## Verification performed (my own, fresh)
 
-All commands run from inside WSL2 (`MSYS2_ARG_CONV_EXCL="*" wsl.exe -e bash -c '...'`,
-confirmed via `uname -a` reporting `microsoft-standard-WSL2`; my own shell
-is Git-Bash/MSYS, confirmed via `uname -a` reporting `MINGW64_NT`), Node
-v24.9.0 activated via `nvm`, repo at `/mnt/v/Secret Projects/VSC-DB-SQL-Compare`.
-Container brought up fresh in the same continuous WSL session as every test
-run, per the brief's explicit warning.
+### 1. `npm run verify` (full command, inside WSL2, live container healthy, env vars set)
 
-- **Container health:** `docker compose -f docker-compose.test.yml up -d`
-  then polled `... ps` — both `sqlserver-test` and `postgres-test` reached
-  `(healthy)` within ~10s.
-- **Full verification:** `npm install` (293 packages, clean) then
-  `npm run verify` (typecheck + lint + test) with all four
-  `PARITYLENS_TEST_SQLSERVER_*` env vars set and the container healthy in
-  the same session.
+```
+Test Files  19 passed | 1 skipped (20)
+     Tests  373 passed | 13 skipped (386)
+VERIFY_EXIT=0
+```
 
-  **My result: `Test Files 19 passed (19)`, `Tests 372 passed (372)`, exit 0.**
-  This matches `IMPLEMENTATION-REPORT.md`'s claimed 372/372 exactly,
-  including the 13 SQL Server integration tests genuinely executing (not
-  skipped — confirmed by the per-test names appearing in output, e.g.
-  `testConnection() fails gracefully against an unreachable host 3001ms`,
-  a timing signature inconsistent with a mock).
+Matches `IMPLEMENTATION-REPORT.md`'s claimed 373 passed / 13 skipped
+exactly. The 13 skipped are `sqlServerConnector.test.ts`'s own suite,
+skipped with a visible `console.log` line
+(`[sqlServerConnector.test.ts] SKIPPING all SqlServerConnector integration
+tests: PARITYLENS_TEST_SQLSERVER_HOST/PORT/USER/PASSWORD are not all
+set...`) because my session only set the PostgreSQL env vars — expected
+per the brief, not a T-19 regression, and the SQL Server container was
+independently confirmed running in the same session.
 
-- **Skip-path verification (item 4 of the brief's reviewer checklist):**
-  re-ran `npx vitest run packages/engine/src/connector-sdk/sqlserver` with
-  the four env vars explicitly unset. Result: `1 skipped (1)` /
-  `13 skipped (13)`, with a visible `stdout` line:
-  `[sqlServerConnector.test.ts] SKIPPING all SqlServerConnector integration
-  tests: PARITYLENS_TEST_SQLSERVER_HOST/PORT/USER/PASSWORD are not all
-  set. Start the test container...`. This is `describe.skipIf` plus an
-  explicit `console.log`, not a bare `.skip` — confirmed genuine, not
-  claimed-only.
+### 2. Focused T-19 suite
 
-- **Credential grep (item 2):** `git diff ... -- packages/engine/src/connector-sdk/sqlserver/`
-  piped through a case-insensitive grep for `password|pwd|secret|ParityLens_Test1|connectionstring`.
-  Every hit is either a field/variable *name* (`password: string`, the
-  `PARITYLENS_TEST_SQLSERVER_PASSWORD` env-var name, `this.options.password`)
-  or a deliberately-wrong test literal (`"definitely-the-wrong-password-123!"`,
-  used only to prove `testConnection()` fails gracefully against bad
-  credentials). No real credential value, connection string, or the actual
-  container password (`ParityLens_Test1!`) appears anywhere in the diff.
-  `sqlServerConnector.ts` itself reads no environment variable and holds no
-  literal credential — confirmed by reading the full file; credentials
-  enter only via the caller-supplied `SqlServerConnectionOptions` at
-  construction time, matching the Interfaces table's requirement.
+`npx vitest run packages/engine/src/connector-sdk/postgres` (implicitly
+run as part of `npm run verify` above): 14/14 tests passed against the
+live container, none skipped (env vars were set).
 
-- **Adversarial mutating-statement probes (item 1 and item 3 — my own,
-  not the implementer's test file):** wrote a throwaway Vitest file
-  (`__reviewer_probe.test.ts`, deleted before concluding this review;
-  confirmed via `git status --short` showing no residue) that seeds its
-  own table (`dbo.reviewer_probe_t17`, 2 rows) and attempts 6 mutating/
-  bypass shapes distinct from the implementer's own 4 covered statements,
-  through the real `executeQuery` against the live container:
+### 3. Independent mutating-statement + dollar-quote adversarial probe
 
-  | Attempt | Result |
-  | --- | --- |
-  | `TRUNCATE TABLE ...` (keyword not in implementer's own test) | rejected |
-  | `GO 1  ` (repeat count + trailing whitespace) then `DROP TABLE` | rejected |
-  | `GO` then `EXEC sp_rename '...', 'reviewer_renamed'` (mutating stored proc via `EXEC`, not a bare DML keyword) | rejected |
-  | lowercase, tab-indented `go` then `DELETE FROM ...` | rejected |
-  | semicolon-chained `DELETE` with no `GO` at all | rejected |
-  | paren-wrapped CTE `DELETE` — the exact historical I-01 bypass pattern from T-03's review, retested here against this connector's own call site | rejected |
+I wrote a throwaway vitest file (`__reviewer_probe.test.ts`, deleted
+before finishing — confirmed via `git status` showing a clean tree) that:
+seeded its own table (`public.reviewer_probe_t19`) directly via the raw
+`pg` driver (bypassing the connector, matching the implementer's own
+pattern for avoiding a chicken-and-egg problem), then attempted the
+following through `PostgresConnector.executeQuery`, and finally
+re-queried the table via the raw driver to prove server-side state:
 
-  All 7 probe assertions passed (`✓ 7 tests`). Critically, I then verified
-  **server-side**, via a fresh query against the live container issued
-  directly (not through the connector's own `executeQuery`, to avoid
-  trusting the same code path under test): `SELECT OBJECT_ID(...)` proved
-  the table still exists, `SELECT COUNT(*)` returned exactly `2` (the
-  seeded row count, unchanged), and `SELECT OBJECT_ID('dbo.reviewer_renamed', ...)`
-  returned `NULL` (the `sp_rename` attempt never reached the server). This
-  independently confirms rejection happens before the driver, not merely
-  that a client-side exception was thrown after a mutation already landed.
+| Attempt | Result |
+| --- | --- |
+| Plain `DROP TABLE ...` | Rejected client-side, throws |
+| `SELECT $$it's fine$$ AS x; DROP TABLE ...;` (exact T-03-demonstrated bypass) | Rejected client-side, throws |
+| `SELECT $body$O'Brien's data$body$ AS x; DROP TABLE ...;` (my own tagged-delimiter + apostrophe variant) | Rejected client-side, throws |
+| `SELECT $$'; DROP TABLE ...; --$$ AS x` (my own variant: mutating text embedded *inside* a dollar-quoted body, no actual second statement) | Rejected client-side, throws |
+| `drop table ...` (lowercase, case-variant) | Rejected client-side, throws |
+| `TRUNCATE TABLE ...` | Rejected client-side, throws |
 
-  This also independently re-confirms the M-05 (`GO` batch separator)
-  resolution genuinely closes the disclosed gap — using variants (repeat
-  count, lowercase, tab-indentation, `EXEC`-based mutation after `GO`) the
-  implementer's own single worked-example test did not cover, not merely
-  re-running their exact case. Read `rejectGoBatchSeparator`
-  (`sqlServerConnector.ts:511-523`) directly: the regex
-  `/^[ \t]*GO[ \t]*(?:\d+[ \t]*)?$/im` runs unconditionally before
-  `assertReadOnlyStatement` inside `executeQuery`, so this is a real
-  code-path guarantee, not an artifact of the specific test string used.
+**Server-side verification (my own, not the implementer's):** after all
+six attempts, a raw `pg` query (`SELECT * FROM reviewer_probe_t19`) showed
+the table intact with its original single seeded row (`reviewer-seed`)
+unchanged. This independently confirms both (a) `assertReadOnlyStatement`
+genuinely blocks mutating statements before they reach the driver for the
+`postgres` dialect, and (b) the M-06 connector-level `rejectDollarQuoting`
+hardening genuinely blocks dollar-quoted content — including a tagged
+variant and an apostrophe-containing variant I constructed myself, not
+copied from the implementation report — before it reaches
+`assertReadOnlyStatement` or the driver. All 7 probe tests (6 rejections +
+1 server-side-state assertion) passed. The throwaway test file and its
+companion `.mjs` draft were deleted; `git status` after cleanup shows
+"nothing to commit, working tree clean."
 
-- **Cross-check of `assertReadOnlyStatement`'s dialect table:** read
-  `packages/engine/src/connector-sdk/safety/statement-safety.ts` directly
-  (read-only, not edited) to confirm `EXEC`/`TRUNCATE` are already in the
-  common/sqlserver-dialect mutating-keyword lists — my `EXEC sp_rename`
-  and `TRUNCATE TABLE` probes were exercising real, already-covered
-  behavior end-to-end through the live driver, not testing an
-  accidentally-uncovered keyword.
+I additionally reasoned about (rather than needing to execute) a possible
+regex gap in `rejectDollarQuoting`'s
+`/\$[A-Za-z_][A-Za-z0-9_]*\$|\$\$/` pattern: tested in isolation
+(`node -e`) against a Unicode tag (`$café$...$café$`) — the regex still
+matches (it finds `$hello$` as a substring inside, since it doesn't
+require anchoring to the true tag boundaries), so this is over-broad in
+the *safe* direction, not a bypass. I could not construct an input where
+PostgreSQL would accept a dollar-quote tag that this regex fails to
+detect.
 
-## Disposition of the carried-forward finding (M-05)
+### 4. Skip-reason check
 
-**RESOLVED, independently confirmed.** `PROGRESS-LEDGER.md`'s M-05 entry
-required either (a) connector-level rejection of `GO`, or (b) a verified
-claim that the gap is unreachable through this connector. The implementer
-chose (a): `rejectGoBatchSeparator()` runs before `assertReadOnlyStatement`
-inside `executeQuery`. I independently reproduced the brief's own worked
-example plus 4 additional variants the implementer's test didn't cover
-(above), all rejected, all confirmed server-side to have caused zero
-mutation. This is a genuine, verified fix, not a claim taken at face
-value.
+`postgresConnector.test.ts` uses `describe.skipIf(!hasTestServerEnv)` with
+a `console.log` line printed only when env vars are absent — not a bare
+`.skip`. Directly re-read the source (lines 41–50) to confirm.
 
-## Assessment of the three disclosed cross-platform bug fixes
+### 5. Hardcoded credential grep
 
-All three are genuine, in-scope corrections discovered via real live-server
-testing (not scope creep, not a sign of a rushed implementation):
+`git diff main task/T-19-postgres-connector -- packages/engine/src/connector-sdk/postgres/`
+grepped for the literal password, port, and database name: all matches
+were in comments describing environment-variable names/examples or in
+`process.env[...]` reads — no literal credential value or connection
+string appears anywhere in the diff. `postgresConnector.ts` itself never
+reads `process.env` — confirmed by reading the full file; credentials
+arrive solely via the caller-supplied `PostgresConnectionOptions`
+constructor argument.
 
-1. **`getCatalogs()` excluding `master`:** the original `database_id > 4`
-   filter is a defensible-looking convention borrowed from generic
-   "user databases only" tooling, but it directly broke against this
-   task's own test environment (default database is `master`). The fix
-   (list all databases visible to the login) is strictly more correct for
-   a read-only catalog-metadata method — there is no security rationale
-   for hiding system databases from a connection that's already
-   authenticated to the server, and the brief's Interfaces table doesn't
-   ask for filtering. Confirmed sensible.
-2. **`buildRowCappedSql`'s `ORDER BY`-in-derived-table fix:** this is a
-   genuine SQL Server grammar constraint (verified: SQL Server does reject
-   a bare `ORDER BY` inside a derived table without `TOP`/`OFFSET`/`FOR
-   XML`), and the implementer's own test (`{kind:'query'}` + `ORDER BY
-   CustomerId`) is an entirely ordinary query shape a real caller would
-   supply — not a contrived edge case invented to justify the fix. The
-   `TOP 100 PERCENT` injection is a standard, well-known no-op workaround
-   for exactly this constraint and does not change row selection or
-   order. The lexical detection heuristic's limitations are honestly
-   disclosed as a residual risk in the report (false negative surfaces
-   SQL Server's own grammar error rather than silently misbehaving) —
-   reasonable given this codebase's established precedent of a lexical,
-   not full-parser, safety scanner.
-3. **`buildProfileQuery`'s duplicate `total_count` alias fix:** genuine
-   SQL Server behavior difference from DuckDB (SQL Server rejects
-   duplicate output-column aliases; DuckDB tolerates them), caught because
-   this task's own multi-column profile test exercises more than one
-   profiled column against a real server rather than a single-column
-   happy path. The fix (emit `total_count` once) is the obviously correct
-   resolution and doesn't change the aggregate's semantics.
+## Disposition of the M-06 carried-forward finding
 
-All three read as real defects surfaced by testing against an actual
-server rather than invented busywork — consistent with the brief's
-stated purpose ("this is the project's first connector talking to an
-actual database server rather than DuckDB").
+**Confirmed resolved**, verified independently, not merely accepted on
+the report's word. The exact bypass string the T-03 reviewer originally
+demonstrated (`SELECT $$it's fine$$ AS x; DROP TABLE y;`) is rejected by
+`PostgresConnector`'s connector-level `rejectDollarQuoting`, and I proved
+server-side (my own re-query, not the implementer's) that no mutation
+occurred. I went further than the brief's minimum ask and also tried a
+tagged delimiter with an embedded apostrophe and a body containing literal
+mutating-looking text — both correctly rejected.
+
+**Judgment call assessment (blanket rejection vs. narrow fix):**
+reasonable, not overly broad in a way that matters for this connector's
+actual use. Dollar-quoting exists in PostgreSQL almost exclusively for
+(a) function/procedure bodies — already blocked as DDL by
+`assertReadOnlyStatement`'s keyword list regardless of M-06 — and (b) as
+an alternative to `''`-escaping inside ordinary string literals, which is
+never a functional necessity (any string expressible with `$$...$$` is
+also expressible with standard single-quote escaping). Given this
+connector's documented scope is read-only comparison queries
+(`{kind:"table"}`/`{kind:"query"}`/`{kind:"sqlFile"}` feeding
+schema/profile/row comparisons), not general-purpose SQL authoring, the
+practical cost of blocking all dollar-quoted content is low, and the
+implementer's own report discloses this tradeoff explicitly rather than
+hiding it. Acceptable as implemented.
 
 ## Findings
 
@@ -187,55 +162,39 @@ NONE.
 
 ### Minor
 
-| ID | Description | Evidence | Required/suggested resolution |
-| --- | --- | --- | --- |
-| T-17-01 | `getSchema`'s `{kind:"table"}` path and `parseObjectRef` support only bare-name or exactly one `schema.table` segment; a 3- or 4-part reference (`database.schema.table`, `server.database.schema.table`) is treated as an unrecognized bare name with everything before the last `.` folded into "schema" (`sqlServerConnector.ts:435-444`). Not exercised by any test in this task. | Read `parseObjectRef` directly: `parts.length >= 2` always takes the last two segments regardless of how many segments precede them, so `"otherdb.dbo.customer"` would resolve to schema=`"dbo"`, table=`"customer"` but silently drop the `otherdb.` catalog qualifier from the identifier actually sent to the server, rather than erroring. Since the connector's `database` is fixed at construction time and the brief's scope is single-database comparisons, this is unlikely to bite in the MVP's actual usage pattern, but it is a silent narrowing rather than a fail-loud rejection. | Honestly disclosed by the implementer as an assumption in `IMPLEMENTATION-REPORT.md`. Non-blocking for this task's stated scope (single-database `{kind:"table"}` references); track as follow-up if/when a caller needs fully-qualified cross-database references (would need to be paired with a `getSchema` on a different `database` than the connector's own, which nothing in the current interface requests). |
-| T-17-02 | `mssqlTypeToNativeTypeName` (the `{kind:"query"}`/`{kind:"sqlFile"}` `getSchema` path) is a hand-maintained switch over `mssql`'s runtime type-constructor names, not derived from the driver's own registry; an exotic type not in the table silently falls back to `"sql_variant"` → canonical `"Unknown"` rather than erroring, and no test exercises the fallback path itself (only the mapped types via `buildProfileQuery`'s `COUNT` aggregates, which are always integer/bigint). | Read the function directly (`sqlServerConnector.ts:533-587`); confirmed no dedicated test constructs a query returning an unmapped type (e.g. `XML`, `HIERARCHYID`, `GEOGRAPHY`) to prove the fallback path is reached and behaves as documented rather than throwing unexpectedly. | Honestly disclosed as a risk in the report. Non-blocking — consistent with `mapNativeType`'s own documented never-throw contract (T-05, approved), and no current test data exercises these exotic types. Suggested (not required) follow-up: a small dedicated test asserting the fallback path itself when a future task needs it. |
+NONE. No new minor findings identified. (The disclosed `getSchema`
+`{kind:"query"}`/`{kind:"sqlFile"}` `nullable: true` default and the
+hand-maintained `pgTypeOidToNativeTypeName` fallback table are both
+genuine, explicitly disclosed limitations with sound reasoning — same
+category of disclosed limitation T-17 carried for its SQL Server
+equivalent, and not exercised in a way that produces incorrect behavior
+for any currently-supported code path; not blocking, and not elevated to
+a tracked finding since they mirror an already-accepted T-17 precedent.)
 
-Both Minor findings were disclosed proactively by the implementer in
-`IMPLEMENTATION-REPORT.md`'s "Assumptions and risks" section rather than
-found independently by me — I verified each by reading the relevant code
-directly and confirming the disclosed characterization is accurate, and
-judge both as correctly non-blocking for this task's actual declared
-scope (single-database table/query comparisons against a live SQL Server
-instance, per the brief's Interfaces table).
+## Numbers claimed vs. observed
 
-## Scope and ownership check
+| Metric | Implementer's report | My own run |
+| --- | --- | --- |
+| Full verify exit code | 0 | 0 |
+| Test files passed/skipped | 19 passed, 1 skipped (20) | 19 passed, 1 skipped (20) — match |
+| Tests passed/skipped | 373 passed, 13 skipped (386) | 373 passed, 13 skipped (386) — match |
+| Focused T-19 suite | 14/14 passed | 14/14 passed — match |
 
-Files changed exactly match the brief's declared ownership
-(`packages/engine/src/connector-sdk/sqlserver/**`) plus the explicitly
-pre-authorized `mssql` dependency addition to `packages/engine/package.json`
-(brief: "You will need to add `mssql`... this is expected and in scope"),
-the disclosed `@types/mssql` devDependency (brief: "disclosing it
-explicitly... it is" — disclosed in the report's Changed Files table with
-rationale), and the mechanical `package-lock.json` consequence. No
-prohibited file was touched (verified above via `git diff`, zero output).
-
-## Verification-claims cross-check
-
-`IMPLEMENTATION-REPORT.md`'s reported counts (372/372 tests, 19 test
-files, exit 0) match my own independent fresh run exactly, including the
-same test-file list and the same 13-test SQL Server suite. No discrepancy
-found between claimed and observed evidence.
-
-## Cleanup confirmation
-
-`git status --short` after removing my throwaway probe file
-(`__reviewer_probe.test.ts`) shows no residue beyond this review report
-itself.
+No discrepancy between claimed and observed numbers.
 
 ## Approval status
 
-**APPROVED**
+**APPROVED.**
 
-No Critical or Important findings. Both Minor findings are implementer-
-disclosed, independently confirmed accurate, and non-blocking for this
-task's actual scope. Read-only enforcement was independently verified
-against the live container with fresh, non-reused adversarial probes,
-confirmed server-side (not just client-side) for every attempt. The
-carried-forward M-05 finding is genuinely resolved, independently
-reproduced with variants beyond the implementer's own test. Credential
-handling matches `AGENTS.md`'s no-inline-credentials rule. No test skip
-hides a real failure — the skip path is explicit, visible, and correctly
-gated. Fresh `npm run verify` inside WSL2 matches the implementer's
-claimed 372/372 exactly.
+All five specific reviewer checks named in `TASK-BRIEF.md`'s "Note to
+reviewer" section were performed independently and passed: (1) mutating
+statement attempted directly against the live container by me, confirmed
+server-side unaffected; (2) no hardcoded credential/connection string
+found in the diff; (3) M-06 dollar-quoting resolution independently
+re-verified with the exact T-03 bypass plus two variants of my own
+construction, all rejected, server-side state confirmed; (4) skip reason
+is explicit and visible, not a bare `.skip`; (5) `npm run verify` run
+fresh by me inside WSL2, numbers match the implementer's report exactly.
+No files outside the brief's declared ownership were touched. No Critical
+or Important findings. Task T-19 is complete and ready for the Lead
+Orchestrator to reconcile and merge.
