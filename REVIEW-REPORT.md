@@ -171,3 +171,288 @@ section corrected to state plainly that only string-shape normalization
 was proven to work pre-hash, not numeric-tolerance normalization) — and
 route T-20-02 into `PROGRESS-LEDGER.md` as tracked debt for whichever
 future task attempts genuine SQL-side hash pushdown.
+
+---
+
+# Round 2 (T-20-01 fix) — Independent Review
+
+## Review independence statement
+
+This round-2 review was performed by a fresh reviewer agent instance —
+separate both from whoever implemented round 1/round 2, and from whoever
+performed the round-1 review above. No memory of authoring
+`hash-comparison.ts`/`hash-comparison.test.ts` or of writing the round-1
+review section was available or used. Every claim in
+`IMPLEMENTATION-REPORT.md`'s round-2 section (arithmetic, boundary-risk
+disclosures, verification counts) was independently re-derived or
+re-run, not trusted from the implementer's own characterization. The
+round-1 section above is preserved unmodified as the historical record;
+nothing in it was edited by this round.
+
+## Scope reviewed (round 2)
+
+- `TASK-BRIEF.md` (unchanged since round 1) and `IMPLEMENTATION-REPORT.md`
+  round-2 section, read in full.
+- `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts`
+  as of commit `0a9f932` — full diff against `d09f3d3` read, plus the
+  complete current file read end to end.
+- `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts`
+  as of `0a9f932` — full diff read.
+- `packages/engine/src/comparison-core/row-level/row-level.ts` and
+  `packages/engine/src/comparison-core/normalization/normalization.ts`
+  (`valuesEqualWithinTolerance`, `coerceNumericString`) re-read to
+  independently derive the exact comparison semantics `compareByHash` is
+  being held to.
+- `git diff --name-only main task/T-20-hash-comparison`,
+  `git show --stat 0a9f932`, and `git diff` of `PROGRESS-LEDGER.md`/
+  `REVIEW-REPORT.md` against the merge-base, to verify scope and the
+  stale-branch caveat.
+
+## Fresh verification performed
+
+| Check | Command | My result | Matches report? |
+| --- | --- | --- | --- |
+| Full verify | `npm run verify` | Exit 0. `Test Files 19 passed \| 2 skipped (21)`, `Tests 381 passed \| 27 skipped (408)` | Yes — identical to round-2 report |
+| Focused | `npx vitest run packages/engine/src/comparison-core/hash-comparison` (implementer's own suite, re-run clean after probes) | `hash-comparison.test.ts (13 tests)` all passed | Yes |
+| Scope diff | `git diff --name-only main task/T-20-hash-comparison` | `IMPLEMENTATION-REPORT.md`, `PROGRESS-LEDGER.md`, `REVIEW-REPORT.md`, `hash-comparison.test.ts`, `hash-comparison.ts` | `hash-comparison.*`/`IMPLEMENTATION-REPORT.md` match declared round-2 scope; the other two are the stale-branch artifact (see below), not implementer edits |
+| Round-2 commit stat | `git show --stat 0a9f932` | `IMPLEMENTATION-REPORT.md`, `hash-comparison.test.ts`, `hash-comparison.ts` — exactly 3 files | Matches report's claimed changed-files list exactly |
+| Planner-wiring grep | `grep -rn "compareByHash" packages/engine/src/orchestration` | No hits | Confirms no planner-wiring scope creep introduced in round 2 |
+| Escalation-scope grep | `grep -n "compareByHash(" hash-comparison.ts` | Single hit (the exported function's own declaration) | Confirms round 2 did not introduce any recursive/auto-escalating call |
+
+`typecheck` and `lint` produced no errors in my own run.
+
+### Stale-branch artifact verification (required by dispatch instructions)
+
+- `git diff 8eb97ba 0a9f932 -- REVIEW-REPORT.md` → **empty**. The
+  round-2 implementer did not touch `REVIEW-REPORT.md` at all; it is
+  byte-identical to the round-1 reviewer's version. Confirmed genuine,
+  not merely asserted.
+- `git merge-base main task/T-20-hash-comparison` → `7dd441b`.
+  `git diff task/T-20-hash-comparison 7dd441b -- PROGRESS-LEDGER.md` →
+  **empty**. The branch's `PROGRESS-LEDGER.md` is byte-identical to the
+  merge-base version; `main`'s only additional history on that file is
+  one later commit (`bd86237`, "T-20: record round-1 CHANGES REQUIRED")
+  that records round 1's disposition — a ledger update that happened on
+  `main` after this branch was cut, not a divergent edit on the branch
+  itself. This is exactly the stale-branch artifact the dispatch
+  instructions described, confirmed rather than assumed.
+
+## Adversarial / independent probes performed
+
+A single throwaway probe file (`zz-reviewer-probe.test.ts`) was written
+directly under `packages/engine/src/comparison-core/hash-comparison/` (so
+module resolution exercised the real `compareByHash`/`compareRows`
+code, not a reimplementation), covering items 1–5 of the dispatch
+instructions, run via `npx vitest run`, and deleted afterward. `git
+status --short` after deletion showed a clean tree — confirmed, no
+residue beyond this report.
+
+### Probe 1 — original T-20-01 case, own construction (required item 1)
+
+Built a dedicated one-row-per-side DuckDB fixture pair (`AMOUNT =
+"125.3700"` source, `"125.37"` target), independent of the implementer's
+`fixtureWithStringVariant` helper's exact call sites, with `rules: {
+AMOUNT: { numericTolerance: { absolute: 0.01 } } }`.
+
+- `compareByHash(..., "row", ...)`: `matched: true`. **Fixed, confirmed.**
+- `compareRows` given the identical rule and values: `category:
+  "matching"`. **Full agreement, confirmed independently.**
+
+T-20-01 as originally reported is genuinely resolved.
+
+### Probe 2 — disclosed false-disagreement boundary case (required item 2)
+
+Reproduced the implementer's own named example directly: `AMOUNT =
+"125.364"` (source) vs `"125.370"` (target), `{ absolute: 0.01 }`.
+
+- `compareRows`: `category: "matching"` (diff 0.006 ≤ 0.01).
+- `compareByHash`: `matched: false`, one mismatch reported for key 1
+  (hashes: `12fb4b...` vs `a2823a...`).
+
+**Confirmed exactly as disclosed** — this is a genuine, reproducible
+residual disagreement, distinct from T-20-01's original always-broken
+behavior (which affected every within-tolerance pair, not just
+boundary-straddling ones). Assessed as acceptable to ship: it is
+explicitly disclosed in both the code header comment and the
+implementation report, the direction of error is conservative (hash
+comparison under-reports agreement rather than hiding a real
+difference — it can only cause a caller to escalate to `compareRows`
+unnecessarily, never to miss a genuine difference), and the brief itself
+treats disclosed design tradeoffs as an acceptable outcome for this task.
+
+### Probe 3 — false-agreement counterexample search, absolute tolerance (required item 3)
+
+Reimplemented `roundToStep` independently from the shipped source and
+ran two searches: (a) a targeted scan across bucket boundaries for base
+values from -5 to 5 in 0.001 increments, checking offsets from
+0.0099999 up to 0.02 for any pair more than `0.01` apart that rounds to
+the same bucket; (b) an end-to-end `compareByHash` check with
+`AMOUNT = "100.005"` vs `"100.0151"` (diff = 0.0101, just outside
+`{absolute: 0.01}`).
+
+- (a): no counterexample found.
+- (b): `compareByHash` correctly reports `matched: false`.
+
+**The implementer's proof-by-construction claim holds under my own
+independent search**: `roundToStep`'s bucket width equals
+`tolerance.absolute` exactly, so two values in the same bucket are
+provably < `tolerance.absolute` apart — no false agreement is possible
+by construction, and I found no counterexample. This claim is correct.
+
+### Probe 4 — percentage tolerance (required item 4) — finding below
+
+Constructed `AMOUNT = "1000"` (source) vs `"1005"` (target), a pair
+0.5% apart, well inside `{ percentage: 1 }` (1%) tolerance:
+
+- `compareRows`: `category: "matching"` (0.5% ≤ 1%), as expected.
+- `compareByHash`: **`matched: false`** — hashes differ.
+
+Root cause, independently traced: `percentageToSignificantFigures(1)`
+returns `sigFigs = 4`. `roundToSignificantFigures(1000, 4) = 1000` but
+`roundToSignificantFigures(1005, 4) = 1005` — these are *different*
+4-significant-figure buckets (1000 vs 1005 are both already exactly 4
+significant figures, so rounding is a no-op and does nothing to collapse
+them). This is not a fluke of my chosen numbers: I ran a systematic scan
+(percentages 1/5/10, bases from 100 to ~68,000, deltas spanning the full
+within-tolerance range) and found that **~97% of value pairs that
+`compareRows` classifies as within-percentage-tolerance land in
+different significant-figure buckets** under `compareByHash`'s
+canonicalization (1,282 of 1,320 sampled within-tolerance pairs
+disagreed). For comparison, I ran the equivalent scan for absolute
+tolerance and found a ~48% disagreement rate there (consistent with a
+bucket width equal to the tolerance width, so a uniformly distributed
+within-tolerance pair has roughly even odds of straddling a boundary).
+
+A separate false-*agreement* scan for percentage tolerance (values more
+than `P`% apart landing in the same significant-figure bucket, across
+percentages 0.5–99% and magnitudes from 10⁻³ to 10⁶) found no
+counterexample, consistent with the report's claim that false
+*agreement* was not observed. That specific claim holds under my
+independent check too.
+
+- I additionally confirmed the reverse: `"1000"` vs `"1050"` (4.76%
+  apart, outside the 1% tolerance) is correctly reported as a mismatch
+  by both `compareRows` and `compareByHash` — genuinely-out-of-tolerance
+  values are not falsely merged.
+
+### Probe 5 — non-tolerance regression check (required item 5)
+
+Re-verified the string-casing/whitespace case
+(`"  JOHN SMITH  "` vs `"John Smith"`) independently, in a probe file
+that does not reuse any of the implementer's own fixture-building code:
+raw comparison reports a mismatch; with `{ trim: true, caseSensitive:
+false }` configured, `compareByHash` reports `matched: true`. Also ran
+the implementer's own 13-test suite (10 round-1 + 3 round-2) unmodified,
+confirming all pass, including the round-1 progressive-narrowing and
+partition-level cases. No regression found.
+
+## Findings (round 2)
+
+### Critical
+
+NONE. T-20-01 as originally scoped and reported (the `"125.3700"` vs
+`"125.37"` absolute-tolerance case, and the general principle that
+`numericTolerance` was previously silently ignored before hashing) is
+genuinely fixed and independently confirmed above.
+
+### Important
+
+**T-20-04 — Percentage-tolerance canonicalization produces a false disagreement for the overwhelming majority of within-tolerance pairs, not just a rare boundary case; `IMPLEMENTATION-REPORT.md`'s boundary-risk disclosure materially understates this for the percentage case specifically.**
+
+- **Evidence:** Probe 4 above. `AMOUNT = "1000"` vs `"1005"` (0.5% apart, within `{ percentage: 1 }` tolerance): `compareRows` says `"matching"`, `compareByHash` says `matched: false`. Independent scan: ~97% of within-percentage-tolerance pairs sampled disagree this way (vs. ~48% for absolute tolerance, itself already a high rate).
+- **Why this matters:** The report's boundary-risk disclosure devotes several paragraphs to the absolute-tolerance case with a concrete worked example (`125.364` vs `125.370`) that reads, correctly, as a narrow edge case near a bucket boundary. For percentage tolerance, the report states only that "no false-agreement counterexample was found" and that the guarantee is "materially weaker... not formally guaranteed" than the absolute case — but it never discloses a false-*disagreement* example for percentage tolerance, nor states that false disagreement is actually the *typical* outcome for that path, not an edge case. A reader of the disclosure reasonably comes away thinking percentage tolerance has the same qualitative behavior as absolute tolerance (occasional boundary-straddling false disagreement, no false agreement) when in practice it is dramatically worse on the disagreement axis: a caller configuring `{ percentage: 1 }` and expecting `compareByHash` to usually agree with `compareRows` on typical within-tolerance data will instead see mismatches reported for nearly every such pair. This directly undermines the same "hash comparison and row-level comparison agree" bar the brief set for T-20-01, for the percentage-tolerance path specifically — it is not fixed by round 2's work, and round 2's own report does not flag that it remains this broken.
+- **Root cause:** `percentageToSignificantFigures` derives a fixed significant-figure count from the tolerance percentage alone, independent of the specific value pair's actual magnitude alignment. Significant-figure rounding buckets are aligned to powers of ten, not to the value's own position — two values that are close in percentage terms but differ in a low-order digit position relative to the bucket's rounding point (e.g. 1000 vs 1005, rounding at the units digit for 4 sig figs) routinely land in different buckets even when well within tolerance, because the sig-fig bucket width (`10^(2-sigFigs)`% of the magnitude class, per the report's own bound) is calibrated to be *no wider than* the tolerance, not comparable in shape to how a percentage-based "distance" actually spreads pairs across that width — most of the within-tolerance interval falls outside a value's own rounding bucket rather than inside it. This is the same structural issue as the absolute case (bucket boundaries are arbitrary cut points, and within-tolerance pairs can straddle them) but the effective disagreement rate is far higher because there is no floor on how close two significant-figure buckets' boundaries can fall relative to the tolerance-permitted spread, whereas the absolute case at least guarantees a bucket exactly one tolerance-width wide.
+- **Severity assessment:** Important, not Critical. This does not resurrect T-20-01 (no requirement is silently violated — the report does disclose *that* percentage tolerance is weaker and empirically-only, which is honest in kind), and it does not introduce false agreement (the failure mode remains conservative — a caller sees more mismatches than truly exist, never fewer, so `compareByHash` cannot hide a real difference the way a false agreement would). It is Important rather than Minor because: (a) it means `compareByHash`'s percentage-tolerance path delivers essentially no practical agreement benefit over having no tolerance canonicalization at all for that path, which is a materially different and worse outcome than what the report's own language ("weaker... not formally guaranteed") leads a reader to expect, and (b) per the brief's own review-gate framing, the specific promise being tested here is "hash comparison and row-level comparison agree" — for percentage tolerance, in the common case, they now do not.
+- **Required resolution:** Not required to block this round's approval (see Final disposition), but must be disclosed accurately before this can be considered fully closed: either (a) correct `IMPLEMENTATION-REPORT.md`'s and `hash-comparison.ts`'s header-comment boundary-risk sections to state plainly that percentage-tolerance canonicalization frequently disagrees with `compareRows` on ordinary within-tolerance pairs (not just "near a boundary"), with a concrete worked example (e.g. this review's `1000`/`1005` case) alongside the existing absolute-tolerance example, or (b) improve the percentage-tolerance bucketing to reduce the disagreement rate (e.g. a magnitude-relative rounding scheme rather than fixed significant figures), which is a larger change better suited to a follow-on task. Recommend routing to `PROGRESS-LEDGER.md` as tracked debt if the disclosure-only path is chosen, since the underlying approximation is not exact and the project's own precedent (T-20-02) already accepts disclosed-tradeoff outcomes as non-blocking when accurately described.
+
+### Minor
+
+No new Minor findings in round 2. T-20-03 (source/target column-name mapping) remains open per round 1's disposition and was out of round 2's authorized scope (it touches `HashComparisonOptions`'s shape more broadly, not the numericTolerance path) — not re-litigated here.
+
+## Disposition of prior findings
+
+- **T-20-01 (Critical, round 1) — RESOLVED, independently confirmed.**
+  Reproduced the original failing case directly against `0a9f932`'s
+  shipped code before accepting the fix (Probe 1 above): `compareByHash`
+  now agrees with `compareRows` on `"125.3700"` vs `"125.37"` with
+  `{ absolute: 0.01 }` configured. This is not accepted on the
+  implementer's report alone — I constructed the case myself, independent
+  of the implementer's `fixtureWithStringVariant` test helper, and got
+  the same result.
+- **T-20-02 (Important, round 1, accepted as tracked debt)** — unchanged
+  by round 2; out of round 2's authorized scope (JS-side hashing vs.
+  SQL-side pushdown is unrelated to the numericTolerance fix). Still
+  requires a `PROGRESS-LEDGER.md` entry per round 1's disposition — not
+  yet present as of the branch's stale `PROGRESS-LEDGER.md` copy (see
+  stale-branch note above; this is an orchestrator reconciliation
+  responsibility, not a round-2 implementer gap).
+- **T-20-03 (Minor, round 1, accepted)** — unchanged by round 2, as
+  expected; not re-verified in depth this round since nothing in round
+  2's diff touches the column-name-mapping surface.
+
+## Scope and ownership check (round 2)
+
+- Round-2 commit `0a9f932` touches exactly `IMPLEMENTATION-REPORT.md`,
+  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts`,
+  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts`
+  — confirmed via `git show --stat 0a9f932`, matching the report's
+  claimed file list exactly.
+- No file outside `hash-comparison/**` (plus the report) was touched in
+  round 2. `REVIEW-REPORT.md` is confirmed byte-identical to round 1's
+  version (empty diff `8eb97ba`→`0a9f932`) — the round-2 implementer did
+  not touch it, as required.
+- The `PROGRESS-LEDGER.md` difference visible in `git diff main
+  task/T-20-hash-comparison` is confirmed to be branch/main divergence
+  predating round 2 (branch content is byte-identical to the merge-base),
+  not a round-2 edit.
+- The disclosed test-helper parameter-type widening
+  (`fetchAllRows(connector: FixtureConnector, ...)` →
+  `(connector: DataPlatformConnector, ...)`) is confirmed to be exactly
+  that: the function body is unchanged; only the parameter type
+  annotation was widened, within the task's own owned test file. Not a
+  behavioral change.
+
+## Final disposition
+
+**APPROVED.**
+
+T-20-01, the Critical finding that blocked round 1, is genuinely
+resolved and independently confirmed against the shipped code, not just
+the implementer's report — the doc's own canonical `"125.3700"` vs
+`"125.37"` example now produces full agreement between `compareByHash`
+and `compareRows`. No Critical or Important finding from round 1 remains
+unresolved in a way that blocks this round: T-20-02 (Important) was
+already accepted as non-blocking tracked debt in round 1 and is untouched
+by round 2's scope; T-20-03 (Minor) likewise.
+
+This round's new finding, T-20-04 (Important — percentage-tolerance
+canonicalization false-disagreement rate is far higher than the report's
+disclosure implies), does **not** block approval, for reasons parallel to
+round 1's own disposition of T-20-02: it is a disclosed-in-kind (if
+understated-in-degree) design tradeoff of an approach the brief itself
+authorized ("disclose that explicitly... rather than silently shipping"),
+it fails conservatively (more false mismatches, never a hidden true
+difference), and it does not violate any requirement that was not already
+flagged as inexact in the implementer's own report. However, it is a real
+finding: the report's percentage-tolerance disclosure should be corrected
+to state the true (very high) disagreement rate rather than characterizing
+it only as "materially weaker" than the absolute case, and this should be
+recorded in `PROGRESS-LEDGER.md` alongside T-20-02 as tracked debt, ideally
+before or during whichever future task next touches this file, since a
+caller relying on percentage-tolerance agreement today would be
+surprised by the actual behavior.
+
+**Recommended next steps for the orchestrator:**
+1. Merge this task as APPROVED.
+2. Record T-20-04 in `PROGRESS-LEDGER.md`'s open-findings table (Important,
+   accepted/non-blocking, tracked debt) alongside T-20-02/T-20-03.
+3. Ensure the `PROGRESS-LEDGER.md` reconciliation on merge picks up
+   `main`'s existing `bd86237` state (round-1 CHANGES REQUIRED entry) and
+   updates it to APPROVED with T-20-04 added, rather than the branch's
+   stale pre-`bd86237` copy overwriting it.
+4. Optionally (non-blocking, quality-of-disclosure only): update
+   `hash-comparison.ts`'s header comment and `IMPLEMENTATION-REPORT.md`'s
+   round-2 boundary-risk section to include a concrete percentage-tolerance
+   false-disagreement example (e.g. this review's `1000`/`1005` case)
+   alongside the existing absolute-tolerance example, so the disclosure's
+   degree matches this review's findings.
