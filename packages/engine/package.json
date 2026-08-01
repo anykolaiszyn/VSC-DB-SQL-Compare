@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "description": "ParityLens comparison engine, connector SDK, and orchestration",
+  "license": "MIT",
   "main": "src/index.ts",
   "types": "src/index.ts",
   "scripts": {

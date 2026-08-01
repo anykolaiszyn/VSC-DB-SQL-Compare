@@ -3,6 +3,7 @@
   "private": true,
   "version": "0.0.1",
   "description": "ParityLens VS Code extension host",
+  "license": "MIT",
   "main": "./dist/index.js",
   "types": "src/index.ts",
   "engines": {
