@@ -24,8 +24,8 @@
 //   lower remainder) -> uppercaseCount=0, lowercaseCount=0, mixedCaseCount=6
 import { describe, expect, it } from "vitest";
 import { FixtureConnector } from "../../connector-sdk/fixture/fixture-connector.js";
-import { profileColumn, compareProfiles, type ColumnProfile } from "./profiling.js";
-import type { ColumnDefinition } from "@paritylens/shared";
+import { profileColumn, compareProfiles, buildProfileQueries, type ColumnProfile } from "./profiling.js";
+import type { ColumnDefinition, ExecutionOptions, QueryInput, RecordBatch } from "@paritylens/shared";
 
 const CUSTOMER_NAME_COLUMN: ColumnDefinition = {
   name: "CustomerName",
@@ -324,5 +324,119 @@ describe("compareProfiles", () => {
       distinctValues: ["1", "2"],
     };
     expect(compareProfiles(profile, { ...profile })).toEqual([]);
+  });
+});
+
+// T-16b: SQL preview panel. buildProfileQueries must mirror profileColumn's
+// own type-dispatch logic exactly (not an approximate/simplified copy), and
+// must return the ordered list of every SQL string profileColumn actually
+// issues for that column, so preview and execution can never drift apart.
+describe("buildProfileQueries", () => {
+  it("returns the general-metrics and most-common-value queries for every column, and matches the SQL profileColumn actually issues (String category)", async () => {
+    const connector = new FixtureConnector("sqlserver-customer", "source");
+    const input: QueryInput = { kind: "table", object: "customer_source" };
+
+    const previewedQueries = buildProfileQueries(connector, CUSTOMER_NAME_COLUMN, { input });
+
+    // Spy on executeQuery to capture every SQL string profileColumn actually
+    // sends, in order, and assert the full ordered list matches the
+    // builder's output byte-for-byte -- not just that both look plausible.
+    const capturedSql: string[] = [];
+    const originalExecuteQuery = connector.executeQuery.bind(connector);
+    connector.executeQuery = function spyExecuteQuery(
+      query: QueryInput,
+      options: ExecutionOptions
+    ): AsyncIterable<RecordBatch> {
+      if (query.kind === "query") {
+        capturedSql.push(query.sql);
+      }
+      return originalExecuteQuery(query, options);
+    };
+
+    await profileColumn(connector, CUSTOMER_NAME_COLUMN, { input });
+
+    expect(capturedSql).toEqual(previewedQueries);
+    // General metrics + most-common-value + string metrics (2 queries) = 4.
+    expect(previewedQueries.length).toBe(4);
+    expect(previewedQueries[0]).toContain("row_count");
+    expect(previewedQueries[0]).toContain("populated_count");
+    expect(previewedQueries[0]).toContain("distinct_count");
+  });
+
+  it("returns a list containing at least the general-metrics and numeric-metrics query strings for a numeric column, matching profileColumn's actual issued queries", async () => {
+    const connector = new FixtureConnector("postgres-products", "source");
+    const input: QueryInput = { kind: "table", object: "products_source" };
+
+    const previewedQueries = buildProfileQueries(connector, PRICE_COLUMN, { input });
+
+    const capturedSql: string[] = [];
+    const originalExecuteQuery = connector.executeQuery.bind(connector);
+    connector.executeQuery = function spyExecuteQuery(
+      query: QueryInput,
+      options: ExecutionOptions
+    ): AsyncIterable<RecordBatch> {
+      if (query.kind === "query") {
+        capturedSql.push(query.sql);
+      }
+      return originalExecuteQuery(query, options);
+    };
+
+    await profileColumn(connector, PRICE_COLUMN, { input });
+
+    expect(capturedSql).toEqual(previewedQueries);
+    // General metrics + most-common-value + numeric metrics (1 query) = 3.
+    expect(previewedQueries.length).toBe(3);
+    expect(previewedQueries.some((sql) => sql.includes("MEDIAN") && sql.includes("STDDEV_SAMP"))).toBe(true);
+  });
+
+  it("matches profileColumn's actual issued queries for a Date-family column", async () => {
+    const connector = new FixtureConnector("sqlserver-customer", "source");
+    const input: QueryInput = { kind: "table", object: "customer_source" };
+    const now = new Date("2026-07-27T00:00:00Z");
+
+    const previewedQueries = buildProfileQueries(connector, CREATED_DATE_COLUMN, { input, now });
+
+    const capturedSql: string[] = [];
+    const originalExecuteQuery = connector.executeQuery.bind(connector);
+    connector.executeQuery = function spyExecuteQuery(
+      query: QueryInput,
+      options: ExecutionOptions
+    ): AsyncIterable<RecordBatch> {
+      if (query.kind === "query") {
+        capturedSql.push(query.sql);
+      }
+      return originalExecuteQuery(query, options);
+    };
+
+    await profileColumn(connector, CREATED_DATE_COLUMN, { input, now });
+
+    expect(capturedSql).toEqual(previewedQueries);
+    // General metrics + most-common-value + date metrics (2 queries) = 4.
+    expect(previewedQueries.length).toBe(4);
+  });
+
+  it("matches profileColumn's actual issued queries for a Boolean column", async () => {
+    const connector = new FixtureConnector("postgres-products", "source");
+    const input: QueryInput = { kind: "table", object: "products_source" };
+
+    const previewedQueries = buildProfileQueries(connector, IN_STOCK_COLUMN, { input });
+
+    const capturedSql: string[] = [];
+    const originalExecuteQuery = connector.executeQuery.bind(connector);
+    connector.executeQuery = function spyExecuteQuery(
+      query: QueryInput,
+      options: ExecutionOptions
+    ): AsyncIterable<RecordBatch> {
+      if (query.kind === "query") {
+        capturedSql.push(query.sql);
+      }
+      return originalExecuteQuery(query, options);
+    };
+
+    await profileColumn(connector, IN_STOCK_COLUMN, { input });
+
+    expect(capturedSql).toEqual(previewedQueries);
+    // General metrics + most-common-value + boolean metrics (1 query) = 3.
+    expect(previewedQueries.length).toBe(3);
   });
 });

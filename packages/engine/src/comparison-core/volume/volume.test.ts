@@ -26,7 +26,7 @@
 // real connector.
 import { describe, expect, it } from "vitest";
 import { FixtureConnector } from "../../connector-sdk/fixture/fixture-connector.js";
-import { compareVolume } from "./volume.js";
+import { compareVolume, buildRowCountSql } from "./volume.js";
 import type { QueryInput } from "@paritylens/shared";
 
 // Produces exactly `count` rows via DuckDB's `generate_series` table
@@ -128,5 +128,49 @@ describe("compareVolume", () => {
     expect(result.difference).toBe(0);
     expect(result.differenceRate).toBe(0);
     expect(result.severity).toBe("Pass");
+  });
+});
+
+// T-16b: SQL preview panel. buildRowCountSql must be a pure, string-
+// returning builder that returns exactly the SQL string countRows already
+// builds internally, so preview and execution can never drift apart.
+describe("buildRowCountSql", () => {
+  it("returns the exact SQL string countRows actually executes against a fixture connector (table input)", async () => {
+    const connector = new FixtureConnector("sqlserver-customer", "source");
+    const input: QueryInput = { kind: "table", object: "customer_source" };
+
+    const previewedSql = buildRowCountSql(connector, input);
+
+    // Spy on executeQuery to capture the SQL compareVolume's countRows
+    // actually sends, and assert it is byte-for-byte identical to the
+    // builder's output -- not just that both look plausible.
+    const originalExecuteQuery = connector.executeQuery.bind(connector);
+    let capturedSql: string | undefined;
+    connector.executeQuery = function spyExecuteQuery(
+      query: Parameters<typeof originalExecuteQuery>[0],
+      options: Parameters<typeof originalExecuteQuery>[1]
+    ): ReturnType<typeof originalExecuteQuery> {
+      if (query.kind === "query") {
+        capturedSql = query.sql;
+      }
+      return originalExecuteQuery(query, options);
+    };
+
+    await compareVolume(connector, connector, input, input);
+
+    expect(capturedSql).toBeDefined();
+    expect(capturedSql).toBe(previewedSql);
+    expect(previewedSql).toBe(`SELECT COUNT(*) AS row_count FROM "customer_source"`);
+  });
+
+  it("returns the exact SQL string for a query-kind input, wrapped as a subquery", () => {
+    const connector = new FixtureConnector("sqlserver-customer", "source");
+    const input: QueryInput = { kind: "query", sql: "SELECT * FROM customer_source" };
+
+    const previewedSql = buildRowCountSql(connector, input);
+
+    expect(previewedSql).toBe(
+      `SELECT COUNT(*) AS row_count FROM (SELECT * FROM customer_source) AS volume_subquery`
+    );
   });
 });

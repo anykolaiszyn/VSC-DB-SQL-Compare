@@ -216,6 +216,47 @@ describe("runComparison", () => {
     });
   });
 
+  // T-16b: SQL preview panel. queriesUsed must be populated by runComparison
+  // with the SQL strings actually issued during the run, sourced from the
+  // same builder functions the execution code paths themselves call.
+  describe("T-16b: queriesUsed", () => {
+    const ALL_CHECKS_YAML = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+column_mapping:
+  CustomerID: CustomerID
+  CustomerName: CustomerName
+checks:
+  schema:
+    enabled: true
+  profile:
+    enabled: true
+  row_count:
+    enabled: true
+  row_level:
+    enabled: true
+`;
+
+    it("produces a ComparisonResult with a populated queriesUsed when schema/profile/volume/row-level checks are enabled", async () => {
+      const definition = parseDefinition(ALL_CHECKS_YAML);
+      const result = await runComparison(definition, fixtureRegistry());
+
+      expect(result.queriesUsed).toBeDefined();
+      expect(result.queriesUsed?.length).toBeGreaterThan(0);
+      // Volume (row-count) and row-level queries should both be present.
+      expect(result.queriesUsed?.some((q) => q.includes("COUNT(*)"))).toBe(true);
+      expect(result.queriesUsed?.some((q) => q.includes("SELECT *"))).toBe(true);
+    });
+  });
+
   describe("Phase 2: row-level checks", () => {
     it("populates rowDifferences from compareRows when checks.row_level.enabled is true", async () => {
       const definition = parseDefinition(ROW_LEVEL_ONLY_YAML);

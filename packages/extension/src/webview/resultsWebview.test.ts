@@ -119,4 +119,29 @@ describe("renderResultsHtml", () => {
     expect(html).toContain("No volume differences.");
     expect(html).toContain("No row-level differences.");
   });
+
+  // T-16b: SQL preview panel.
+  it("renders an empty-state message for Query Preview when queriesUsed is absent", () => {
+    const html = renderResultsHtml(SAMPLE_RESULT);
+
+    expect(html).toContain("Query Preview");
+    expect(html).toContain("No queries recorded for this run.");
+  });
+
+  it("renders each queriesUsed entry, HTML-escaped", () => {
+    const resultWithQueries: ComparisonResult = {
+      ...SAMPLE_RESULT,
+      queriesUsed: [
+        `SELECT COUNT(*) AS row_count FROM "customer_source"`,
+        `SELECT * FROM "customer_source" WHERE Region = '<script>alert(1)</script>'`
+      ]
+    };
+
+    const html = renderResultsHtml(resultWithQueries);
+
+    expect(html).toContain("SELECT COUNT(*) AS row_count FROM &quot;customer_source&quot;");
+    // The XSS-shaped payload must be escaped, not passed through raw.
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+  });
 });
