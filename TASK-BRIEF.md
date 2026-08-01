@@ -1,167 +1,106 @@
-# ParityLens — Task Brief T-22
+# ParityLens — Task Brief T-23
 
 ## Objective
 
-Close a cross-task integration gap found during the prompt-06 Integration
-check (2026-08-01): no task in `IMPLEMENTATION-PLAN.md`'s original T-01
-through T-21 ever exported `@paritylens/engine`'s real API from its package
-entry point, and no task ever wired a real command connecting
-`parseDefinition` → `runComparison` → `showResultsWebview`/export. Every
-extension-layer task (T-10, T-11, T-16, T-16b) tested rendering/export
-against a **hand-built** `ComparisonResult` literal only, and every
-engine-layer test imported from deep relative paths inside
-`packages/engine/src/...`, never through `@paritylens/engine`'s declared
-package entry point — which still contains only T-01's original placeholder:
+Found during the prompt-07 Release security review (2026-08-01): `npm audit`
+reports a critical advisory against `vitest@2.1.9`
+(`GHSA-5xrq-8626-4rwp`, CVSS 9.8 — "When Vitest UI server is listening,
+arbitrary file can be read and executed"), affecting versions `<3.2.6`.
 
-```typescript
-// packages/engine/src/index.ts (current content, verbatim)
-export const PLACEHOLDER = true;
-```
+**Exploitability assessment (already confirmed, do not re-derive):**
+`vitest` is a root `devDependency` only (never a dependency of
+`packages/extension`, the package actually built into the shipped
+extension artifact). `@vitest/ui` is not installed anywhere in this repo
+(`npm ls @vitest/ui` returns empty). No script, config, or command in this
+project ever passes `--ui` or otherwise starts the Vitest UI server —
+confirmed via `grep` across `package.json` and `vitest.config.*`. The
+vulnerable code path is never invoked in this project's actual usage. This
+is a real advisory against the exact installed version, worth fixing as
+release hygiene, but not an exploitable finding against anything this
+project ships or runs.
 
-This was not any individual task's failure — T-10's own brief explicitly
-scoped out "comparison logic" and "results rendering," and T-11/T-16/T-16b's
-briefs were explicitly scoped to render *a passed-in* `ComparisonResult`.
-Each task's own scope boundary was honest and correctly reviewed. But no
-task ever owned closing the loop, so the two package boundaries central to
-`DESIGN-SPEC.md`'s own data-flow section (steps 2-5: Orchestration API
-invokes checks, Extension Layer renders the result) have never actually
-been connected by real code.
-
-**What integration confirmed already works** (via a temporary, discarded
-probe using deep relative imports identical to what the existing test
-suites already do — this brief does not need to re-derive this, only wire
-the already-correct pieces together): a real `runComparison()` result
-(status `"failed"`, 9 `schemaDifferences`, 13 `rowDifferences`, produced
-from the `sqlserver-customer` fixture pair's deliberate mismatches) renders
-correctly through `renderResultsHtml` and exports correctly through all
-three of `exportToCsv`/`exportToJson`/`exportToMarkdown` with no shape
-mismatch. **This task is pure wiring, not new logic** — every function this
-task calls already exists, is already tested in isolation, and is already
-confirmed shape-compatible end-to-end. Do not modify any comparison-core,
-orchestration, or webview/export rendering logic — if you find yourself
-wanting to change behavior inside any of those to make the wiring work,
-stop and flag it as a scope violation rather than doing it.
+Bump `vitest` to `3.2.6` or later (latest `3.x` at time of writing:
+`3.2.7`) — this resolves the advisory while staying on the `3.x` major
+version, avoiding `npm audit fix --force`'s suggested jump to the breaking
+`vitest@4.1.10`. Confirm the entire test suite still passes unmodified
+after the bump — a same-major-version bump should not require any test
+code changes; if it does, stop and report rather than adapting tests to
+paper over a real behavioral change.
 
 ## Scope
 
-Two pieces, both required:
-
-1. **Export the real engine API** from `packages/engine/src/index.ts`
-   (currently the T-01 placeholder), following `packages/shared/src/index.ts`'s
-   own precedent exactly: a re-export-only file, no logic. At minimum,
-   re-export `parseDefinition`/`InvalidDefinitionError` (from
-   `orchestration/definition/definition.js`), `runComparison`/
-   `ConnectorRegistry`/`UnresolvedConnectionError` (from
-   `orchestration/planner/planner.js`), and `FixtureConnector` (from
-   `connector-sdk/fixture/fixture-connector.js`) — the pieces this task's
-   own command needs, plus anything else already exported from those
-   modules that a consumer would reasonably expect at the package root
-   (use judgment consistent with `packages/shared/src/index.ts`'s "re-export
-   the public surface" framing, but do not spend time auditing every
-   engine-internal symbol; the four named above are the hard requirement).
-2. **Register one new VS Code command** (e.g. `paritylens.runComparison`)
-   in `packages/extension/src/activation/activate.ts` (extends T-10's
-   ownership) plus a new `contributes.commands` entry in
-   `packages/extension/package.json`, that:
-   - Prompts the user (via `vscode.window.showOpenDialog` or a simple
-     `showQuickPick`/`showInputBox` — your judgment on the simplest correct
-     UX, this is not a polished feature) to select a `.paritylens` YAML
-     definition file from the open workspace.
-   - Reads the file, calls `parseDefinition`.
-   - Builds a `ConnectorRegistry` using **`FixtureConnector` only** — real
-     connection-profile resolution (SQL Server/Snowflake/PostgreSQL
-     credentials via `SecretStore`) is explicitly out of scope for this
-     task (no task has built connection-profile management yet; this is
-     unscheduled future work, not something to invent here). Document this
-     limitation plainly in the command (e.g. a code comment and/or a
-     user-visible notice) rather than silently only working for fixture
-     names.
-   - Calls `runComparison`, then `showResultsWebview` with the real result.
-   - On any error (`InvalidDefinitionError`, `UnresolvedConnectionError`,
-     or any other thrown error), shows a `vscode.window.showErrorMessage`
-     with the error's message — do not let an unhandled rejection surface
-     as a generic VS Code crash notification.
+- Update `vitest` version in `package.json`'s `devDependencies` (currently
+  `"vitest": "^2.1.1"`) to `"^3.2.6"` (or the current latest `3.x`, your
+  choice, document which).
+- Run `npm install` to update `package-lock.json`.
+- Run `npm run verify` and confirm it passes with the same test count as
+  before the bump (404 non-skipped, 27 pre-existing live-DB-container
+  skips, 431 total) — no regression, no test file edits needed.
+- Run `npm audit` again and confirm the `vitest`/`@vitest/mocker`/
+  `vite-node` advisories are gone. The unrelated `brace-expansion`
+  (transitive via ESLint's dependency tree) and `esbuild` (transitive via
+  Vite, moderate, dev-server-only) advisories are NOT in scope for this
+  task — pre-existing, already disclosed via M-01 in `PROGRESS-LEDGER.md`
+  since T-01's original review, unrelated to the vitest advisory this task
+  targets. Do not attempt to fix them; if `npm audit fix --force` would be
+  needed for those, that is out of scope.
 
 ## Dependencies
 
-- **Required completed tasks:** T-09/T-15 (planner, COMPLETE/APPROVED),
-  T-08/T-08a (definition parser, COMPLETE/APPROVED), T-10 (extension
-  scaffold/activation, COMPLETE/APPROVED), T-11/T-16/T-16b (webview/export,
-  COMPLETE/APPROVED), T-04 (FixtureConnector, COMPLETE/APPROVED).
-- **Required decisions or approvals:** NONE beyond this brief — this is a
-  bounded integration-gap fix, not a scope change to any approved
-  deliverable.
-- **Environment:** fixture-only, same as most prior tasks. No WSL/Docker
-  containers needed.
+- **Required completed tasks:** NONE — this is a dependency-version bump,
+  not a code change depending on prior task interfaces.
+- **Required decisions or approvals:** NONE beyond this brief — the owner
+  already selected "fix now via a bounded task" when presented with this
+  finding during the release security review.
+- **Environment:** No WSL/Docker containers needed.
 
 ## Files owned
 
-- `packages/engine/src/index.ts` (currently T-01's placeholder — this task
-  is the first to give it real content)
-- `packages/extension/src/activation/activate.ts` (extends T-10's
-  ownership — the only permitted edit is adding the new command
-  registration; do not restructure `activate()`'s existing tree-view/
-  SecretStore wiring)
-- `packages/extension/package.json` (`contributes.commands` array only —
-  do not edit `activationEvents`, `contributes.views`, or any other field)
+- `package.json` (root — `devDependencies.vitest` version only)
+- `package-lock.json` (regenerated by `npm install`, not hand-edited)
 
-Do not touch any file inside `packages/engine/src/comparison-core/**`,
-`packages/engine/src/connector-sdk/**` (other than importing from
-`fixture/fixture-connector.js`, read-only), `packages/engine/src/orchestration/**`
-(other than importing, read-only), `packages/extension/src/webview/**`,
-`packages/extension/src/export/**`, or `packages/extension/src/views/**` —
-this task imports and calls existing functions, it does not modify any of
-their internals.
+Do not touch any file under `packages/**` — this task is a version bump
+only, no application code should need to change for a same-major-version
+dependency update. If it does, stop and report rather than making the
+change.
 
 ## Interfaces
 
-| Direction | Interface | Contract | Producer or consumer |
-| --- | --- | --- | --- |
-| Consumed | `parseDefinition`, `runComparison`, `ConnectorRegistry`, `FixtureConnector` | Existing, complete, already tested in isolation | T-08/T-09/T-04 (producers) |
-| Consumed | `showResultsWebview`, `renderResultsHtml` | Existing, complete, already tested against hand-built `ComparisonResult` literals | T-11/T-16 (producers) |
-| Produced | `@paritylens/engine`'s real package-root export surface | `packages/engine/src/index.ts` re-exports the symbols named in Scope item 1 above | This task (producer) |
-| Produced | `paritylens.runComparison` VS Code command | Registered in `activate()`, appears in the command palette, end-to-end wires fixture-backed comparison runs to the results webview | This task (producer) |
+None — this task changes a devDependency version pin only, no interface
+is consumed or produced.
 
 ## Prohibited changes
 
-- Do not modify any comparison-core, connector-sdk, orchestration, webview,
-  or export logic — this task wires existing, already-correct pieces
-  together. If wiring reveals a real shape mismatch (it is not expected
-  to, per the integration probe's findings), stop and flag it as a
-  blocker rather than patching the mismatched side yourself.
-- Do not attempt real connection-profile resolution (SQL Server/Snowflake/
-  PostgreSQL credentials) — fixture-backed registries only, explicitly
-  disclosed as a known limitation.
-- Do not expand scope without a revised task brief and ledger decision.
+- Do not touch `esbuild`/`brace-expansion`/`vite` version pins — those are
+  a separate, already-disclosed, pre-existing finding (M-01) outside this
+  task's scope.
+- Do not jump to `vitest@4.x` even though `npm audit fix --force` suggests
+  it — the brief requires staying on `3.x` to avoid an unnecessary
+  breaking-change risk during a release-phase task.
+- Do not modify any test file to accommodate the bump — if the bump
+  requires test changes, that's a signal to stop and report, not a
+  green light to adapt tests.
 
 ## Red-state evidence
 
-- **Test or check to add:** a test asserting the new command handler
-  function (extract it as an exported, directly-testable function separate
-  from the raw `vscode.commands.registerCommand` callback, same pattern
-  T-10/T-11 already use for testability without `@vscode/test-electron`)
-  runs `parseDefinition` → `runComparison` → `showResultsWebview` against a
-  real `.paritylens`-shaped YAML string and a `FixtureConnector`-backed
-  registry, and fails because the function doesn't exist yet.
-- **Command:** `npx vitest run packages/extension/src/activation`
-- **Expected failure reason:** Function/export does not exist yet.
+- **Check to add:** none in the traditional red/green sense — this is a
+  dependency-version task, not a behavior change. The "red state" is
+  `npm audit`'s current output showing the `vitest`/`@vitest/mocker`/
+  `vite-node` critical/moderate advisories; capture this exact output
+  before making the change.
+- **Command:** `npm audit`
+- **Expected before-state:** 6 vulnerabilities (3 moderate, 2 high, 1
+  critical) as currently recorded, including the `vitest` critical entry.
 
 ## Green-state and full verification
 
-- **Focused command:** `npx vitest run packages/extension/src/activation`
+- **Focused command:** `npm audit` (confirm `vitest`/`@vitest/mocker`/
+  `vite-node` advisories are gone; `brace-expansion`/`esbuild` are
+  expected to remain, out of scope)
 - **Full command:** `npm run verify`
-- **Expected evidence:** the new command handler, called directly (not
-  through the VS Code command palette, consistent with how T-10/T-11 test
-  activation-adjacent code without a real extension host), produces a real
-  `ComparisonResult` from the `sqlserver-customer` (or another seeded)
-  fixture pair and passes it to `showResultsWebview`/`renderResultsHtml`
-  without error. Also add or extend a test proving `packages/engine/src/index.ts`
-  actually exports the four required symbols (e.g. a test file in
-  `packages/engine/src` importing from `./index.js` and asserting each
-  export is defined) — this is the direct evidence for Scope item 1, since
-  a missing export would otherwise only surface as a downstream import
-  failure in `packages/extension`. All previously passing tests (396 as of
-  T-16b/T-21) still pass with no regression. `npm run verify` exits 0.
+- **Expected evidence:** `npm run verify` exits 0 with 404 passed, 27
+  pre-existing skips (431 total) — identical count to the pre-bump
+  baseline, proving no behavioral regression from the version bump.
 
 ## Handoff
 
@@ -169,17 +108,10 @@ their internals.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-22-engine-export-and-run-command`
+- **Commit or patch checkpoint:** Branch `task/T-23-vitest-security-bump`
 
-**Note to reviewer:** this task's central risk is scope discipline, not
-correctness of any comparison logic (all of that is pre-existing and
-already reviewed). Confirm: (1) no file outside the three declared owned
-paths was touched; (2) `packages/engine/src/index.ts`'s new exports are
-genuinely re-exports only, no new logic; (3) the command handler correctly
-surfaces `InvalidDefinitionError`/`UnresolvedConnectionError` as a VS Code
-error message rather than an unhandled rejection (construct an adversarial
-case yourself — a malformed YAML file, and a YAML file referencing an
-unregistered connection name — and confirm both produce a clean,
-non-crashing error message rather than a thrown/unhandled exception); (4)
-the fixture-only limitation is genuinely disclosed to the user, not just in
-a code comment nobody sees at runtime.
+**Note to reviewer:** confirm directly (don't trust the report) that (1)
+`npm audit`'s vitest-related advisories are actually gone after the bump,
+(2) the test count is unchanged from the pre-bump baseline (404/27/431),
+(3) no file outside `package.json`/`package-lock.json` was touched, and
+(4) the version landed in the `3.x` line, not `4.x`.
