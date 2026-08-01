@@ -27,7 +27,13 @@
           "name": "Data Parity"
         }
       ]
-    }
+    },
+    "commands": [
+      {
+        "command": "paritylens.runComparison",
+        "title": "ParityLens: Run Comparison"
+      }
+    ]
   },
   "scripts": {
     "test": "vitest run"
