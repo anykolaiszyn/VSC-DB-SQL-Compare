@@ -27,6 +27,15 @@ tracked for [TASK ID])` with the specific future task that owns
 addressing it, rather than leaving it open with no owner or silently
 dropping it from the table once its originating task is complete.
 
+Once this table grows past comfortable single-glance scanning (rule of
+thumb: 15-20+ rows), move rows whose status is a terminal `RESOLVED` (not
+`OPEN (accepted, ...)` — those stay here, they are still live) to a
+`FINDINGS-ARCHIVE.md` at the project root, keeping the same row shape.
+Leave a one-line pointer at the top of this section noting the archive
+exists. Do this at a task reconciliation boundary, never mid-task — it is
+a housekeeping move, not something that should compete with an active
+task's own ledger edits.
+
 ## Blockers and dependencies
 
 | Item | Blocking effect | Owner | Needed action | Date recorded |

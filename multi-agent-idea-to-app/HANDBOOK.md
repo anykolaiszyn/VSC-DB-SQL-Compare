@@ -166,6 +166,17 @@ Quality is a chain of evidence, not a statement that a task "looks done."
 - [ ] Real-input and release work protect read-only sources, constrain output
   paths, and reconcile reports, counts, and artifacts.
 
+Every task gets the full brief/implement/review chain above — that is not
+negotiable. What can scale with risk is how hard the review leans in: a
+task with a real safety property to verify (a read-only guarantee, a
+row-cap enforcement, an injection surface) warrants the reviewer's full
+adversarial-probing effort regardless of how small the change looks; a
+low-risk, easily-inspected task (pure data, a rename, a doc-only fix)
+does not need the same depth of independent re-derivation to reach a
+trustworthy APPROVED. Note the intended review depth in the task brief's
+handoff section (see [agents/orchestrator.md](agents/orchestrator.md)
+step 2) rather than leaving it for the reviewer to guess.
+
 ### Parallel execution lanes
 
 Default is sequential: **one active task per execution lane**. A normal

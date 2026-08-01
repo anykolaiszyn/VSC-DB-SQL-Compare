@@ -174,7 +174,10 @@ For each task ID in the approved implementation plan, in dependency order:
    resolved, note which downstream tasks are now unblocked, record
    Minor/informational findings that don't block anything but should be
    traceable, and clear the "one active task" slot. Delete the merged
-   task branch. Push, if the project's workflow does that per task.
+   task branch. Push, if the project's workflow does that per task. If the
+   open-findings table has grown past comfortable scanning, this is also
+   the point to apply the archiving convention in
+   `templates/PROGRESS-LEDGER.md`'s open-findings section — never mid-task.
 9. **Session maintenance: compact now — this is a hard gate, not a
    suggestion.** Do not proceed to step 10 without either compacting or
    explicitly telling the human you are deliberately deferring it and why.
