@@ -12,9 +12,11 @@
     "@duckdb/node-api": "^1.5.5-r.2",
     "@paritylens/shared": "*",
     "mssql": "^12.7.0",
+    "pg": "^8.16.0",
     "yaml": "^2.9.0"
   },
   "devDependencies": {
-    "@types/mssql": "^12.3.0"
+    "@types/mssql": "^12.3.0",
+    "@types/pg": "^8.11.0"
   }
 }
