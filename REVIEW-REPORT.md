@@ -1,256 +1,262 @@
-# ParityLens — Review Report T-15
+# ParityLens — Review Report T-16
 
 ## Review independence statement
 
-This review was performed by a fresh reviewer instance with no memory of
-implementing T-15. All findings below come from reading the actual diff and
-current source on `task/T-15-orchestration-phase2` (commit `724a514`, on top
-of `main` at `65e3291`), re-running verification independently, and writing
-and executing adversarial spy-connector tests that are **not** copies of the
-implementer's own tests. `IMPLEMENTATION-REPORT.md`'s claims were treated as
-assertions to verify, not evidence.
+This review was performed by a separate agent instance from whoever
+implemented T-16, with no memory of writing this code. All findings below
+are based on direct inspection of the actual diff/source at commit
+`f087404` on branch `task/T-16-diff-viewer-export`, my own fresh test runs,
+and my own independently constructed adversarial path-traversal tests and
+hand-built `ComparisonResult` fixture — none of which reuse the
+implementer's fixture or test file. `IMPLEMENTATION-REPORT.md`'s claims
+were treated as things to verify, not trust.
 
 ## Scope reviewed
 
-- `packages/engine/src/orchestration/planner/planner.ts` (diff vs `main`)
-- `packages/engine/src/orchestration/planner/planner.test.ts` (diff vs `main`)
-- `IMPLEMENTATION-REPORT.md`
-- `TASK-BRIEF.md` (sole authority for scope/interfaces)
-- Supporting reads: `packages/engine/src/comparison-core/volume/volume.ts`
-  (`evaluateTolerance`), `packages/engine/src/orchestration/definition/definition.ts`
-  (`ParityChecks.rowCount.tolerance` shape), `packages/engine/fixtures/sqlserver-customer.ts`
-  (fixture row-count facts), `packages/shared/src/connector.ts` /
-  `packages/shared/src/types.ts` (`DataPlatformConnector`, `RecordBatch`,
-  `ExecutionOptions`), `PROGRESS-LEDGER.md` (T-13-01/T-14-02 carried-forward
-  findings).
+- `TASK-BRIEF.md` (full text) and cross-referenced `DESIGN-SPEC.md`'s
+  "Write safety" principle it cites.
+- Full diff `main..task/T-16-diff-viewer-export` (8 files changed, per
+  `git diff main task/T-16-diff-viewer-export --stat`).
+- Actual current source of all changed files:
+  `packages/extension/src/webview/resultsWebview.ts`,
+  `packages/extension/src/webview/resultsWebview.test.ts`,
+  `packages/extension/src/export/exporters.ts`,
+  `packages/extension/src/export/exporters.test.ts`,
+  `packages/extension/src/export/writeExport.ts`,
+  `packages/extension/package.json`, `package-lock.json`.
+- `PROGRESS-LEDGER.md`'s T-16 row and decision-log entries for the
+  SQL-preview deferral and task activation.
+- `packages/shared/src/result.ts` (to verify `AggregateDifference`/
+  `RowDifference`/`RowColumnDifference` field names actually match what the
+  webview/export code renders).
 
 ## Findings
 
-### Critical
+**NONE at Critical or Important severity. NONE at Minor severity.**
 
-NONE.
-
-### Important
-
-NONE.
-
-### Minor
-
-| ID | Description | Evidence | Resolution |
-| --- | --- | --- | --- |
-| T-15-01 | `IMPLEMENTATION-REPORT.md`'s "Patch or commit identity" section cites commit `70e1fa29045269b2539454201818d3bca70fdbad` as the T-15 commit. That hash does not exist anywhere in this repository (`git log --all --oneline \| grep 70e1fa` returns nothing) and is not even a valid SHA-1 length (41 hex characters instead of 40). The actual commit is `724a514211589b0d278394a434806df2bc7bbc54` ("T-15: wire volume and row-level checks into runComparison (Phase 2)"). | `git show --stat 724a514` confirms the real commit; `git log --all --oneline` confirms no `70e1fa2...` commit exists. | Cosmetic/report-accuracy only — does not affect code correctness, does not misstate a requirement, and does not match the pattern this project's history treats as serious (T-07's I-02: a paraphrase that silently dropped a real requirement). Track as a report-hygiene note; no code change required. Does not block approval. |
+| ID | Severity | Location | Description | Resolution |
+| --- | --- | --- | --- | --- |
+| — | — | — | No findings | — |
 
 ## Verification performed
 
-### Fresh full verification (independent re-run)
+### 1. Fresh full-suite verification (not trusting reported numbers)
 
 ```
+npx vitest run packages/extension
+  → 6 files, 24 tests passed (matches IMPLEMENTATION-REPORT.md's claim exactly)
+
 npm run verify
+  → typecheck clean, lint clean, vitest run: 18 test files, 359 tests passed, exit 0
+  → matches IMPLEMENTATION-REPORT.md's claimed 359 (350 baseline + 9 new) exactly
 ```
 
-Result: `tsc -b --force` clean, `eslint .` clean, `vitest run` →
-**Test Files 17 passed (17)**, **Tests 350 passed (350)**, shell exit code
-`0`. This matches `IMPLEMENTATION-REPORT.md`'s claimed 350/350 exactly — no
+Both my own runs match the implementer's reported numbers exactly. No
 discrepancy.
 
-### Scope check
+### 2. My own adversarial path-traversal probes against `writeExport`
+
+I wrote an independent test file (`packages/extension/src/__reviewer_probe__/reviewer-probe.test.ts`,
+deleted after use — confirmed via `git status --short` showing a clean
+tree with no residue) containing five path-traversal/containment probes
+distinct from the implementer's three `writeExport` tests:
+
+1. A deep relative traversal (`subdir/../../../etc-passwd-equivalent.txt`)
+   climbing out past the root via multiple `..` segments — **rejected**
+   (threw), and confirmed nothing was written at the computed
+   escape-target path as a side effect.
+2. An absolute path pointing into a sibling temp directory outside the
+   root — **rejected** (threw), confirmed no file appeared at the
+   sibling path.
+3. Writing to the root directory itself (`"."`, no filename) — **rejected**
+   (threw), consistent with the implementer's documented judgment call
+   that a root is not "under" itself.
+4. An absolute path constructed by resolving one level above the OS temp
+   directory (clearly outside any plausible safe root) — **rejected**
+   (threw), confirmed no file was created.
+5. Control case: a legitimately nested subdirectory path
+   (`exports/2026/results.csv`) inside the root — **succeeded**, file
+   confirmed present at the expected nested location (proves the
+   validation isn't simply rejecting everything).
+
+All 8 tests in this probe file (5 traversal probes + 3 content-sampling
+tests below) passed on the first run against the actual `writeExport`
+implementation. `writeExport`'s containment logic (`path.relative(root,
+target)` checked for `""`, `".."`, `"..' + sep`-prefix, or
+`isAbsolute(rel)`) correctly rejects every traversal shape I constructed,
+including one the implementer's own three tests didn't cover (multi-level
+`../../../` climb, and the bare-root-as-target case combined with a
+control "must still work" case in the same run to rule out a
+reject-everything false-positive).
+
+### 3. `renderResultsHtml` purity / no new `vscode` import
 
 ```
-git diff main..task/T-15-orchestration-phase2 --name-only
-```
-→ `IMPLEMENTATION-REPORT.md`, `packages/engine/src/orchestration/planner/planner.test.ts`,
-`packages/engine/src/orchestration/planner/planner.ts`. Confirmed via a
-second targeted diff that **zero** changes exist under
-`comparison-core/volume/**`, `comparison-core/row-level/**`,
-`comparison-core/mapping/**`, `comparison-core/normalization/**`,
-`orchestration/definition/definition.ts`, `packages/shared/src/result.ts`,
-or `packages/extension/**` — all in-bounds per the brief's Files
-owned/Prohibited changes sections.
-
-Read the full `planner.ts` diff line-by-line: T-09's Phase-1 code (steps
-1-4 — connection resolution, Layer-1 connectivity short-circuit, schema
-check, `runProfileChecks`) is untouched except for header-comment wording.
-The only functional changes are: two new `if` blocks (steps 5/6) inserted
-between the existing profile-check block and the final result assembly; the
-`allFindings` array literal extended with `...aggregateDifferences,
-...rowDifferences`; the returned object's `rowCounts`/`aggregateDifferences`/
-`rowDifferences` fields switched from T-09's hardcoded empty literals to the
-new local variables; two new private helpers (`fetchAllRows`,
-`DEFAULT_ROW_LEVEL_MAX_ROWS`/`DEFAULT_ROW_LEVEL_TIMEOUT_MS` constants)
-appended after the function. `summarizeFindings`/`deriveStatus` themselves
-are byte-for-byte unchanged — Phase-2 findings flow through the same
-severity-bucket logic Phase-1 findings already used, not a duplicate/parallel
-computation.
-
-### Adversarial probe 1 — no silent execution (independently constructed, not reusing implementer's tests)
-
-Built a spy `DataPlatformConnector` implementation recording every
-`executeQuery` call (input + options), registered via a fresh
-`ConnectorRegistry`, and ran `runComparison` against three definitions:
-
-- Both `row_count.enabled: false` and `row_level.enabled: false`: **zero**
-  `executeQuery` calls on either connector. `rowCounts` = `{source:0,
-  target:0, difference:0}`, `aggregateDifferences` = `[]`, `rowDifferences`
-  = `[]` — exact Phase-1 defaults, confirmed.
-- Only `row_count.enabled: true`: exactly **one** `executeQuery` call per
-  side, SQL contains `COUNT` and does **not** match `/SELECT\s+\*/` —
-  confirms no row-fetch query fires when row-level is disabled.
-- Only `row_level.enabled: true`: exactly **one** `executeQuery` call per
-  side, SQL matches `/SELECT\s+\*/` and does **not** contain `COUNT` —
-  confirms no count query fires when row-count is disabled; `rowCounts`/
-  `aggregateDifferences` stayed at Phase-1 defaults as expected.
-
-All 3 assertions passed on first correct run (an initial run had a bug in my
-own test's mock — an empty row-batch array caused `compareVolume`'s
-"returned no rows" guard to legitimately throw; fixed by yielding a count
-row, which is a defect in my probe, not the implementation).
-
-### Adversarial probe 2 — error propagation
-
-Constructed a spy connector whose `executeQuery` throws before yielding any
-batch, for both the row-count path and the row-level path independently.
-Confirmed via `await expect(runComparison(...)).rejects.toThrow(...)` that:
-
-- A throw inside `compareVolume`'s underlying query (row-count enabled)
-  propagates as a rejected `runComparison` promise — not swallowed, not
-  converted to a `"failed"`-status result.
-- A throw inside `fetchAllRows`'s underlying query (row-level enabled)
-  propagates identically.
-
-This matches what the code actually does: `await compareVolume(...)` and
-`await Promise.all([fetchAllRows(...), fetchAllRows(...)])` are both called
-with no surrounding `try/catch` in `planner.ts`, so a rejection unwinds
-`runComparison`'s returned promise directly, exactly as
-`IMPLEMENTATION-REPORT.md` describes and exactly as the in-line comment at
-the `compareVolume` call site (lines ~183-197 of `planner.ts`) documents.
-
-**Judgment on reasonableness:** this is a deliberate, documented asymmetry
-versus the Layer-1 connectivity short-circuit (which *does* catch a
-connectivity failure and converts it to a `"failed"`-status result). The
-brief explicitly left this unspecified and asked the reviewer to judge it,
-not prescribe a particular answer. The chosen behavior is internally
-consistent with T-09's own pre-existing precedent — the schema/profile
-checks above steps 5/6 in the same function already have zero try/catch
-around their `getSchema`/`profileColumn` calls, so a schema-check query
-failure already propagates as an uncaught rejection today. Extending that
-same "let it throw" behavior to volume/row-level, while reserving the
-catch-and-report pattern specifically for the Layer-1 "can we even connect"
-question (which Idea Prompt.md's own design language frames as "a basic
-execution status" fact rather than an error), is a reasonable and
-internally consistent choice, not an inconsistency. It is documented both
-in the code comment and in the report's Assumptions/Risks section, satisfying
-the brief's "not unspecified-and-silent" bar. Noting for awareness (not a
-finding): any future task wiring `runComparison` into a UI-facing async
-context (T-16, the webview) will need its own try/catch around the
-`runComparison` call to convert a Phase-2 query failure into a user-visible
-error state, since `runComparison` itself will reject rather than resolve
-with a `"failed"` result in that case. This is not T-15's problem to solve
-and is not required scope here — flagging only as consumer guidance.
-
-### Adversarial probe 3 — T-13-01 resolution verification
-
-Read `volume.ts`'s `evaluateTolerance` directly (lines 148-157):
-
-```ts
-function evaluateTolerance(difference, differenceRate, tolerance) {
-  if (tolerance?.percentage !== undefined) {
-    return Math.abs(differenceRate) > tolerance.percentage;
-  }
-  if (tolerance?.absolute !== undefined) {
-    return Math.abs(difference) > tolerance.absolute;
-  }
-  return difference !== 0;
-}
+git diff main task/T-16-diff-viewer-export | grep -n 'from "vscode"'
+  → one match: `import type * as vscode from "vscode";` (line 874 of the
+    diff, inside resultsWebview.ts) — this is the pre-existing T-11
+    type-only import (verified: the diff shows it as unchanged context,
+    not an added `+` line), not a new runtime import.
 ```
 
-Confirmed independently: `percentage` is checked first and, if defined,
-short-circuits the function — `absolute` is only ever consulted when
-`percentage` is `undefined`. This matches the report's claim exactly
-("percentage takes precedence whenever both are configured") — no
-discrepancy found on re-derivation.
+Direct read of `packages/extension/src/webview/resultsWebview.ts`
+confirms: the only `vscode` reference in the whole file is line 1's
+`import type * as vscode from "vscode"`, used solely for type annotations
+in `showResultsWebview`'s parameters. `renderResultsHtml` itself (lines
+178–205) has no `vscode` reference anywhere in its body — it only calls
+the four internal render-table helpers and returns a template string.
+Confirmed pure: no I/O, no `vscode.*` API call, deterministic output from
+its single `ComparisonResult` argument.
 
-Confirmed the planner does **not** reimplement this logic: `planner.ts`
-passes `definition.checks.rowCount?.tolerance` straight through as
-`compareVolume`'s 5th positional argument, unmodified, with a comment at the
-call site explaining the precedence rule for documentation purposes only —
-no planner-side branching on `percentage`/`absolute` exists. Cross-checked
-`definition.ts` lines 419-429: `ParityChecks.rowCount.tolerance` is parsed
-as `{percentage?: number; absolute?: number}`, structurally identical to
-`VolumeTolerance`, so the "passed straight through" claim holds — no
-reshaping needed or performed.
+### 4. SQL-preview deferral — zero SQL-generation code check
 
-### Adversarial probe 4 — status/summary folding for Phase-2-only findings
+```
+git diff main task/T-16-diff-viewer-export | grep -inE "SELECT |buildQuery|generateSql|buildSql"
+```
 
-Constructed a definition with `schema.enabled: false`, `profile` absent
-(defaults disabled), and only `row_count.enabled: true`, using a spy
-connector forcing source count 10 / target count 20 (no tolerance
-configured → any nonzero difference fails per `evaluateTolerance`'s
-`difference !== 0` fallback). Result: `rowCounts` =
-`{source:10,target:20,difference:10}`, **`status` = `"failed"`**,
-**`summary.failed` >= 1**, `schemaDifferences` = `[]`, `profileDifferences`
-= `[]`. This proves the new `aggregateDifferences`/`rowDifferences` spreads
-into `allFindings` (planner.ts lines 244-249) are genuinely consumed by the
-unmodified `summarizeFindings`/`deriveStatus` functions, not computed or
-ignored separately.
+The only hits are inside the diff hunk for `IMPLEMENTATION-REPORT.md`
+(pre-existing T-15 report text being replaced, describing T-15's
+`fetchAllRows`/`compareVolume` work — not new code introduced by this
+task). Re-ran the same grep restricted to `packages/` paths only and got
+zero hits. Confirmed by direct read of `exporters.ts` and `writeExport.ts`
+(the two new files): neither contains any SQL string construction,
+`buildXQuery`-style function, or reference to a query-generation concept —
+both only consume `ComparisonResult`'s already-computed data. No
+`packages/engine/**` files appear in `git diff main
+task/T-16-diff-viewer-export --name-only`. The deferral recorded in
+`PROGRESS-LEDGER.md`'s decision log (2026-07-31 entry: "Descoped T-16's
+'SQL preview panel' requirement... deferred to a future follow-up task")
+was honored as a full removal, not a partial/reinterpreted implementation.
 
-### Fixture-fact cross-check
+### 5. Independent output sampling against my own hand-built fixture
 
-Verified `packages/engine/fixtures/sqlserver-customer.ts`'s header comment
-independently states "source has 6 rows, target has 7 rows" and "CustomerID
-4 exists in source but not target" — matching both the implementer's test
-assertions (`{source:6,target:7,difference:1}`,
-`category: "missing-from-target"`) and the fresh `npm run verify` pass.
+I constructed `REVIEWER_FIXTURE`, a `ComparisonResult` independent of
+`exporters.test.ts`'s `SAMPLE_RESULT` — different comparison name
+(`"reviewer-check"`), different run ID, different column names
+(`CustomerId`/`Region`/`Status`), a `type-mismatch` schema finding (a kind
+the implementer's fixture didn't exercise — theirs used
+`missing-in-target`), a `distinctCount` profile metric (theirs used
+`nullPercentage`), and two row differences including one
+`missing-from-target` case with no `columnDifferences` (theirs only had
+one `matched-key-differing-values` row). Assertions and results:
 
-## Disposition of prior/carried-forward findings
+- `exportToCsv(REVIEWER_FIXTURE)` — contained `"CustomerId"`,
+  `"type-mismatch"`, `"INT"`, `"BIGINT"`, `"ZZ-999"`, `"YY-001"`,
+  `"missing-from-target"`, and the semicolon-joined column-diff format
+  `"Status: Open -> Closed"`. All passed — confirms actual field values
+  land in the correct CSV columns, not just non-empty output.
+- `exportToJson(REVIEWER_FIXTURE)` — parsed back with `JSON.parse` and
+  checked `runId === "run-REV-01"`,
+  `rowDifferences[1].keyValues` deep-equal `["YY-001"]`, and
+  `aggregateDifferences[0].differenceRate === -1`. All passed — confirms
+  a genuine round-trip, not string-containment alone.
+- `exportToMarkdown(REVIEWER_FIXTURE)` — contained `"reviewer-check"`,
+  `"ZZ-999"`, `"Status: Open -> Closed"`, and the exact expected Markdown
+  table row `"| Warning | CustomerId | type-mismatch | INT | BIGINT |"`,
+  confirming column ordering and value placement inside the rendered
+  table, not merely presence of the substrings anywhere in the document.
 
-- **T-13-01** (Minor, "undocumented precedence when `tolerance` supplies
-  both `percentage` and `absolute`"): **RESOLVED.** Verified against
-  `volume.ts`'s actual `evaluateTolerance` source (not the report's
-  characterization) that percentage wins when both are set, and confirmed
-  the planner documents this at the call site without reimplementing or
-  overriding it. `PROGRESS-LEDGER.md`'s T-13-01 row explicitly deferred
-  this documentation step to T-15; that instruction is satisfied.
-- **T-14-02** (Minor, already resolved inside `compareRows` per
-  `PROGRESS-LEDGER.md`, "no action needed here beyond passing `rules`
-  through"): confirmed `planner.ts`'s `compareRows` call passes
-  `definition.rules` as the 5th argument, so the fallback
-  (`options.numericTolerance?.[col] ?? rules[col]?.numericTolerance`)
-  inside `row-level.ts` is reachable end-to-end. No `RowCompareOptions`
-  object with a distinct `numericTolerance` map is constructed by the
-  planner, which is correct — inventing one would have been unauthorized
-  scope expansion per the brief's own "Do not implement a distinct
-  informational-only row-count tolerance mode" caution applied by analogy.
+All 3 sampling tests plus all 5 traversal probes passed (8/8) on first
+run.
+
+### 6. `@types/node` devDependency judgment
+
+Confirmed via `git diff` on `packages/extension/package.json`: the
+addition is exactly one line under `"devDependencies"` —
+`"@types/node": "^22.20.1"` — not under `"dependencies"`. No runtime
+`node:fs`/`node:path`/`node:os` import appears anywhere outside
+`packages/extension/src/export/writeExport.ts` (the legitimate file-I/O
+module) and `packages/extension/src/export/exporters.test.ts` (test-only,
+for building/cleaning up temp directories). Verified this with a targeted
+search across the diff: the only `node:` import sites are those two
+files. `package-lock.json`'s 21-line diff is the expected lockfile
+fallout of a single new devDependency install (adds `@types/node` and its
+`undici-types` transitive dependency).
+
+Judgment: reasonable, not a red flag. `writeExport`'s path-traversal
+validation is exactly the kind of security-relevant logic the project's
+own `AGENTS.md`/`DESIGN-SPEC.md` treats with elevated rigor; using
+Node's standard `path.resolve`/`path.relative` under proper ambient types
+is safer than the counterfactual (hand-rolled path parsing without type
+checking, or `@ts-expect-error`-suppressed calls). The brief's own
+Prohibited-changes clause restricts "runtime dependency" additions
+(templating/charting libraries), and `@types/node` ships no runtime code
+and is not bundled into the extension's runtime output. The implementer
+also disclosed this proactively and explicitly rather than burying it,
+consistent with the project's stated expectations for flagged deviations.
 
 ## Scope and ownership check
 
-All changed files fall within `packages/engine/src/orchestration/planner/**`
-(this task's declared ownership) plus `IMPLEMENTATION-REPORT.md` (required
-handoff artifact). No file under any prohibited path was touched. No
-`AggregateDifference`/`RowDifference`/`SchemaDifference`/`ProfileDifference`
-shape was modified in `packages/shared/src/result.ts` — confirmed via `git
-diff` producing no output against that path. `packages/extension/**` is
-untouched — confirmed. This task is genuinely integration-only, as required.
+`git diff main task/T-16-diff-viewer-export --name-only` shows exactly:
+`IMPLEMENTATION-REPORT.md`, `package-lock.json`,
+`packages/extension/package.json`,
+`packages/extension/src/export/exporters.test.ts`,
+`packages/extension/src/export/exporters.ts`,
+`packages/extension/src/export/writeExport.ts`,
+`packages/extension/src/webview/resultsWebview.test.ts`,
+`packages/extension/src/webview/resultsWebview.ts`.
 
-## Final approval status
+- `packages/extension/src/webview/**` and `packages/extension/src/export/**`
+  — both explicitly owned by this brief.
+- `packages/extension/package.json` / `package-lock.json` — minimal,
+  mechanically-forced consequence of the disclosed and justified
+  `@types/node` devDependency addition (see above). Acceptable, noted.
+- `IMPLEMENTATION-REPORT.md` — the brief's own designated report location.
+- Zero files under `packages/engine/**`, `packages/extension/src/activation/**`,
+  `.../views/**`, `.../secrets/**`, `.../statusbar/**` — all correctly
+  untouched, matching the brief's Prohibited-changes and Files-owned
+  sections. `schemaDifferences`/`profileDifferences` rendering functions
+  in `resultsWebview.ts` are byte-for-byte unchanged (confirmed by direct
+  read: `renderSchemaDifferencesTable`/`renderProfileDifferencesTable`
+  match T-11's original structure and are called identically from
+  `renderResultsHtml`).
 
-**APPROVED**
+No unauthorized scope expansion found.
 
-Zero Critical or Important findings. One Minor finding (T-15-01, a
-fabricated/incorrect commit hash in the report's metadata section) does not
-block approval — it has no bearing on code correctness, test evidence, or
-requirement fidelity, and is unlike the T-07 I-02 pattern this project
-treats as serious (a paraphrase that silently drops a real requirement).
-Fresh `npm run verify` independently reproduced the claimed 350/350 tests
-passing with exit code 0. All five of the brief's "scrutinize hardest"
-items were independently probed with reviewer-authored tests (not reused
-from the implementer) and confirmed to behave exactly as claimed: no silent
-execution for disabled checks, correct and reasonable (documented) error
-propagation, an accurately verified T-13-01 resolution, correct
-status/summary folding for Phase-2-only failures, and a clean scope
-boundary with T-09's Phase-1 behavior functionally untouched.
+## Disposition of prior findings this task was meant to resolve
 
-No throwaway test files remain in the working tree — the reviewer's
-adversarial probe file
-(`packages/engine/src/orchestration/planner/__t15-review-probe.test.ts`)
-was deleted after use; `git status` confirms a clean tree aside from this
-report.
+None. T-16's brief does not carry forward any specific open finding from
+`PROGRESS-LEDGER.md` to resolve (X-01 is tracked against "T-16 or the
+first packaging task" as a non-blocking, accepted-open item about
+extension-host smoke testing, not something this task's brief requires it
+to close, and this task did not touch activation/command wiring at all,
+so X-01 remains correctly untouched and still open).
+
+## Additional observations (non-blocking)
+
+- The implementer's own disclosed residual gap — `writeExport`'s
+  containment check does not follow symlinks — is real (Node's
+  `path.resolve` normalizes `.`/`..` but does not resolve symlinks on
+  disk) but is a reasonable, honestly-scoped residual risk consistent with
+  this project's existing "defense in depth" pattern
+  (`assertReadOnlyStatement`'s documented residual gaps per `CLAUDE.md`).
+  The safe output root is application-configured, not attacker-supplied,
+  which further limits the practical exploitability of this gap. Not a
+  blocking finding.
+- No command/UI wiring was added to invoke export from the command
+  palette. The brief treats this as optional ("if strictly necessary")
+  and the implementer's reasoning for omitting it (no red-state test
+  requires it, Interfaces table only requires the functions to exist and
+  be testable) is a correct reading of the brief text. Left as an
+  implementer/orchestrator judgment call for a future task, not a defect
+  in this one.
+
+## Final approval status: APPROVED
+
+Zero Critical, Important, or Minor findings. Fresh verification matches
+the implementer's reported numbers exactly (24/24 focused, 359/359 full,
+`npm run verify` exit 0). My own independently constructed
+path-traversal probes (5 cases, none reused from the implementer's tests)
+all confirm rejection of escaping writes and confirm a legitimate nested
+write still succeeds. My own independently hand-built `ComparisonResult`
+fixture (distinct column names, difference kinds, and metrics from the
+implementer's fixture) confirms CSV/JSON/Markdown exports contain correct
+row/column values in the correct structural positions, not merely
+non-empty output. `renderResultsHtml` remains provably pure with no new
+`vscode` import. Zero SQL-generation code exists anywhere in the diff,
+confirming the SQL-preview deferral was honored as a full removal rather
+than a partial reinterpretation. The `@types/node` devDependency addition
+is judged reasonable: devDependencies-only, types-only, disclosed
+proactively, and directly necessary for the brief's own required
+`writeExport` interface. Scope is fully contained within the brief's file
+ownership.
