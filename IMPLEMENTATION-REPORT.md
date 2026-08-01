@@ -210,8 +210,8 @@ No test file needed any change — confirmed via `git status`/`git diff
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see the commit created on
-  this branch for the final hash)
+- **Patch or commit:** `fda5e95` (`T-23: bump vitest 2.1.9 -> 3.2.7 to
+  resolve GHSA-5xrq-8626-4rwp`)
 - **Branch or workspace:** `task/T-23-vitest-security-bump`
 
 ## Recommended next step
