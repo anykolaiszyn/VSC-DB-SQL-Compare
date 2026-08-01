@@ -296,7 +296,7 @@ first run.
 ## Patch or commit identity
 
 - **Branch:** `task/T-19-postgres-connector`
-- **Commit:** (recorded after this report is committed — see the commit created alongside this file; run `git log -1 --format=%H` on this branch to confirm)
+- **Commit:** `84b49286d4e9ceb40aa5d074b89ad7c437a2c786`
 
 ## Recommended next step
 
