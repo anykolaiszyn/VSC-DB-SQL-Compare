@@ -1,106 +1,89 @@
-# ParityLens — Task Brief T-23
+# ParityLens — Task Brief T-24
 
 ## Objective
 
-Found during the prompt-07 Release security review (2026-08-01): `npm audit`
-reports a critical advisory against `vitest@2.1.9`
-(`GHSA-5xrq-8626-4rwp`, CVSS 9.8 — "When Vitest UI server is listening,
-arbitrary file can be read and executed"), affecting versions `<3.2.6`.
+Found during the prompt-07 Release license inventory (2026-08-01): none of
+the four `package.json` files in this repo (root, `packages/shared`,
+`packages/engine`, `packages/extension`) declare a `license` field. Every
+one of this project's ~100 transitive runtime dependencies is permissively
+licensed (MIT/BSD-3-Clause/Apache-2.0/ISC/0BSD, confirmed via a full offline
+scan of `node_modules` — no copyleft/restrictive license anywhere), but this
+project's own code has never had an explicit license decision recorded
+until now.
 
-**Exploitability assessment (already confirmed, do not re-derive):**
-`vitest` is a root `devDependency` only (never a dependency of
-`packages/extension`, the package actually built into the shipped
-extension artifact). `@vitest/ui` is not installed anywhere in this repo
-(`npm ls @vitest/ui` returns empty). No script, config, or command in this
-project ever passes `--ui` or otherwise starts the Vitest UI server —
-confirmed via `grep` across `package.json` and `vitest.config.*`. The
-vulnerable code path is never invoked in this project's actual usage. This
-is a real advisory against the exact installed version, worth fixing as
-release hygiene, but not an exploitable finding against anything this
-project ships or runs.
-
-Bump `vitest` to `3.2.6` or later (latest `3.x` at time of writing:
-`3.2.7`) — this resolves the advisory while staying on the `3.x` major
-version, avoiding `npm audit fix --force`'s suggested jump to the breaking
-`vitest@4.1.10`. Confirm the entire test suite still passes unmodified
-after the bump — a same-major-version bump should not require any test
-code changes; if it does, stop and report rather than adapting tests to
-paper over a real behavioral change.
+**Decision (owner confirmed directly when asked):** MIT, matching the
+license family already used by every dependency this project pulls in and
+consistent with the VS Code marketplace's most common extension license.
 
 ## Scope
 
-- Update `vitest` version in `package.json`'s `devDependencies` (currently
-  `"vitest": "^2.1.1"`) to `"^3.2.6"` (or the current latest `3.x`, your
-  choice, document which).
-- Run `npm install` to update `package-lock.json`.
-- Run `npm run verify` and confirm it passes with the same test count as
-  before the bump (404 non-skipped, 27 pre-existing live-DB-container
-  skips, 431 total) — no regression, no test file edits needed.
-- Run `npm audit` again and confirm the `vitest`/`@vitest/mocker`/
-  `vite-node` advisories are gone. The unrelated `brace-expansion`
-  (transitive via ESLint's dependency tree) and `esbuild` (transitive via
-  Vite, moderate, dev-server-only) advisories are NOT in scope for this
-  task — pre-existing, already disclosed via M-01 in `PROGRESS-LEDGER.md`
-  since T-01's original review, unrelated to the vitest advisory this task
-  targets. Do not attempt to fix them; if `npm audit fix --force` would be
-  needed for those, that is out of scope.
+- Add `"license": "MIT"` to all four `package.json` files: root
+  (`package.json`), `packages/shared/package.json`,
+  `packages/engine/package.json`, `packages/extension/package.json`.
+- Add a `LICENSE` file at the repo root containing the standard MIT
+  license text, with the copyright line naming the project owner
+  (`alex.nykolaiszyn@gmail.com` — use "Alex Nykolaiszyn" or the ledger's
+  recorded project-owner identity for the copyright holder name; if
+  genuinely ambiguous, use the email's implied name and note the
+  assumption in `IMPLEMENTATION-REPORT.md` rather than guessing silently)
+  and the current year (2026).
+- Do not add per-package `LICENSE` files inside `packages/*/` — a single
+  root-level `LICENSE` file covering the whole repository is standard
+  practice for an npm-workspaces monorepo where every package shares one
+  license.
 
 ## Dependencies
 
-- **Required completed tasks:** NONE — this is a dependency-version bump,
-  not a code change depending on prior task interfaces.
-- **Required decisions or approvals:** NONE beyond this brief — the owner
-  already selected "fix now via a bounded task" when presented with this
-  finding during the release security review.
-- **Environment:** No WSL/Docker containers needed.
+- **Required completed tasks:** NONE.
+- **Required decisions or approvals:** NONE beyond this brief — the
+  license choice was already confirmed directly by the project owner.
+- **Environment:** No WSL/Docker containers needed. This task adds no new
+  npm dependency and requires no network access.
 
 ## Files owned
 
-- `package.json` (root — `devDependencies.vitest` version only)
-- `package-lock.json` (regenerated by `npm install`, not hand-edited)
+- `package.json` (root — `license` field only)
+- `packages/shared/package.json` (`license` field only)
+- `packages/engine/package.json` (`license` field only)
+- `packages/extension/package.json` (`license` field only)
+- `LICENSE` (new file, repo root)
 
-Do not touch any file under `packages/**` — this task is a version bump
-only, no application code should need to change for a same-major-version
-dependency update. If it does, stop and report rather than making the
-change.
+Do not touch any other field in any `package.json`, and do not touch any
+file under `packages/*/src/**`.
 
 ## Interfaces
 
-None — this task changes a devDependency version pin only, no interface
-is consumed or produced.
+None — this task adds metadata only, no code or interface changes.
 
 ## Prohibited changes
 
-- Do not touch `esbuild`/`brace-expansion`/`vite` version pins — those are
-  a separate, already-disclosed, pre-existing finding (M-01) outside this
-  task's scope.
-- Do not jump to `vitest@4.x` even though `npm audit fix --force` suggests
-  it — the brief requires staying on `3.x` to avoid an unnecessary
-  breaking-change risk during a release-phase task.
-- Do not modify any test file to accommodate the bump — if the bump
-  requires test changes, that's a signal to stop and report, not a
-  green light to adapt tests.
+- Do not modify dependency versions, scripts, or any other `package.json`
+  field beyond adding `"license": "MIT"`.
+- Do not add license headers to individual source files — a root
+  `LICENSE` file plus each `package.json`'s `license` field is sufficient
+  and matches this project's existing lack of per-file header convention.
+- Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Check to add:** none in the traditional red/green sense — this is a
-  dependency-version task, not a behavior change. The "red state" is
-  `npm audit`'s current output showing the `vitest`/`@vitest/mocker`/
-  `vite-node` critical/moderate advisories; capture this exact output
-  before making the change.
-- **Command:** `npm audit`
-- **Expected before-state:** 6 vulnerabilities (3 moderate, 2 high, 1
-  critical) as currently recorded, including the `vitest` critical entry.
+- **Check to add:** none in the traditional red/green test sense — this
+  is a metadata-only change. The "red state" is the current absence: run
+  `grep -n '"license"' package.json packages/*/package.json` and confirm
+  it returns no matches before the change, and confirm no `LICENSE` file
+  exists at the repo root (`ls LICENSE` fails) before the change. Capture
+  both outputs verbatim in `IMPLEMENTATION-REPORT.md`.
 
 ## Green-state and full verification
 
-- **Focused command:** `npm audit` (confirm `vitest`/`@vitest/mocker`/
-  `vite-node` advisories are gone; `brace-expansion`/`esbuild` are
-  expected to remain, out of scope)
+- **Focused check:** `grep -n '"license"' package.json packages/*/package.json`
+  returns exactly four matches, each `"license": "MIT"`; `cat LICENSE`
+  shows a well-formed MIT license text with a copyright line.
 - **Full command:** `npm run verify`
-- **Expected evidence:** `npm run verify` exits 0 with 404 passed, 27
-  pre-existing skips (431 total) — identical count to the pre-bump
-  baseline, proving no behavioral regression from the version bump.
+- **Expected evidence:** `npm run verify` exits 0 with the same test count
+  as the current baseline (404 passed, 27 pre-existing skips, 431 total)
+  — a metadata-only change should produce zero test-count change. `npm
+  install` should run without error after the `package.json` edits
+  (confirms valid JSON, no syntax break).
 
 ## Handoff
 
@@ -108,10 +91,14 @@ is consumed or produced.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-23-vitest-security-bump`
+- **Commit or patch checkpoint:** Branch `task/T-24-license-metadata`
 
 **Note to reviewer:** confirm directly (don't trust the report) that (1)
-`npm audit`'s vitest-related advisories are actually gone after the bump,
-(2) the test count is unchanged from the pre-bump baseline (404/27/431),
-(3) no file outside `package.json`/`package-lock.json` was touched, and
-(4) the version landed in the `3.x` line, not `4.x`.
+all four `package.json` files are valid JSON after the edit and each
+declares `"license": "MIT"`, (2) the root `LICENSE` file contains
+genuine, unmodified standard MIT license text (compare against the
+canonical MIT license wording — https://opensource.org/license/mit/ is
+the reference text, though you should already know it, no network access
+needed), (3) no file outside the five declared owned paths was touched,
+and (4) `npm run verify`'s test count is unchanged from the pre-task
+baseline.
