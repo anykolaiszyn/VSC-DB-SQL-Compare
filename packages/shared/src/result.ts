@@ -260,4 +260,21 @@ export interface ComparisonResult {
   aggregateDifferences: AggregateDifference[];
   rowDifferences: RowDifference[];
   execution: ExecutionTiming;
+  /**
+   * T-16b: the SQL strings actually issued for this run's schema/profile/
+   * volume/row-level checks (source and target, per check type run), for the
+   * results webview's SQL preview panel to display. Populated by
+   * `runComparison` (packages/engine/src/orchestration/planner/planner.ts)
+   * from the same builder functions (`buildRowCountSql`, `buildProfileQueries`,
+   * `buildFetchAllRowsSql`) the execution code paths themselves call, so the
+   * previewed SQL and the executed SQL can never independently drift apart
+   * -- the specific risk the original T-16 SQL-preview deferral decision was
+   * written to avoid. Optional and omitted (not an empty array) when no
+   * check that issues SQL ran (e.g. a Layer-1 connectivity failure short-
+   * circuits before any check runs), so a consumer can branch on presence
+   * rather than length to distinguish "no checks ran" from "checks ran but
+   * issued no SQL" (which does not currently happen, but the optionality
+   * keeps that distinction available without a breaking change later).
+   */
+  queriesUsed?: string[];
 }

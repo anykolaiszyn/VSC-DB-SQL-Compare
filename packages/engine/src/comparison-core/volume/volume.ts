@@ -178,14 +178,25 @@ function buildMessage(
   );
 }
 
+/**
+ * T-16b: pure, string-returning builder returning exactly the SQL string
+ * `countRows` below builds and executes -- `countRows` calls this function
+ * directly rather than re-building the string, so the previewed and
+ * executed SQL can never drift apart (per TASK-BRIEF.md's central
+ * correctness property for this task).
+ */
+export function buildRowCountSql(connector: DataPlatformConnector, input: QueryInput): string {
+  const objectRef = resolveObjectReference(connector, input);
+  return `SELECT COUNT(*) AS row_count FROM ${objectRef}`;
+}
+
 /** Executes `SELECT COUNT(*) FROM <objectRef>` against `connector` for `input` and returns the single scalar row count. */
 async function countRows(
   connector: DataPlatformConnector,
   input: QueryInput,
   executionOptions: ExecutionOptions
 ): Promise<number> {
-  const objectRef = resolveObjectReference(connector, input);
-  const sql = `SELECT COUNT(*) AS row_count FROM ${objectRef}`;
+  const sql = buildRowCountSql(connector, input);
 
   for await (const batch of connector.executeQuery({ kind: "query", sql }, executionOptions)) {
     const columnIndex = batch.columns.indexOf("row_count");

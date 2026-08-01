@@ -151,15 +151,7 @@ export async function profileColumn(
   const objectRef = resolveObjectReference(connector, options.input);
   const quotedColumn = connector.quoteIdentifier(column.name);
 
-  const generalRow = await runSingleRowQuery(
-    connector,
-    `SELECT ` +
-      `COUNT(*) AS row_count, ` +
-      `COUNT(${quotedColumn}) AS populated_count, ` +
-      `COUNT(DISTINCT ${quotedColumn}) AS distinct_count ` +
-      `FROM ${objectRef}`,
-    executionOptions
-  );
+  const generalRow = await runSingleRowQuery(connector, buildGeneralMetricsSql(objectRef, quotedColumn), executionOptions);
 
   const rowCount = toNumber(generalRow.row_count);
   const populatedCount = toNumber(generalRow.populated_count);
@@ -220,23 +212,11 @@ async function computeStringMetrics(
   quotedColumn: string,
   executionOptions: { maxRows: number; timeoutMs: number }
 ): Promise<StringMetrics> {
-  const row = await runSingleRowQuery(
-    connector,
-    `SELECT ` +
-      `SUM(CASE WHEN ${quotedColumn} = '' THEN 1 ELSE 0 END) AS empty_count, ` +
-      `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND TRIM(${quotedColumn}) = '' AND ${quotedColumn} <> '' THEN 1 ELSE 0 END) AS whitespace_only_count, ` +
-      `MIN(LENGTH(${quotedColumn})) AS min_length, ` +
-      `MAX(LENGTH(${quotedColumn})) AS max_length, ` +
-      `AVG(LENGTH(${quotedColumn})) AS avg_length, ` +
-      `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND ${quotedColumn} = UPPER(${quotedColumn}) AND ${quotedColumn} <> LOWER(${quotedColumn}) THEN 1 ELSE 0 END) AS uppercase_count, ` +
-      `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND ${quotedColumn} = LOWER(${quotedColumn}) AND ${quotedColumn} <> UPPER(${quotedColumn}) THEN 1 ELSE 0 END) AS lowercase_count ` +
-      `FROM ${objectRef}`,
-    executionOptions
-  );
+  const row = await runSingleRowQuery(connector, buildStringMetricsSql(objectRef, quotedColumn), executionOptions);
 
   const populatedCountRow = await runSingleRowQuery(
     connector,
-    `SELECT COUNT(${quotedColumn}) AS populated_count FROM ${objectRef}`,
+    buildStringPopulatedCountSql(objectRef, quotedColumn),
     executionOptions
   );
   const populatedCount = toNumber(populatedCountRow.populated_count);
@@ -262,20 +242,7 @@ async function computeNumericMetrics(
   quotedColumn: string,
   executionOptions: { maxRows: number; timeoutMs: number }
 ): Promise<NumericMetrics> {
-  const row = await runSingleRowQuery(
-    connector,
-    `SELECT ` +
-      `MIN(${quotedColumn}) AS min_value, ` +
-      `MAX(${quotedColumn}) AS max_value, ` +
-      `AVG(${quotedColumn}) AS mean_value, ` +
-      `MEDIAN(${quotedColumn}) AS median_value, ` +
-      `STDDEV_SAMP(${quotedColumn}) AS stddev_value, ` +
-      `SUM(CASE WHEN ${quotedColumn} = 0 THEN 1 ELSE 0 END) AS zero_count, ` +
-      `SUM(CASE WHEN ${quotedColumn} < 0 THEN 1 ELSE 0 END) AS negative_count, ` +
-      `SUM(CASE WHEN ${quotedColumn} > 0 THEN 1 ELSE 0 END) AS positive_count ` +
-      `FROM ${objectRef}`,
-    executionOptions
-  );
+  const row = await runSingleRowQuery(connector, buildNumericMetricsSql(objectRef, quotedColumn), executionOptions);
 
   return {
     min: toNumber(row.min_value),
@@ -298,14 +265,13 @@ async function computeDateMetrics(
 ): Promise<DateMetrics> {
   const row = await runSingleRowQuery(
     connector,
-    `SELECT MIN(${quotedColumn}) AS earliest_value, MAX(${quotedColumn}) AS latest_value FROM ${objectRef}`,
+    buildDateEarliestLatestSql(objectRef, quotedColumn),
     executionOptions
   );
 
-  const nowLiteral = now.toISOString().replace("T", " ").replace("Z", "");
   const futureRow = await runSingleRowQuery(
     connector,
-    `SELECT SUM(CASE WHEN ${quotedColumn} > TIMESTAMP '${nowLiteral}' THEN 1 ELSE 0 END) AS future_count FROM ${objectRef}`,
+    buildDateFutureCountSql(objectRef, quotedColumn, now),
     executionOptions
   );
 
@@ -322,7 +288,7 @@ async function computeBooleanMetrics(
   quotedColumn: string,
   executionOptions: { maxRows: number; timeoutMs: number }
 ): Promise<{ metrics: BooleanMetrics; distinctValues: string[] }> {
-  const sql = `SELECT ${quotedColumn} AS value, COUNT(*) AS value_count FROM ${objectRef} WHERE ${quotedColumn} IS NOT NULL GROUP BY ${quotedColumn}`;
+  const sql = buildBooleanMetricsSql(objectRef, quotedColumn);
   const rows = await runQuery(connector, sql, executionOptions);
 
   let populatedCount = 0;
@@ -355,15 +321,129 @@ async function computeMostCommonValue(
   quotedColumn: string,
   executionOptions: { maxRows: number; timeoutMs: number }
 ): Promise<string | undefined> {
-  const sql =
-    `SELECT ${quotedColumn} AS value, COUNT(*) AS value_count FROM ${objectRef} ` +
-    `WHERE ${quotedColumn} IS NOT NULL GROUP BY ${quotedColumn} ORDER BY value_count DESC, value ASC LIMIT 1`;
+  const sql = buildMostCommonValueSql(objectRef, quotedColumn);
   const rows = await runQuery(connector, sql, executionOptions);
   const first = rows[0];
   if (!first) {
     return undefined;
   }
   return formatValueKey(first.value);
+}
+
+// --- T-16b: pure SQL-string builder helpers. Each of `profileColumn`'s
+// internal query-issuing call sites above sources its SQL from exactly one
+// of these functions (rather than building the string inline a second
+// time), and `buildProfileQueries` below composes the same functions in the
+// same order `profileColumn` calls them in, so the previewed and executed
+// SQL can never drift apart.
+
+function buildGeneralMetricsSql(objectRef: string, quotedColumn: string): string {
+  return (
+    `SELECT ` +
+    `COUNT(*) AS row_count, ` +
+    `COUNT(${quotedColumn}) AS populated_count, ` +
+    `COUNT(DISTINCT ${quotedColumn}) AS distinct_count ` +
+    `FROM ${objectRef}`
+  );
+}
+
+function buildMostCommonValueSql(objectRef: string, quotedColumn: string): string {
+  return (
+    `SELECT ${quotedColumn} AS value, COUNT(*) AS value_count FROM ${objectRef} ` +
+    `WHERE ${quotedColumn} IS NOT NULL GROUP BY ${quotedColumn} ORDER BY value_count DESC, value ASC LIMIT 1`
+  );
+}
+
+function buildStringMetricsSql(objectRef: string, quotedColumn: string): string {
+  return (
+    `SELECT ` +
+    `SUM(CASE WHEN ${quotedColumn} = '' THEN 1 ELSE 0 END) AS empty_count, ` +
+    `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND TRIM(${quotedColumn}) = '' AND ${quotedColumn} <> '' THEN 1 ELSE 0 END) AS whitespace_only_count, ` +
+    `MIN(LENGTH(${quotedColumn})) AS min_length, ` +
+    `MAX(LENGTH(${quotedColumn})) AS max_length, ` +
+    `AVG(LENGTH(${quotedColumn})) AS avg_length, ` +
+    `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND ${quotedColumn} = UPPER(${quotedColumn}) AND ${quotedColumn} <> LOWER(${quotedColumn}) THEN 1 ELSE 0 END) AS uppercase_count, ` +
+    `SUM(CASE WHEN ${quotedColumn} IS NOT NULL AND ${quotedColumn} = LOWER(${quotedColumn}) AND ${quotedColumn} <> UPPER(${quotedColumn}) THEN 1 ELSE 0 END) AS lowercase_count ` +
+    `FROM ${objectRef}`
+  );
+}
+
+function buildStringPopulatedCountSql(objectRef: string, quotedColumn: string): string {
+  return `SELECT COUNT(${quotedColumn}) AS populated_count FROM ${objectRef}`;
+}
+
+function buildNumericMetricsSql(objectRef: string, quotedColumn: string): string {
+  return (
+    `SELECT ` +
+    `MIN(${quotedColumn}) AS min_value, ` +
+    `MAX(${quotedColumn}) AS max_value, ` +
+    `AVG(${quotedColumn}) AS mean_value, ` +
+    `MEDIAN(${quotedColumn}) AS median_value, ` +
+    `STDDEV_SAMP(${quotedColumn}) AS stddev_value, ` +
+    `SUM(CASE WHEN ${quotedColumn} = 0 THEN 1 ELSE 0 END) AS zero_count, ` +
+    `SUM(CASE WHEN ${quotedColumn} < 0 THEN 1 ELSE 0 END) AS negative_count, ` +
+    `SUM(CASE WHEN ${quotedColumn} > 0 THEN 1 ELSE 0 END) AS positive_count ` +
+    `FROM ${objectRef}`
+  );
+}
+
+function buildDateEarliestLatestSql(objectRef: string, quotedColumn: string): string {
+  return `SELECT MIN(${quotedColumn}) AS earliest_value, MAX(${quotedColumn}) AS latest_value FROM ${objectRef}`;
+}
+
+function buildDateFutureCountSql(objectRef: string, quotedColumn: string, now: Date): string {
+  const nowLiteral = now.toISOString().replace("T", " ").replace("Z", "");
+  return `SELECT SUM(CASE WHEN ${quotedColumn} > TIMESTAMP '${nowLiteral}' THEN 1 ELSE 0 END) AS future_count FROM ${objectRef}`;
+}
+
+function buildBooleanMetricsSql(objectRef: string, quotedColumn: string): string {
+  return `SELECT ${quotedColumn} AS value, COUNT(*) AS value_count FROM ${objectRef} WHERE ${quotedColumn} IS NOT NULL GROUP BY ${quotedColumn}`;
+}
+
+/**
+ * T-16b: pure, string-returning builder returning the ordered list of every
+ * SQL string `profileColumn` would issue for `column` against `options.input`
+ * -- general metrics, most-common-value, and whichever type-specific metrics
+ * query/queries apply, mirroring `profileColumn`'s own type-dispatch logic
+ * (String / Integer-Decimal-FloatingPoint / Date-family / Boolean / Unknown)
+ * exactly via the same `build*Sql` helper functions `profileColumn`'s
+ * internal `compute*Metrics` functions call, so this can never drift from
+ * what is actually executed.
+ */
+export function buildProfileQueries(
+  connector: DataPlatformConnector,
+  column: ColumnDefinition,
+  options: ProfileOptions
+): string[] {
+  const objectRef = resolveObjectReference(connector, options.input);
+  const quotedColumn = connector.quoteIdentifier(column.name);
+
+  const queries: string[] = [
+    buildGeneralMetricsSql(objectRef, quotedColumn),
+    buildMostCommonValueSql(objectRef, quotedColumn),
+  ];
+
+  const category = column.canonicalType ?? mapNativeType(column.nativeType, "duckdb");
+
+  if (category === "String") {
+    queries.push(buildStringMetricsSql(objectRef, quotedColumn), buildStringPopulatedCountSql(objectRef, quotedColumn));
+  } else if (category === "Integer" || category === "Decimal" || category === "FloatingPoint") {
+    queries.push(buildNumericMetricsSql(objectRef, quotedColumn));
+  } else if (
+    category === "Date" ||
+    category === "Time" ||
+    category === "Timestamp" ||
+    category === "TimestampWithTimezone"
+  ) {
+    queries.push(
+      buildDateEarliestLatestSql(objectRef, quotedColumn),
+      buildDateFutureCountSql(objectRef, quotedColumn, options.now ?? new Date())
+    );
+  } else if (category === "Boolean") {
+    queries.push(buildBooleanMetricsSql(objectRef, quotedColumn));
+  }
+
+  return queries;
 }
 
 /** Resolves a `QueryInput` to a bare object reference usable after `FROM`. Mirrors FixtureConnector's own private `resolveObjectReference` (T-04), reimplemented here since profiling only has access to the public `DataPlatformConnector` surface (`quoteIdentifier`, not the connector's private query-building internals). */

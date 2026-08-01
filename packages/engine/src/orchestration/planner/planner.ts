@@ -54,8 +54,8 @@ import type {
 } from "@paritylens/shared";
 import type { ParityDefinition } from "../definition/definition.js";
 import { compareSchemas } from "../../comparison-core/schema-diff/schema-diff.js";
-import { compareProfiles, profileColumn } from "../../comparison-core/profiling/profiling.js";
-import { compareVolume } from "../../comparison-core/volume/volume.js";
+import { compareProfiles, profileColumn, buildProfileQueries } from "../../comparison-core/profiling/profiling.js";
+import { compareVolume, buildRowCountSql } from "../../comparison-core/volume/volume.js";
 import { compareRows } from "../../comparison-core/row-level/row-level.js";
 
 /**
@@ -144,6 +144,12 @@ export async function runComparison(
 
   let schemaDifferences: SchemaDifference[] = [];
   let profileDifferences: ProfileDifference[] = [];
+  // T-16b: SQL strings actually issued for this run's checks, collected from
+  // the same builder functions the execution code paths themselves call
+  // (buildRowCountSql, buildProfileQueries, buildFetchAllRowsSql) -- never
+  // reconstructed independently, so preview and execution can never drift
+  // apart.
+  const queriesUsed: string[] = [];
 
   const schemaEnabled = definition.checks.schema?.enabled === true;
   const profileEnabled = definition.checks.profile?.enabled === true;
@@ -157,13 +163,15 @@ export async function runComparison(
     }
 
     if (profileEnabled) {
-      profileDifferences = await runProfileChecks(
+      const profileResult = await runProfileChecks(
         source,
         target,
         sourceColumns,
         targetColumns,
         definition
       );
+      profileDifferences = profileResult.findings;
+      queriesUsed.push(...profileResult.queriesUsed);
     }
   }
 
@@ -195,11 +203,15 @@ export async function runComparison(
     // letting it throw (rather than silently downgrading it to an empty
     // result) keeps failures loud, consistent with how this file already
     // treats every other unexpected error.
+    const rowCountSourceInput = { kind: "table" as const, object: definition.source.object };
+    const rowCountTargetInput = { kind: "table" as const, object: definition.target.object };
+    queriesUsed.push(buildRowCountSql(source, rowCountSourceInput), buildRowCountSql(target, rowCountTargetInput));
+
     const volumeDifference = await compareVolume(
       source,
       target,
-      { kind: "table", object: definition.source.object },
-      { kind: "table", object: definition.target.object },
+      rowCountSourceInput,
+      rowCountTargetInput,
       definition.checks.rowCount?.tolerance
       // T-13-01 (PROGRESS-LEDGER.md, Minor, carried forward to this task):
       // when a definition supplies both `tolerance.percentage` and
@@ -224,6 +236,11 @@ export async function runComparison(
   }
 
   if (rowLevelEnabled) {
+    queriesUsed.push(
+      buildFetchAllRowsSql(source, definition.source),
+      buildFetchAllRowsSql(target, definition.target)
+    );
+
     const [sourceRows, targetRows] = await Promise.all([
       fetchAllRows(source, definition.source),
       fetchAllRows(target, definition.target),
@@ -265,7 +282,20 @@ export async function runComparison(
       targetDurationMs,
       comparisonDurationMs,
     },
+    ...(queriesUsed.length > 0 ? { queriesUsed } : {}),
   };
+}
+
+/**
+ * T-16b: pure, string-returning builder returning exactly the SQL string
+ * `fetchAllRows` below builds and executes for `side` -- `fetchAllRows`
+ * calls this function directly rather than re-building the string, so the
+ * previewed and executed SQL can never drift apart (per TASK-BRIEF.md's
+ * central correctness property for this task).
+ */
+export function buildFetchAllRowsSql(connector: DataPlatformConnector, side: ParityDefinition["source"]): string {
+  const objectRef = connector.quoteIdentifier(side.object);
+  return side.where ? `SELECT * FROM ${objectRef} WHERE ${side.where}` : `SELECT * FROM ${objectRef}`;
 }
 
 /** Fetches a `ParitySide`'s full row data (all mapped/key columns are
@@ -284,10 +314,7 @@ async function fetchAllRows(
   connector: DataPlatformConnector,
   side: ParityDefinition["source"]
 ): Promise<RecordBatch> {
-  const objectRef = connector.quoteIdentifier(side.object);
-  const sql = side.where
-    ? `SELECT * FROM ${objectRef} WHERE ${side.where}`
-    : `SELECT * FROM ${objectRef}`;
+  const sql = buildFetchAllRowsSql(connector, side);
 
   const executionOptions = {
     maxRows: DEFAULT_ROW_LEVEL_MAX_ROWS,
@@ -318,16 +345,20 @@ const DEFAULT_ROW_LEVEL_MAX_ROWS = 1_000_000;
 const DEFAULT_ROW_LEVEL_TIMEOUT_MS = 30_000;
 
 /** Profiles every column present on both sides (by name) and diffs each
- * pair via T-07's `compareProfiles`, collecting all resulting findings. */
+ * pair via T-07's `compareProfiles`, collecting all resulting findings.
+ * Also collects (via T-16b's `buildProfileQueries`, the same pure builder
+ * `profileColumn` itself sources its SQL from) the SQL strings issued for
+ * every profiled column, for `ComparisonResult.queriesUsed`. */
 async function runProfileChecks(
   source: DataPlatformConnector,
   target: DataPlatformConnector,
   sourceColumns: ColumnDefinition[],
   targetColumns: ColumnDefinition[],
   definition: ParityDefinition
-): Promise<ProfileDifference[]> {
+): Promise<{ findings: ProfileDifference[]; queriesUsed: string[] }> {
   const targetByName = new Map(targetColumns.map((c) => [c.name, c]));
   const findings: ProfileDifference[] = [];
+  const queriesUsed: string[] = [];
 
   // Resolve each source column's target-side counterpart via the
   // definition's explicit column_mapping (T-08) where present, falling back
@@ -353,17 +384,29 @@ async function runProfileChecks(
       continue;
     }
 
-    const sourceProfile = await profileColumn(source, sourceColumn, {
-      input: { kind: "table", object: definition.source.object },
-    });
-    const targetProfile = await profileColumn(target, targetColumn, {
-      input: { kind: "table", object: definition.target.object },
-    });
+    // `now` is pinned once per column pair and passed explicitly to both the
+    // buildProfileQueries preview call and the profileColumn execution call
+    // below -- both would otherwise independently default to `new Date()`
+    // (profiling.ts's own documented default), which could evaluate a
+    // millisecond apart and produce a non-byte-identical `TIMESTAMP '...'`
+    // literal for Date-family columns specifically, undermining this task's
+    // core "previewed SQL === executed SQL" guarantee for that one case.
+    const now = new Date();
+    const sourceProfileOptions = { input: { kind: "table" as const, object: definition.source.object }, now };
+    const targetProfileOptions = { input: { kind: "table" as const, object: definition.target.object }, now };
+
+    queriesUsed.push(
+      ...buildProfileQueries(source, sourceColumn, sourceProfileOptions),
+      ...buildProfileQueries(target, targetColumn, targetProfileOptions)
+    );
+
+    const sourceProfile = await profileColumn(source, sourceColumn, sourceProfileOptions);
+    const targetProfile = await profileColumn(target, targetColumn, targetProfileOptions);
 
     findings.push(...compareProfiles(sourceProfile, targetProfile));
   }
 
-  return findings;
+  return { findings, queriesUsed };
 }
 
 /** Builds a `"failed"`-status `ComparisonResult` for a Layer 1 connectivity

@@ -8,7 +8,8 @@ import type {
 } from "@paritylens/shared";
 
 /**
- * Results webview panel (TASK-BRIEF.md T-11, extended by T-16).
+ * Results webview panel (TASK-BRIEF.md T-11, extended by T-16, extended
+ * again by T-16b).
  *
  * `renderResultsHtml` is deliberately a pure function: its only input is a
  * `ComparisonResult` object. It never reads `vscode.workspace`,
@@ -19,6 +20,19 @@ import type {
  * `rowDifferences` ("Row-Level Differences" section), now that T-15
  * populates them, while preserving the existing purity contract — no new
  * `vscode` API usage beyond the pre-existing type-only import.
+ *
+ * T-16b extends this again to render a "Query Preview" section from
+ * `ComparisonResult.queriesUsed` when present — a post-hoc preview of the
+ * SQL that was actually used to produce the displayed result, not a
+ * pre-execution confirmation gate (no comparison-triggering command exists
+ * yet to gate in the first place, per TASK-BRIEF.md's Prohibited Changes
+ * section). Every string in `queriesUsed` originates from one of the three
+ * engine-layer builder functions (`buildRowCountSql`, `buildProfileQueries`,
+ * `buildFetchAllRowsSql`) via the planner — this module only ever displays
+ * those strings, `escapeHtml`-sanitized like every other field already
+ * rendered here, and never reconstructs SQL from a `QueryInput`/
+ * `ColumnDefinition` itself (the exact drift risk the original T-16 SQL-
+ * preview deferral decision was written to avoid).
  */
 
 /** Escapes a value for safe inclusion in the webview's HTML body. */
@@ -170,6 +184,26 @@ function renderRowDifferencesTable(differences: RowDifference[]): string {
 }
 
 /**
+ * Renders `queriesUsed` (T-16b) as a "Query Preview" section: an ordered
+ * list of the SQL strings actually issued for this run, each shown in its
+ * own escaped `<pre>` block. Absent/empty `queriesUsed` (no check that
+ * issues SQL ran, e.g. a Layer-1 connectivity failure) renders an
+ * empty-state message, matching every other difference-array section's
+ * empty-state pattern in this file.
+ */
+function renderQueryPreviewSection(queriesUsed: string[] | undefined): string {
+  if (!queriesUsed || queriesUsed.length === 0) {
+    return "<p>No queries recorded for this run.</p>";
+  }
+
+  const items = queriesUsed.map((sql) => `<li><pre>${escapeHtml(sql)}</pre></li>`).join("\n");
+
+  return `<ol>
+    ${items}
+  </ol>`;
+}
+
+/**
  * Renders a `ComparisonResult` as the results webview's HTML content,
  * showing `schemaDifferences` and `profileDifferences` each as a table
  * (one row per item). Pure presentation: no side effects, no I/O beyond
@@ -200,6 +234,9 @@ export function renderResultsHtml(result: ComparisonResult): string {
 
   <h2>Row-Level Differences</h2>
   ${renderRowDifferencesTable(result.rowDifferences)}
+
+  <h2>Query Preview</h2>
+  ${renderQueryPreviewSection(result.queriesUsed)}
 </body>
 </html>`;
 }
