@@ -1,262 +1,241 @@
-# ParityLens — Review Report T-16
+# ParityLens — Review Report T-17
 
 ## Review independence statement
 
 This review was performed by a separate agent instance from whoever
-implemented T-16, with no memory of writing this code. All findings below
+implemented T-17, with no memory of writing this code. All findings below
 are based on direct inspection of the actual diff/source at commit
-`f087404` on branch `task/T-16-diff-viewer-export`, my own fresh test runs,
-and my own independently constructed adversarial path-traversal tests and
-hand-built `ComparisonResult` fixture — none of which reuse the
-implementer's fixture or test file. `IMPLEMENTATION-REPORT.md`'s claims
-were treated as things to verify, not trust.
+`3ed921b` on branch `task/T-17-sqlserver-connector`, my own fresh
+`npm run verify` run inside WSL2 against a freshly-started live SQL Server
+2022 test container, and my own independently constructed adversarial
+mutating-statement probes — none of which reuse the implementer's test
+file. `IMPLEMENTATION-REPORT.md`'s claims were treated as assertions to
+verify, not facts to accept.
 
 ## Scope reviewed
 
-- `TASK-BRIEF.md` (full text) and cross-referenced `DESIGN-SPEC.md`'s
-  "Write safety" principle it cites.
-- Full diff `main..task/T-16-diff-viewer-export` (8 files changed, per
-  `git diff main task/T-16-diff-viewer-export --stat`).
-- Actual current source of all changed files:
-  `packages/extension/src/webview/resultsWebview.ts`,
-  `packages/extension/src/webview/resultsWebview.test.ts`,
-  `packages/extension/src/export/exporters.ts`,
-  `packages/extension/src/export/exporters.test.ts`,
-  `packages/extension/src/export/writeExport.ts`,
-  `packages/extension/package.json`, `package-lock.json`.
-- `PROGRESS-LEDGER.md`'s T-16 row and decision-log entries for the
-  SQL-preview deferral and task activation.
-- `packages/shared/src/result.ts` (to verify `AggregateDifference`/
-  `RowDifference`/`RowColumnDifference` field names actually match what the
-  webview/export code renders).
+- `packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.ts` (new, 588 lines)
+- `packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.test.ts` (new, 299 lines)
+- `packages/engine/package.json` (added `mssql`/`@types/mssql`)
+- `package-lock.json` (mechanical consequence of the above)
+- `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`, `PROGRESS-LEDGER.md`, `AGENTS.md`
+
+Diff against `main`: `git diff main task/T-17-sqlserver-connector --stat`
+confirms exactly these five files changed, no others. Confirmed via
+`git diff --ignore-all-space` that `packages/engine/package.json`'s
+apparent full-file diff is a pure CRLF/LF line-ending artifact plus the two
+authorized dependency-line additions — no unrelated content drift.
+
+**Prohibited-file check:** `git diff main task/T-17-sqlserver-connector --
+packages/engine/src/connector-sdk/safety/ packages/engine/src/comparison-core/type-mapping/
+packages/engine/src/connector-sdk/fixture/ packages/shared/src/connector.ts docker-compose.test.yml`
+produced zero output — none of the brief's prohibited files were touched.
+
+## Verification performed (my own, fresh)
+
+All commands run from inside WSL2 (`MSYS2_ARG_CONV_EXCL="*" wsl.exe -e bash -c '...'`,
+confirmed via `uname -a` reporting `microsoft-standard-WSL2`; my own shell
+is Git-Bash/MSYS, confirmed via `uname -a` reporting `MINGW64_NT`), Node
+v24.9.0 activated via `nvm`, repo at `/mnt/v/Secret Projects/VSC-DB-SQL-Compare`.
+Container brought up fresh in the same continuous WSL session as every test
+run, per the brief's explicit warning.
+
+- **Container health:** `docker compose -f docker-compose.test.yml up -d`
+  then polled `... ps` — both `sqlserver-test` and `postgres-test` reached
+  `(healthy)` within ~10s.
+- **Full verification:** `npm install` (293 packages, clean) then
+  `npm run verify` (typecheck + lint + test) with all four
+  `PARITYLENS_TEST_SQLSERVER_*` env vars set and the container healthy in
+  the same session.
+
+  **My result: `Test Files 19 passed (19)`, `Tests 372 passed (372)`, exit 0.**
+  This matches `IMPLEMENTATION-REPORT.md`'s claimed 372/372 exactly,
+  including the 13 SQL Server integration tests genuinely executing (not
+  skipped — confirmed by the per-test names appearing in output, e.g.
+  `testConnection() fails gracefully against an unreachable host 3001ms`,
+  a timing signature inconsistent with a mock).
+
+- **Skip-path verification (item 4 of the brief's reviewer checklist):**
+  re-ran `npx vitest run packages/engine/src/connector-sdk/sqlserver` with
+  the four env vars explicitly unset. Result: `1 skipped (1)` /
+  `13 skipped (13)`, with a visible `stdout` line:
+  `[sqlServerConnector.test.ts] SKIPPING all SqlServerConnector integration
+  tests: PARITYLENS_TEST_SQLSERVER_HOST/PORT/USER/PASSWORD are not all
+  set. Start the test container...`. This is `describe.skipIf` plus an
+  explicit `console.log`, not a bare `.skip` — confirmed genuine, not
+  claimed-only.
+
+- **Credential grep (item 2):** `git diff ... -- packages/engine/src/connector-sdk/sqlserver/`
+  piped through a case-insensitive grep for `password|pwd|secret|ParityLens_Test1|connectionstring`.
+  Every hit is either a field/variable *name* (`password: string`, the
+  `PARITYLENS_TEST_SQLSERVER_PASSWORD` env-var name, `this.options.password`)
+  or a deliberately-wrong test literal (`"definitely-the-wrong-password-123!"`,
+  used only to prove `testConnection()` fails gracefully against bad
+  credentials). No real credential value, connection string, or the actual
+  container password (`ParityLens_Test1!`) appears anywhere in the diff.
+  `sqlServerConnector.ts` itself reads no environment variable and holds no
+  literal credential — confirmed by reading the full file; credentials
+  enter only via the caller-supplied `SqlServerConnectionOptions` at
+  construction time, matching the Interfaces table's requirement.
+
+- **Adversarial mutating-statement probes (item 1 and item 3 — my own,
+  not the implementer's test file):** wrote a throwaway Vitest file
+  (`__reviewer_probe.test.ts`, deleted before concluding this review;
+  confirmed via `git status --short` showing no residue) that seeds its
+  own table (`dbo.reviewer_probe_t17`, 2 rows) and attempts 6 mutating/
+  bypass shapes distinct from the implementer's own 4 covered statements,
+  through the real `executeQuery` against the live container:
+
+  | Attempt | Result |
+  | --- | --- |
+  | `TRUNCATE TABLE ...` (keyword not in implementer's own test) | rejected |
+  | `GO 1  ` (repeat count + trailing whitespace) then `DROP TABLE` | rejected |
+  | `GO` then `EXEC sp_rename '...', 'reviewer_renamed'` (mutating stored proc via `EXEC`, not a bare DML keyword) | rejected |
+  | lowercase, tab-indented `go` then `DELETE FROM ...` | rejected |
+  | semicolon-chained `DELETE` with no `GO` at all | rejected |
+  | paren-wrapped CTE `DELETE` — the exact historical I-01 bypass pattern from T-03's review, retested here against this connector's own call site | rejected |
+
+  All 7 probe assertions passed (`✓ 7 tests`). Critically, I then verified
+  **server-side**, via a fresh query against the live container issued
+  directly (not through the connector's own `executeQuery`, to avoid
+  trusting the same code path under test): `SELECT OBJECT_ID(...)` proved
+  the table still exists, `SELECT COUNT(*)` returned exactly `2` (the
+  seeded row count, unchanged), and `SELECT OBJECT_ID('dbo.reviewer_renamed', ...)`
+  returned `NULL` (the `sp_rename` attempt never reached the server). This
+  independently confirms rejection happens before the driver, not merely
+  that a client-side exception was thrown after a mutation already landed.
+
+  This also independently re-confirms the M-05 (`GO` batch separator)
+  resolution genuinely closes the disclosed gap — using variants (repeat
+  count, lowercase, tab-indentation, `EXEC`-based mutation after `GO`) the
+  implementer's own single worked-example test did not cover, not merely
+  re-running their exact case. Read `rejectGoBatchSeparator`
+  (`sqlServerConnector.ts:511-523`) directly: the regex
+  `/^[ \t]*GO[ \t]*(?:\d+[ \t]*)?$/im` runs unconditionally before
+  `assertReadOnlyStatement` inside `executeQuery`, so this is a real
+  code-path guarantee, not an artifact of the specific test string used.
+
+- **Cross-check of `assertReadOnlyStatement`'s dialect table:** read
+  `packages/engine/src/connector-sdk/safety/statement-safety.ts` directly
+  (read-only, not edited) to confirm `EXEC`/`TRUNCATE` are already in the
+  common/sqlserver-dialect mutating-keyword lists — my `EXEC sp_rename`
+  and `TRUNCATE TABLE` probes were exercising real, already-covered
+  behavior end-to-end through the live driver, not testing an
+  accidentally-uncovered keyword.
+
+## Disposition of the carried-forward finding (M-05)
+
+**RESOLVED, independently confirmed.** `PROGRESS-LEDGER.md`'s M-05 entry
+required either (a) connector-level rejection of `GO`, or (b) a verified
+claim that the gap is unreachable through this connector. The implementer
+chose (a): `rejectGoBatchSeparator()` runs before `assertReadOnlyStatement`
+inside `executeQuery`. I independently reproduced the brief's own worked
+example plus 4 additional variants the implementer's test didn't cover
+(above), all rejected, all confirmed server-side to have caused zero
+mutation. This is a genuine, verified fix, not a claim taken at face
+value.
+
+## Assessment of the three disclosed cross-platform bug fixes
+
+All three are genuine, in-scope corrections discovered via real live-server
+testing (not scope creep, not a sign of a rushed implementation):
+
+1. **`getCatalogs()` excluding `master`:** the original `database_id > 4`
+   filter is a defensible-looking convention borrowed from generic
+   "user databases only" tooling, but it directly broke against this
+   task's own test environment (default database is `master`). The fix
+   (list all databases visible to the login) is strictly more correct for
+   a read-only catalog-metadata method — there is no security rationale
+   for hiding system databases from a connection that's already
+   authenticated to the server, and the brief's Interfaces table doesn't
+   ask for filtering. Confirmed sensible.
+2. **`buildRowCappedSql`'s `ORDER BY`-in-derived-table fix:** this is a
+   genuine SQL Server grammar constraint (verified: SQL Server does reject
+   a bare `ORDER BY` inside a derived table without `TOP`/`OFFSET`/`FOR
+   XML`), and the implementer's own test (`{kind:'query'}` + `ORDER BY
+   CustomerId`) is an entirely ordinary query shape a real caller would
+   supply — not a contrived edge case invented to justify the fix. The
+   `TOP 100 PERCENT` injection is a standard, well-known no-op workaround
+   for exactly this constraint and does not change row selection or
+   order. The lexical detection heuristic's limitations are honestly
+   disclosed as a residual risk in the report (false negative surfaces
+   SQL Server's own grammar error rather than silently misbehaving) —
+   reasonable given this codebase's established precedent of a lexical,
+   not full-parser, safety scanner.
+3. **`buildProfileQuery`'s duplicate `total_count` alias fix:** genuine
+   SQL Server behavior difference from DuckDB (SQL Server rejects
+   duplicate output-column aliases; DuckDB tolerates them), caught because
+   this task's own multi-column profile test exercises more than one
+   profiled column against a real server rather than a single-column
+   happy path. The fix (emit `total_count` once) is the obviously correct
+   resolution and doesn't change the aggregate's semantics.
+
+All three read as real defects surfaced by testing against an actual
+server rather than invented busywork — consistent with the brief's
+stated purpose ("this is the project's first connector talking to an
+actual database server rather than DuckDB").
 
 ## Findings
 
-**NONE at Critical or Important severity. NONE at Minor severity.**
+### Critical
 
-| ID | Severity | Location | Description | Resolution |
-| --- | --- | --- | --- | --- |
-| — | — | — | No findings | — |
+NONE.
 
-## Verification performed
+### Important
 
-### 1. Fresh full-suite verification (not trusting reported numbers)
+NONE.
 
-```
-npx vitest run packages/extension
-  → 6 files, 24 tests passed (matches IMPLEMENTATION-REPORT.md's claim exactly)
+### Minor
 
-npm run verify
-  → typecheck clean, lint clean, vitest run: 18 test files, 359 tests passed, exit 0
-  → matches IMPLEMENTATION-REPORT.md's claimed 359 (350 baseline + 9 new) exactly
-```
+| ID | Description | Evidence | Required/suggested resolution |
+| --- | --- | --- | --- |
+| T-17-01 | `getSchema`'s `{kind:"table"}` path and `parseObjectRef` support only bare-name or exactly one `schema.table` segment; a 3- or 4-part reference (`database.schema.table`, `server.database.schema.table`) is treated as an unrecognized bare name with everything before the last `.` folded into "schema" (`sqlServerConnector.ts:435-444`). Not exercised by any test in this task. | Read `parseObjectRef` directly: `parts.length >= 2` always takes the last two segments regardless of how many segments precede them, so `"otherdb.dbo.customer"` would resolve to schema=`"dbo"`, table=`"customer"` but silently drop the `otherdb.` catalog qualifier from the identifier actually sent to the server, rather than erroring. Since the connector's `database` is fixed at construction time and the brief's scope is single-database comparisons, this is unlikely to bite in the MVP's actual usage pattern, but it is a silent narrowing rather than a fail-loud rejection. | Honestly disclosed by the implementer as an assumption in `IMPLEMENTATION-REPORT.md`. Non-blocking for this task's stated scope (single-database `{kind:"table"}` references); track as follow-up if/when a caller needs fully-qualified cross-database references (would need to be paired with a `getSchema` on a different `database` than the connector's own, which nothing in the current interface requests). |
+| T-17-02 | `mssqlTypeToNativeTypeName` (the `{kind:"query"}`/`{kind:"sqlFile"}` `getSchema` path) is a hand-maintained switch over `mssql`'s runtime type-constructor names, not derived from the driver's own registry; an exotic type not in the table silently falls back to `"sql_variant"` → canonical `"Unknown"` rather than erroring, and no test exercises the fallback path itself (only the mapped types via `buildProfileQuery`'s `COUNT` aggregates, which are always integer/bigint). | Read the function directly (`sqlServerConnector.ts:533-587`); confirmed no dedicated test constructs a query returning an unmapped type (e.g. `XML`, `HIERARCHYID`, `GEOGRAPHY`) to prove the fallback path is reached and behaves as documented rather than throwing unexpectedly. | Honestly disclosed as a risk in the report. Non-blocking — consistent with `mapNativeType`'s own documented never-throw contract (T-05, approved), and no current test data exercises these exotic types. Suggested (not required) follow-up: a small dedicated test asserting the fallback path itself when a future task needs it. |
 
-Both my own runs match the implementer's reported numbers exactly. No
-discrepancy.
-
-### 2. My own adversarial path-traversal probes against `writeExport`
-
-I wrote an independent test file (`packages/extension/src/__reviewer_probe__/reviewer-probe.test.ts`,
-deleted after use — confirmed via `git status --short` showing a clean
-tree with no residue) containing five path-traversal/containment probes
-distinct from the implementer's three `writeExport` tests:
-
-1. A deep relative traversal (`subdir/../../../etc-passwd-equivalent.txt`)
-   climbing out past the root via multiple `..` segments — **rejected**
-   (threw), and confirmed nothing was written at the computed
-   escape-target path as a side effect.
-2. An absolute path pointing into a sibling temp directory outside the
-   root — **rejected** (threw), confirmed no file appeared at the
-   sibling path.
-3. Writing to the root directory itself (`"."`, no filename) — **rejected**
-   (threw), consistent with the implementer's documented judgment call
-   that a root is not "under" itself.
-4. An absolute path constructed by resolving one level above the OS temp
-   directory (clearly outside any plausible safe root) — **rejected**
-   (threw), confirmed no file was created.
-5. Control case: a legitimately nested subdirectory path
-   (`exports/2026/results.csv`) inside the root — **succeeded**, file
-   confirmed present at the expected nested location (proves the
-   validation isn't simply rejecting everything).
-
-All 8 tests in this probe file (5 traversal probes + 3 content-sampling
-tests below) passed on the first run against the actual `writeExport`
-implementation. `writeExport`'s containment logic (`path.relative(root,
-target)` checked for `""`, `".."`, `"..' + sep`-prefix, or
-`isAbsolute(rel)`) correctly rejects every traversal shape I constructed,
-including one the implementer's own three tests didn't cover (multi-level
-`../../../` climb, and the bare-root-as-target case combined with a
-control "must still work" case in the same run to rule out a
-reject-everything false-positive).
-
-### 3. `renderResultsHtml` purity / no new `vscode` import
-
-```
-git diff main task/T-16-diff-viewer-export | grep -n 'from "vscode"'
-  → one match: `import type * as vscode from "vscode";` (line 874 of the
-    diff, inside resultsWebview.ts) — this is the pre-existing T-11
-    type-only import (verified: the diff shows it as unchanged context,
-    not an added `+` line), not a new runtime import.
-```
-
-Direct read of `packages/extension/src/webview/resultsWebview.ts`
-confirms: the only `vscode` reference in the whole file is line 1's
-`import type * as vscode from "vscode"`, used solely for type annotations
-in `showResultsWebview`'s parameters. `renderResultsHtml` itself (lines
-178–205) has no `vscode` reference anywhere in its body — it only calls
-the four internal render-table helpers and returns a template string.
-Confirmed pure: no I/O, no `vscode.*` API call, deterministic output from
-its single `ComparisonResult` argument.
-
-### 4. SQL-preview deferral — zero SQL-generation code check
-
-```
-git diff main task/T-16-diff-viewer-export | grep -inE "SELECT |buildQuery|generateSql|buildSql"
-```
-
-The only hits are inside the diff hunk for `IMPLEMENTATION-REPORT.md`
-(pre-existing T-15 report text being replaced, describing T-15's
-`fetchAllRows`/`compareVolume` work — not new code introduced by this
-task). Re-ran the same grep restricted to `packages/` paths only and got
-zero hits. Confirmed by direct read of `exporters.ts` and `writeExport.ts`
-(the two new files): neither contains any SQL string construction,
-`buildXQuery`-style function, or reference to a query-generation concept —
-both only consume `ComparisonResult`'s already-computed data. No
-`packages/engine/**` files appear in `git diff main
-task/T-16-diff-viewer-export --name-only`. The deferral recorded in
-`PROGRESS-LEDGER.md`'s decision log (2026-07-31 entry: "Descoped T-16's
-'SQL preview panel' requirement... deferred to a future follow-up task")
-was honored as a full removal, not a partial/reinterpreted implementation.
-
-### 5. Independent output sampling against my own hand-built fixture
-
-I constructed `REVIEWER_FIXTURE`, a `ComparisonResult` independent of
-`exporters.test.ts`'s `SAMPLE_RESULT` — different comparison name
-(`"reviewer-check"`), different run ID, different column names
-(`CustomerId`/`Region`/`Status`), a `type-mismatch` schema finding (a kind
-the implementer's fixture didn't exercise — theirs used
-`missing-in-target`), a `distinctCount` profile metric (theirs used
-`nullPercentage`), and two row differences including one
-`missing-from-target` case with no `columnDifferences` (theirs only had
-one `matched-key-differing-values` row). Assertions and results:
-
-- `exportToCsv(REVIEWER_FIXTURE)` — contained `"CustomerId"`,
-  `"type-mismatch"`, `"INT"`, `"BIGINT"`, `"ZZ-999"`, `"YY-001"`,
-  `"missing-from-target"`, and the semicolon-joined column-diff format
-  `"Status: Open -> Closed"`. All passed — confirms actual field values
-  land in the correct CSV columns, not just non-empty output.
-- `exportToJson(REVIEWER_FIXTURE)` — parsed back with `JSON.parse` and
-  checked `runId === "run-REV-01"`,
-  `rowDifferences[1].keyValues` deep-equal `["YY-001"]`, and
-  `aggregateDifferences[0].differenceRate === -1`. All passed — confirms
-  a genuine round-trip, not string-containment alone.
-- `exportToMarkdown(REVIEWER_FIXTURE)` — contained `"reviewer-check"`,
-  `"ZZ-999"`, `"Status: Open -> Closed"`, and the exact expected Markdown
-  table row `"| Warning | CustomerId | type-mismatch | INT | BIGINT |"`,
-  confirming column ordering and value placement inside the rendered
-  table, not merely presence of the substrings anywhere in the document.
-
-All 3 sampling tests plus all 5 traversal probes passed (8/8) on first
-run.
-
-### 6. `@types/node` devDependency judgment
-
-Confirmed via `git diff` on `packages/extension/package.json`: the
-addition is exactly one line under `"devDependencies"` —
-`"@types/node": "^22.20.1"` — not under `"dependencies"`. No runtime
-`node:fs`/`node:path`/`node:os` import appears anywhere outside
-`packages/extension/src/export/writeExport.ts` (the legitimate file-I/O
-module) and `packages/extension/src/export/exporters.test.ts` (test-only,
-for building/cleaning up temp directories). Verified this with a targeted
-search across the diff: the only `node:` import sites are those two
-files. `package-lock.json`'s 21-line diff is the expected lockfile
-fallout of a single new devDependency install (adds `@types/node` and its
-`undici-types` transitive dependency).
-
-Judgment: reasonable, not a red flag. `writeExport`'s path-traversal
-validation is exactly the kind of security-relevant logic the project's
-own `AGENTS.md`/`DESIGN-SPEC.md` treats with elevated rigor; using
-Node's standard `path.resolve`/`path.relative` under proper ambient types
-is safer than the counterfactual (hand-rolled path parsing without type
-checking, or `@ts-expect-error`-suppressed calls). The brief's own
-Prohibited-changes clause restricts "runtime dependency" additions
-(templating/charting libraries), and `@types/node` ships no runtime code
-and is not bundled into the extension's runtime output. The implementer
-also disclosed this proactively and explicitly rather than burying it,
-consistent with the project's stated expectations for flagged deviations.
+Both Minor findings were disclosed proactively by the implementer in
+`IMPLEMENTATION-REPORT.md`'s "Assumptions and risks" section rather than
+found independently by me — I verified each by reading the relevant code
+directly and confirming the disclosed characterization is accurate, and
+judge both as correctly non-blocking for this task's actual declared
+scope (single-database table/query comparisons against a live SQL Server
+instance, per the brief's Interfaces table).
 
 ## Scope and ownership check
 
-`git diff main task/T-16-diff-viewer-export --name-only` shows exactly:
-`IMPLEMENTATION-REPORT.md`, `package-lock.json`,
-`packages/extension/package.json`,
-`packages/extension/src/export/exporters.test.ts`,
-`packages/extension/src/export/exporters.ts`,
-`packages/extension/src/export/writeExport.ts`,
-`packages/extension/src/webview/resultsWebview.test.ts`,
-`packages/extension/src/webview/resultsWebview.ts`.
+Files changed exactly match the brief's declared ownership
+(`packages/engine/src/connector-sdk/sqlserver/**`) plus the explicitly
+pre-authorized `mssql` dependency addition to `packages/engine/package.json`
+(brief: "You will need to add `mssql`... this is expected and in scope"),
+the disclosed `@types/mssql` devDependency (brief: "disclosing it
+explicitly... it is" — disclosed in the report's Changed Files table with
+rationale), and the mechanical `package-lock.json` consequence. No
+prohibited file was touched (verified above via `git diff`, zero output).
 
-- `packages/extension/src/webview/**` and `packages/extension/src/export/**`
-  — both explicitly owned by this brief.
-- `packages/extension/package.json` / `package-lock.json` — minimal,
-  mechanically-forced consequence of the disclosed and justified
-  `@types/node` devDependency addition (see above). Acceptable, noted.
-- `IMPLEMENTATION-REPORT.md` — the brief's own designated report location.
-- Zero files under `packages/engine/**`, `packages/extension/src/activation/**`,
-  `.../views/**`, `.../secrets/**`, `.../statusbar/**` — all correctly
-  untouched, matching the brief's Prohibited-changes and Files-owned
-  sections. `schemaDifferences`/`profileDifferences` rendering functions
-  in `resultsWebview.ts` are byte-for-byte unchanged (confirmed by direct
-  read: `renderSchemaDifferencesTable`/`renderProfileDifferencesTable`
-  match T-11's original structure and are called identically from
-  `renderResultsHtml`).
+## Verification-claims cross-check
 
-No unauthorized scope expansion found.
+`IMPLEMENTATION-REPORT.md`'s reported counts (372/372 tests, 19 test
+files, exit 0) match my own independent fresh run exactly, including the
+same test-file list and the same 13-test SQL Server suite. No discrepancy
+found between claimed and observed evidence.
 
-## Disposition of prior findings this task was meant to resolve
+## Cleanup confirmation
 
-None. T-16's brief does not carry forward any specific open finding from
-`PROGRESS-LEDGER.md` to resolve (X-01 is tracked against "T-16 or the
-first packaging task" as a non-blocking, accepted-open item about
-extension-host smoke testing, not something this task's brief requires it
-to close, and this task did not touch activation/command wiring at all,
-so X-01 remains correctly untouched and still open).
+`git status --short` after removing my throwaway probe file
+(`__reviewer_probe.test.ts`) shows no residue beyond this review report
+itself.
 
-## Additional observations (non-blocking)
+## Approval status
 
-- The implementer's own disclosed residual gap — `writeExport`'s
-  containment check does not follow symlinks — is real (Node's
-  `path.resolve` normalizes `.`/`..` but does not resolve symlinks on
-  disk) but is a reasonable, honestly-scoped residual risk consistent with
-  this project's existing "defense in depth" pattern
-  (`assertReadOnlyStatement`'s documented residual gaps per `CLAUDE.md`).
-  The safe output root is application-configured, not attacker-supplied,
-  which further limits the practical exploitability of this gap. Not a
-  blocking finding.
-- No command/UI wiring was added to invoke export from the command
-  palette. The brief treats this as optional ("if strictly necessary")
-  and the implementer's reasoning for omitting it (no red-state test
-  requires it, Interfaces table only requires the functions to exist and
-  be testable) is a correct reading of the brief text. Left as an
-  implementer/orchestrator judgment call for a future task, not a defect
-  in this one.
+**APPROVED**
 
-## Final approval status: APPROVED
-
-Zero Critical, Important, or Minor findings. Fresh verification matches
-the implementer's reported numbers exactly (24/24 focused, 359/359 full,
-`npm run verify` exit 0). My own independently constructed
-path-traversal probes (5 cases, none reused from the implementer's tests)
-all confirm rejection of escaping writes and confirm a legitimate nested
-write still succeeds. My own independently hand-built `ComparisonResult`
-fixture (distinct column names, difference kinds, and metrics from the
-implementer's fixture) confirms CSV/JSON/Markdown exports contain correct
-row/column values in the correct structural positions, not merely
-non-empty output. `renderResultsHtml` remains provably pure with no new
-`vscode` import. Zero SQL-generation code exists anywhere in the diff,
-confirming the SQL-preview deferral was honored as a full removal rather
-than a partial reinterpretation. The `@types/node` devDependency addition
-is judged reasonable: devDependencies-only, types-only, disclosed
-proactively, and directly necessary for the brief's own required
-`writeExport` interface. Scope is fully contained within the brief's file
-ownership.
+No Critical or Important findings. Both Minor findings are implementer-
+disclosed, independently confirmed accurate, and non-blocking for this
+task's actual scope. Read-only enforcement was independently verified
+against the live container with fresh, non-reused adversarial probes,
+confirmed server-side (not just client-side) for every attempt. The
+carried-forward M-05 finding is genuinely resolved, independently
+reproduced with variants beyond the implementer's own test. Credential
+handling matches `AGENTS.md`'s no-inline-credentials rule. No test skip
+hides a real failure — the skip path is explicit, visible, and correctly
+gated. Fresh `npm run verify` inside WSL2 matches the implementer's
+claimed 372/372 exactly.
