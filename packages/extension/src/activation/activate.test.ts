@@ -38,11 +38,23 @@ vi.mock("vscode", () => {
     dispose: () => undefined
   });
 
+  // T-22: activate() now also registers paritylens.runComparison, so the
+  // mock needs `commands.registerCommand` (returning a disposable) and
+  // `workspace.workspaceFolders` for that registration call to succeed --
+  // these tests only exercise the pre-existing tree-view/SecretStore
+  // behavior and never invoke the command callback itself (that is covered
+  // by runComparisonCommand.test.ts, which tests the extracted, directly
+  // callable `runComparisonCommand` function instead of going through
+  // `vscode.commands.registerCommand`).
+  const registerCommand = () => ({ dispose: () => undefined });
+
   return {
     TreeItem,
     EventEmitter,
     TreeItemCollapsibleState,
-    window: { createTreeView }
+    window: { createTreeView },
+    commands: { registerCommand },
+    workspace: { workspaceFolders: undefined }
   };
 });
 

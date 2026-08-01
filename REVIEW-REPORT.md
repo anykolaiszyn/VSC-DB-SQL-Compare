@@ -1,31 +1,36 @@
-# ParityLens — Review Report T-21
+# ParityLens — Review Report T-22
 
 ## Review independence statement
 
 This review was performed by a separate reviewer agent instance from the
-implementer that produced `063fbfb`/`8bb3a5c`/`7afabb1` on
-`task/T-21-sampling`. No implementer session state, memory, or self-report
-was trusted as fact; every claim in `IMPLEMENTATION-REPORT.md` below was
-independently re-derived — fresh `npm run verify` run, fresh adversarial
-probe scripts written from scratch (not reusing the implementer's test
-inputs), and every cited document (`IMPLEMENTATION-PLAN.md`,
-`DESIGN-SPEC.md`, `Idea Prompt.md`, `PROGRESS-LEDGER.md`) opened and read
-directly rather than trusting the report's quotations. All throwaway probe
-files were deleted after use; `git status --porcelain` confirmed zero
-residue beyond this report.
+implementer that produced commit `8129fca` on branch
+`task/T-22-engine-export-and-run-command` (based on `main` at `dab5db7`).
+No claim in `IMPLEMENTATION-REPORT.md` was trusted at face value: every
+factual claim (changed-file list, test counts, the "byte-for-byte
+unchanged assertions" claim on `activate.test.ts`, the disclosure claims
+about `showInformationMessage`/error handling) was independently
+re-derived from the actual diff, the actual source, and a fresh `npm run
+verify` run. A fresh set of adversarial probes was written from scratch
+(not reusing the implementer's `runComparisonCommand.test.ts` fixtures or
+wording) and executed directly against the exported `runComparisonCommand`
+function. The probe file was deleted after use; `git status --porcelain`
+confirmed zero residue beyond this report before finishing.
 
 ## Scope reviewed
 
 - `TASK-BRIEF.md` (task authority, read in full)
-- `IMPLEMENTATION-REPORT.md` (claims, read in full, treated as assertions)
-- `packages/engine/src/comparison-core/sampling/sampling.ts` (457 lines, read in full)
-- `packages/engine/src/comparison-core/sampling/sampling.test.ts` (311 lines, read in full)
-- `packages/engine/src/connector-sdk/fixture/fixture-connector.ts` (read in full — `executeQuery`, `quoteIdentifier`, `getCapabilities`)
-- `packages/engine/src/connector-sdk/safety/statement-safety.ts` (read in full)
-- `packages/engine/fixtures/snowflake-orders.ts` (read for fixture-shape confirmation)
-- `IMPLEMENTATION-PLAN.md` T-21 row, `DESIGN-SPEC.md`'s row-cap/timeout section, `Idea Prompt.md`'s "Strategy A" section (all quoted-verbatim claims cross-checked against literal text)
-- `PROGRESS-LEDGER.md` at `ac52a30` (T-20 baseline count, open-findings table — confirmed no prior finding routes to T-21)
-- `git diff --stat main task/T-21-sampling` and commit log
+- `IMPLEMENTATION-REPORT.md` (claims, read in full, treated as assertions to verify)
+- `packages/engine/src/index.ts` (full diff read)
+- `packages/engine/src/index.test.ts` (new file, read in full)
+- `packages/extension/src/activation/activate.ts` (full diff read)
+- `packages/extension/src/activation/activate.test.ts` (full diff read)
+- `packages/extension/src/activation/runComparisonCommand.test.ts` (new file, read in full)
+- `packages/extension/package.json` (full diff read)
+- `packages/engine/src/orchestration/definition/definition.ts` (read relevant sections — `InvalidDefinitionError`, credential blocklist)
+- `packages/engine/src/orchestration/planner/planner.ts` (read `UnresolvedConnectionError` definition and trigger condition)
+- `packages/extension/src/webview/resultsWebview.ts` (read `showResultsWebview`'s exported signature to confirm wiring matches)
+- `git diff main task/T-22-engine-export-and-run-command` (full diff and `--stat`)
+- `PROGRESS-LEDGER.md` (current phase, T-22 row, open findings table)
 
 ## Findings
 
@@ -41,229 +46,176 @@ NONE.
 
 | ID | Description | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-21-01 | `TABLESAMPLE SYSTEM (100 PERCENT)` (fixed, not derived from `sampleSize`) means the `TABLESAMPLE` clause itself performs no actual sampling — it samples 100% of the table, and the entire "randomness"/size-reduction of the result is delivered by the outer `LIMIT <sampleSize>`, which (on a table with no explicit ORDER BY) returns rows in whatever order DuckDB's scan happens to produce, not a statistically random subset. This is disclosed prominently (header comment, `IMPLEMENTATION-REPORT.md`'s dedicated subsection, and the `Assumptions and risks` table), and the brief only *authorized* (did not mandate) the branching, explicitly asking for disclosure rather than a specific percentage strategy — so this is not a violation of the brief. It is, however, a materially weaker interpretation of "random sample" than a caller might expect from the `supportsTableSampling === true` branch existing at all; a percentage genuinely proportional to an estimated table size (even a rough one) would give the `TABLESAMPLE` clause real sampling semantics instead of being a no-op wrapped by `LIMIT`. | `sampling.ts:312-323` (`buildRandom`); `DEFAULT_RANDOM_TABLESAMPLE_PERCENT = 100` at line 255; confirmed via my own probe that the fixture's `supportsTableSampling: true` branch is in fact exercised (`generated.sql.sql` contains `TABLESAMPLE`) | Non-blocking. Track as debt for the future planner-integration task (or a follow-up to T-21) to consider deriving a real percentage once `executeQuery`-based row-count estimation is in scope, or to rename/re-disclose this branch as "LIMIT-bounded, not statistically sampled" more prominently in any future consumer-facing documentation (e.g. a future webview UI string), not just the code comment. |
-| T-21-02 | `supportsTableSampling: false` fallback branch (`ORDER BY RANDOM() LIMIT <sampleSize>`) is exercised only by code inspection, not by any passing test — no connector in this codebase currently reports `false` for that capability. This is self-disclosed accurately in `IMPLEMENTATION-REPORT.md`'s "Assumptions and risks" section (risk #2) and is a real, if narrow, coverage gap. | `sampling.ts:312-323`; confirmed no `FixtureConnector`/other connector in the repo returns `supportsTableSampling: false` (`fixture-connector.ts:216-228` returns `true` unconditionally; `sqlserver`/`postgres` connector tests are skipped, not usable to check without live containers) | Non-blocking, matches T-20's own precedent of disclosing an untested branch rather than fabricating fixture coverage for it. A future task with a connector reporting `false` should add this coverage. |
+| T-22-01 | `UnresolvedConnectionError` can never actually be thrown by this command's own registry construction. `buildFixtureRegistry(sourceConnectionName, targetConnectionName)` unconditionally registers a `FixtureConnector` under *whatever* connection-name strings the parsed definition contains (`activate.ts`, `buildFixtureRegistry`), so `runComparison`'s internal registry lookup (`planner.ts`, `UnresolvedConnectionError` thrown only when `connectors.get(name)` misses) can never miss for this specific caller. The brief's reviewer note asks to construct "a YAML definition referencing an unregistered connection name" and confirm it surfaces cleanly — that literal scenario is unreachable through this command as designed; the implementer's own 4th test (`runComparisonCommand.test.ts`, "surfaces UnresolvedConnectionError-shaped failures") and my own probe 5 below actually exercise the generic catch-all path via an unknown fixture *table*, not an unresolved *connection name*. The generic `catch` block still handles the (unreachable) case defensively, so this is not a functional gap — just a design property worth naming plainly, since the report and the brief both talk about testing "an unregistered connection name" as if it were a live code path here. | `packages/extension/src/activation/activate.ts` `buildFixtureRegistry` (registers both parsed names unconditionally); `packages/engine/src/orchestration/planner/planner.ts` `UnresolvedConnectionError` (thrown only on registry miss); confirmed via my own independent probe (see Verification §2, probe 5) that an arbitrary/unregistered-sounding connection name still resolves and produces a successful result with `showErrorMessage` never called | Non-blocking. Correct the report/brief-adjacent framing (in a future revision or the ledger note) to say the reachable error path is "any error `runComparison` throws" (e.g. unknown fixture table), not literally "an unresolved connection name" — or, if a genuinely unresolvable-connection scenario is wanted for test coverage, have `buildFixtureRegistry` only register a fixed, smaller set of known names so a definition using an unexpected third name would miss. Not required for approval since the catch-all error handling is still correct and complete. |
 
 ## Verification performed
 
 ### 1. Fresh `npm run verify`
 
-Ran independently, not copy-pasted from the report:
+Ran independently on the task branch (`task/T-22-engine-export-and-run-command`, already checked out, working tree clean before and after):
 
 ```
 $ npm run verify
-...
- Test Files  20 passed | 2 skipped (22)
-      Tests  396 passed | 27 skipped (423)
+> tsc -b --force        (exit 0, no errors)
+> eslint .               (exit 0, no errors)
+> vitest run
+ Test Files  22 passed | 2 skipped (24)
+      Tests  404 passed | 27 skipped (431)
 ```
 
-Matches the report's claimed **396 passed / 27 skipped (423 total), exit 0**
-exactly. Skip count (27) accounted for entirely by the pre-existing
-PostgreSQL (14) and SQL Server (13) live-container integration suites,
-consistent with `CLAUDE.md`'s documented environment.
+Matches the report's claimed **404 passed / 27 skipped (22 test files
+passed / 2 skipped), exit 0** exactly. Skip count (27) is the pre-existing
+SQL Server (13) / PostgreSQL (14) live-container integration suites,
+untouched by this task.
 
-**Arithmetic re-derivation:** `PROGRESS-LEDGER.md` at `ac52a30` records
-T-20's post-merge baseline as "381/381 tests (408 total, 27 ... skips)".
-381 (baseline passed) + 15 (this task's own new tests, confirmed by reading
-`sampling.test.ts`'s 15 `it(...)` blocks) = 396. Matches the observed total
-exactly — no regression, delta fully accounted for.
+**Arithmetic re-derivation:** brief's own baseline is 396 passed (as of
+T-16b/T-21). New tests added by this branch: `packages/engine/src/index.test.ts`
+has 4 `it(...)` blocks (confirmed by reading the file);
+`packages/extension/src/activation/runComparisonCommand.test.ts` has 4
+`it(...)` blocks (confirmed by reading the file). 396 + 4 + 4 = 404,
+matching the observed total exactly. `activate.test.ts` still has exactly
+3 tests (unchanged count, only its mock factory was extended) — confirmed
+by reading the file and by the vitest output line
+`activate.test.ts (3 tests)`.
 
-### 2. Row-cap/timeout bypass check (the review gate itself) — independent probe, not the implementer's test
+### 2. Adversarial probing — independent probe file, not reusing the implementer's tests
 
-Constructed a fresh throwaway test file (`__reviewer_probe.test.ts`, deleted
-after use) exercising two strategies whose SQL carries its own
-size-limiting clause, executed through the real `FixtureConnector` with
-`maxRows` deliberately smaller than the strategy's own requested size:
+Wrote a fresh throwaway test file
+(`packages/extension/src/activation/reviewer-probe.test.ts`, deleted after
+use) importing the real exported `runComparisonCommand` function directly,
+using YAML payloads and assertions distinct from
+`runComparisonCommand.test.ts`. All 5 probes passed:
 
-- **first-n, `n=5`**, executed with `maxRows=1` → generated SQL contained
-  `LIMIT 5`; actual returned row count was **exactly 1**, not 5. Confirmed
-  by reading `FixtureConnector.executeQuery` (`fixture-connector.ts:203`):
-  every executed SQL string is unconditionally wrapped as `SELECT * FROM
-  (<sql>) AS fixture_query LIMIT <options.maxRows>`, regardless of what
-  `LIMIT`/`TABLESAMPLE` clause the inner SQL already has — this is the
-  actual enforcement mechanism, and it is outside `sampling.ts` entirely
-  (`sampling.ts` never calls `executeQuery` and never threads
-  `ExecutionOptions`, confirmed by reading the full file — `options:
-  SampleQueryOptions` at line 272 has no `maxRows`/`timeoutMs` field, and
-  is explicitly `void`-discarded at line 274).
-- **random (`TABLESAMPLE` branch), `sampleSize=5`**, executed with
-  `maxRows=1` → confirmed `FixtureConnector.getCapabilities()` reports
-  `supportsTableSampling: true` so the `TABLESAMPLE` branch was actually
-  exercised (generated SQL contained the literal string `TABLESAMPLE`);
-  actual returned row count was ≤ 1.
-
-**Conclusion: confirmed.** The connector's cap, not the sample strategy's
-own clause, determines the final row count — the central correctness
-property (the review gate) holds under my own independently constructed
-probe, matching the brief's specific instruction to probe "at least one
-strategy whose SQL includes its own size-limiting clause" (I probed two).
-
-### 3. Deterministic-hash reproducibility — independent generate+execute, twice, diffed
-
-Built a fresh probe using two **separate `FixtureConnector` instances**
-(not one shared instance, to rule out any instance-level caching the
-implementer's own test might not have ruled out) and two separately
-constructed strategy objects. `buildSampleQuery` produced byte-identical
-SQL text across both instances (`hash()`'s SQL expression contains no
-non-deterministic input); executing both independently and comparing
-sorted `ORDER_ID` sets after row-by-row extraction confirmed **identical
-row sets**. Confirmed reproducibility independently, not by trusting the
-implementer's own test.
-
-### 4. Injection safety — independent adversarial identifiers, distinct from the implementer's
-
-Read `FixtureConnector.quoteIdentifier` directly:
-
-```typescript
-quoteIdentifier(identifier: string): string {
-  return `"${identifier.replace(/"/g, '""')}"`;
-}
-```
-
-Confirmed by direct inspection: this doubles every embedded `"` before
-wrapping in an outer `"..."` pair — the standard SQL identifier-escaping
-rule — so a malicious identifier string can never terminate the quoted
-identifier early. Constructed my own adversarial payloads, distinct from
-the implementer's (`ORDER_STATUS"; DROP TABLE ...`/`event_date"); DROP
-TABLE ...`) to avoid re-testing exactly what was already tested:
-
-- **Stratified strategy, `stratifyColumn`** with a payload combining a
-  backslash and an `UPDATE ... SET ... WHERE 1=1` body (not `DROP`, to
-  diversify from the implementer's coverage): generated SQL contained the
-  correctly quote-doubled literal; `assertReadOnlyStatement(sql,
-  "duckdb")` did not throw (still a well-formed read-only `SELECT`);
-  executing it against the real `FixtureConnector` threw (DuckDB binder
-  error on the nonexistent malicious column, not a successful `UPDATE`);
-  re-querying `orders_source` for `ORDER_STATUS = 'HACKED'` afterward
-  returned **0 rows** — direct proof no mutation occurred.
-- **Deterministic-hash strategy, `keyColumn`** (a parameter path the
-  implementer's own tests never adversarially probed) with a
-  `"); DELETE FROM orders_source; --` payload: same result — safely
-  quoted, passes `assertReadOnlyStatement`, execution throws a binder
-  error, table intact afterward.
-- **First-N strategy, `orderByColumn`** (also untested by the implementer)
-  with a `"; DROP TABLE orders_source; --` payload: same result.
-- **Date-window strategy, `startDate`** (a *value*, not identifier,
-  parameter — exercising `sqlStringLiteral`'s single-quote-doubling path
-  rather than `quoteIdentifier`'s double-quote-doubling path) with a
-  `' OR '1'='1'; DROP TABLE orders_source; --` payload: generated SQL
-  contained the correctly quote-doubled literal; `assertReadOnlyStatement`
-  did not throw.
-- **Key-range strategy, `startKey`** (string-typed value parameter) with
-  the same class of payload: correctly quote-doubled; passes
-  `assertReadOnlyStatement`; table intact afterward.
-
-**Conclusion: confirmed, independently, on five parameter paths (three
-identifier paths the implementer had not covered, plus two value/literal
-paths), not just the two the implementer's own report investigated.**
-`quoteIdentifier`'s escaping behavior is correct, and the implementer's
-case-(a) conclusion (fix the tests, not the production code) is verified
-sound — the tests as rewritten test the actual safety property the review
-gate cares about.
-
-**One step further, per the brief's instruction to try a case the
-implementer didn't mention:** I also probed whether a malicious
-`{ kind: "query" }` `QueryInput` **itself** (not a strategy parameter) —
-e.g. `{ kind: "query", sql: "DELETE FROM orders_source" }` passed as the
-object being sampled from — could smuggle a mutation through
-`resolveObjectReference`'s bare `(${input.sql}) AS sampling_subquery`
-wrapping, which does not sanitize `input.sql` at all. Generated SQL:
-`SELECT * FROM (DELETE FROM orders_source) AS sampling_subquery LIMIT 3`.
-Confirmed `assertReadOnlyStatement` does **not** throw on this text (its
-lexical scanner sees no top-level mutating leading keyword — `DELETE`
-appears nested inside a parenthesized subquery position, which the scanner
-does not specifically check). However, executing this text against real
-DuckDB (via `FixtureConnector.executeQuery`) produces a **DuckDB parser
-syntax error** (`Parser Error: syntax error at or near "FROM"` — DuckDB
-itself rejects a DML statement in FROM-subquery position as invalid SQL
-grammar), and `orders_source` was confirmed to retain all 5 rows
-afterward. So this specific case is inert in practice, not exploitable —
-but the underlying gap in `assertReadOnlyStatement`'s coverage (a
-subquery-nested mutating keyword is not specifically checked) is
-pre-existing, shared identically by `volume.ts`'s and `profiling.ts`'s own
-`resolveObjectReference` implementations (confirmed by reading both — same
-bare `(${input.sql}) AS <name>_subquery` pattern, same lack of
-sanitization) and by `FixtureConnector`'s own `resolveObjectReference`. It
-is not introduced by T-21, is not in T-21's ownership to fix
-(`statement-safety.ts` is explicitly T-03's owned file, off-limits to this
-task per the brief), and DuckDB's own grammar happens to make it inert for
-this exact shape — not something I am raising as a T-21 finding, but
-disclosing here since the brief asked me to try a case the implementer
-didn't test.
-
-### 5. Scope check
+1. **Totally garbage non-YAML text** (`"\t: : :\nnot: [valid\n  - - -"`) →
+   no throw escaped `runComparisonCommand` (caught in my own test's
+   `try`/`catch`, `threw` stayed `false`); `result` was `undefined`;
+   `showErrorMessage` called exactly once. Confirms the malformed-YAML
+   case works for YAML syntactically broken in a different way than the
+   implementer's own `MALFORMED_YAML` fixture (implementer used an
+   unclosed `[`; I used stray colons/dashes).
+2. **Empty `{}` document** (missing every required field, not just
+   syntactically odd) → same clean result: no throw, `showErrorMessage`
+   called once, `result` undefined.
+3. **Credential-shaped field injection** (`password: hunter2` nested under
+   `source`) — probing `definition.ts`'s existing credential blocklist
+   through this specific command path, a case neither the implementer's
+   report nor its tests mention → correctly rejected as an
+   `InvalidDefinitionError`, surfaced cleanly via `showErrorMessage`, no
+   throw escaped, no silent bypass.
+4. **Fixture-only disclosure fires even on a failing run** — confirmed
+   `showInformationMessage` is called before `parseDefinition` even runs
+   (it's the first statement inside the `try` block in `activate.ts`), so
+   the notice is genuinely unconditional, not gated on a successful parse
+   or a successful comparison. This directly answers reviewer-note item
+   (4): the disclosure is real, user-visible, on every invocation
+   including failing ones — not just a code comment.
+5. **Unregistered-sounding connection names** (`totally-made-up-name-xyz`
+   / `another-made-up-name-abc`) → produced a **successful** result
+   (`result` defined, `showErrorMessage` never called), confirming finding
+   T-22-01 above: `UnresolvedConnectionError` is structurally unreachable
+   through this command's own registry-building logic, since
+   `buildFixtureRegistry` always registers whatever names are present.
 
 ```
-$ git diff --name-only main task/T-21-sampling
-IMPLEMENTATION-REPORT.md
-TASK-BRIEF.md
-packages/engine/src/comparison-core/sampling/sampling.test.ts
-packages/engine/src/comparison-core/sampling/sampling.ts
+$ npx vitest run packages/extension/src/activation/reviewer-probe.test.ts
+ ✓ packages/extension/src/activation/reviewer-probe.test.ts (5 tests)
+ Test Files  1 passed (1)
+      Tests  5 passed (5)
 ```
 
-Confirmed: only `sampling/**` (new directory, both files) plus the two
-control documents were touched. No `packages/engine/src/orchestration/
-planner/**` change, no `profiling.ts`/`row-level.ts`/`volume.ts`/
-`hash-comparison/**`/`statement-safety.ts`/`fixture-connector.ts`/
-`packages/shared/src/**` change. `packages/shared/src/connector.ts`'s
-existing `GeneratedQuery` interface was left untouched — confirmed by
-reading the file directly (`connector.ts:66`, `:114`) — the implementer's
-claim of avoiding a naming collision by choosing `SampleGeneratedQuery`
-instead of reusing/editing that interface is accurate.
+Probe file deleted immediately after this run; confirmed via
+`git status --porcelain` (empty output) that no residue remained.
 
-### 6. `supportsTableSampling` branching judgment call
+### 3. Scope discipline check
 
-Read `sampling.ts:312-323` (`buildRandom`) directly: confirmed the
-branching on `connector.getCapabilities().supportsTableSampling` was
-actually implemented as declared —
-`SELECT * FROM ${objectRef} TABLESAMPLE SYSTEM (100 PERCENT) LIMIT
-${strategy.sampleSize}` when `true`, `SELECT * FROM ${objectRef} ORDER BY
-RANDOM() LIMIT ${strategy.sampleSize}` when `false`. Confirmed
-`FixtureConnector.getCapabilities()` (`fixture-connector.ts:216-228`)
-returns `supportsTableSampling: true` unconditionally, so the fixture-based
-tests (and my own probe) exercise the `TABLESAMPLE` branch, matching the
-report's disclosure that the fallback branch has no fixture-driven test
-coverage. See Minor findings T-21-01/T-21-02 above for the judgment
-assessment on whether `TABLESAMPLE SYSTEM (100 PERCENT)` is a reasonable
-interpretation of native sampling.
+```
+$ git diff main task/T-22-engine-export-and-run-command --stat
+IMPLEMENTATION-REPORT.md                            | 321 ++++++++-----------
+packages/engine/src/index.test.ts                   |  41 +++
+packages/engine/src/index.ts                        |  27 +-
+packages/extension/package.json                     |   8 +-
+packages/extension/src/activation/activate.test.ts  |  14 +-
+packages/extension/src/activation/activate.ts       | 166 ++++++++++-
+.../src/activation/runComparisonCommand.test.ts     | 171 +++++++++++
+```
 
-### 7. Deterministic-hash dialect disclosure
+- `packages/engine/src/index.ts`: confirmed the entire diff is `export *
+  from "./orchestration/definition/definition.js"` /
+  `"./orchestration/planner/planner.js"` /
+  `"./connector-sdk/fixture/fixture-connector.js"` plus header-comment
+  prose. No new logic, no re-implementation, no wrapper functions — a
+  genuine re-export-only file, matching `packages/shared/src/index.ts`'s
+  precedent as required. All four hard-required symbols
+  (`parseDefinition`, `runComparison`, `ConnectorRegistry`,
+  `FixtureConnector`) plus `InvalidDefinitionError`/
+  `UnresolvedConnectionError` are exported via the wildcard re-exports —
+  confirmed directly importable via `packages/engine/src/index.test.ts`,
+  which I re-ran independently (passes).
+- `packages/extension/package.json`: diff is confined to inserting one
+  object into the `contributes.commands` array; `activationEvents`,
+  `contributes.views`, and every other field are untouched (confirmed by
+  reading the full diff, not just the stat).
+- `packages/extension/src/activation/activate.ts`: extends T-10's
+  ownership as authorized. Confirmed the pre-existing `treeDataProvider`/
+  `treeView`/`secretStore` construction lines inside `activate()` are
+  byte-for-byte unchanged (grepped the diff for those identifiers — only
+  comment-prose lines around them changed); the only body change is two
+  added lines (`registerRunComparisonCommand()` call and
+  `context.subscriptions.push(...)`) plus new top-level functions
+  (`buildFixtureRegistry`, `runComparisonCommand`,
+  `registerRunComparisonCommand`) and two new exported constants. No
+  restructuring of the tree-view/SecretStore wiring occurred.
+- `packages/extension/src/activation/activate.test.ts`: **not** in the
+  brief's declared "Files owned" list, but the implementer disclosed this
+  as a forced minimal edit. I read the full diff directly rather than
+  trusting the disclosure: the only change is two new keys added to the
+  `vi.mock("vscode", ...)` factory's returned object
+  (`commands: { registerCommand }`, `workspace: { workspaceFolders:
+  undefined }`) plus a new comment explaining why. All three pre-existing
+  `it(...)` test bodies and their assertions are textually identical to
+  `main` — confirmed by diff inspection, not by trusting the report's
+  "byte-for-byte unchanged" claim. This is a minimal, mechanically-forced
+  consequence of `activate()` now calling `vscode.commands.registerCommand`
+  at module-body-execution time (the mock previously had no `commands`
+  key, so any test importing `activate.ts` would fail with `No "commands"
+  export is defined on the "vscode" mock` even before assertions run) —
+  judged an acceptable, correctly-disclosed minimal edit, not a scope
+  violation.
+- No file inside `packages/engine/src/comparison-core/**`,
+  `packages/engine/src/connector-sdk/**` (beyond the authorized read-only
+  import), `packages/engine/src/orchestration/**` (beyond the authorized
+  read-only import), `packages/extension/src/webview/**`,
+  `packages/extension/src/export/**`, or `packages/extension/src/views/**`
+  was touched — confirmed by the `--stat` output above; none of those
+  paths appear.
+- `IMPLEMENTATION-REPORT.md` is the only file touched outside the three
+  owned paths besides the disclosed `activate.test.ts` mock edit, which is
+  explicitly permitted.
 
-Confirmed the DuckDB-only limitation is disclosed prominently: in the
-file's own header comment (`sampling.ts:91-110`, a dedicated paragraph),
-in the `DeterministicHashStrategy` interface's own doc comment
-(`sampling.ts:151-155`), in the `buildDeterministicHash` function's inline
-comment (`sampling.ts:325`), and in `IMPLEMENTATION-REPORT.md`'s own
-dedicated "Disclosed dialect limitation" subsection with explicit
-comparison against SQL Server's `HASHBYTES`/PostgreSQL's `md5` and why
-neither is a drop-in replacement. This matches T-20's own precedent
-(`hash-comparison.ts`'s header comment discloses an analogous per-dialect
-hashing gap) both in prominence and in category — not buried, not a
-footnote.
+### 4. Wiring correctness — `showResultsWebview` signature match
 
-### 8. Cross-checked verbatim quotations against source documents
+Read `packages/extension/src/webview/resultsWebview.ts`'s exported
+`showResultsWebview(createWebviewPanel, viewColumn, result)` signature
+directly and compared it against `runComparisonCommand`'s call site in
+`activate.ts` (`showResultsWebview(deps.createWebviewPanel, deps.viewColumn,
+result)`) — parameter order and types match exactly. No shape mismatch,
+consistent with the brief's own pre-confirmed integration probe.
 
-- `IMPLEMENTATION-PLAN.md`'s T-21 row (line 73): quoted text in
-  `TASK-BRIEF.md` matches the literal row text exactly, including the
-  review-gate sentence "Independent reviewer confirms sampling never
-  bypasses the row-cap/timeout safety limits from `DESIGN-SPEC.md`."
-- `DESIGN-SPEC.md` lines 133-134: "default 100,000 rows for row-level
-  previews" and "default 60 seconds" — matches the brief's and report's
-  citation.
-- `Idea Prompt.md` lines 335-340: the six strategy names ("First N rows",
-  "Random sample", "Deterministic hash sample", "Stratified sample",
-  "Date-window sample", "Key-range sample") match exactly what
-  `sampling.ts`'s `SamplingStrategy` discriminated union implements.
-- `PROGRESS-LEDGER.md` at `ac52a30`: confirmed 381-test baseline and
-  confirmed the Open Findings table has no entry routing to T-21 (only
-  M-01/M-02, both from T-01, unrelated) — this is a first-round review
-  with no prior finding to re-verify as resolved.
+### 5. Fixture-only disclosure — code-comment vs. runtime-visible check
+
+Confirmed `FIXTURE_ONLY_NOTICE` is a real runtime string shown via
+`deps.showInformationMessage(FIXTURE_ONLY_NOTICE)` as the **first**
+statement inside `runComparisonCommand`'s `try` block (before
+`parseDefinition` is even called) — not merely a header comment. Verified
+independently via probe 4 above that this fires even when the subsequent
+parse fails. This satisfies reviewer-note item (4).
 
 ## Disposition of prior findings
 
-None apply to T-21 — this is the task's first review round, and
-`PROGRESS-LEDGER.md`'s Open Findings table (as of the `ac52a30` baseline
-this branch is built on) contains no finding routed to T-21.
+None apply to T-22 — `PROGRESS-LEDGER.md`'s Open Findings table (as of the
+`dab5db7` baseline this branch is built on) contains no finding routed to
+T-22; this is the task's first review round and it is a bounded
+integration-remediation task, not a fix for a previously flagged defect.
 
 ## Adversarial probe residue check
 
@@ -271,31 +223,45 @@ this branch is built on) contains no finding routed to T-21.
 $ git status --porcelain
 ```
 
-returned no output (clean) after deleting both throwaway probe files
-(`__reviewer_probe.test.ts`, `__reviewer_probe2.test.ts`) created and used
-during this review — confirmed no residue beyond this report.
+returned no output (clean) after deleting the throwaway probe file
+(`packages/extension/src/activation/reviewer-probe.test.ts`) created and
+used during this review — confirmed no residue beyond this report. (Note:
+an unrelated stray untracked file with the same name, left over from a
+different prior session/attempt and containing unrelated content, was
+found and removed before writing my own probe — confirmed via `git status`
+that it was untracked and not part of the T-22 branch; this is disclosed
+for transparency, not because it reflects on the implementer's work.)
 
 ## Final disposition
 
 **APPROVED.**
 
-Rationale: the review gate's central correctness property — that a sample
-strategy's own `LIMIT`/`TABLESAMPLE` clause is additive to, never a
-replacement for, the caller's `ExecutionOptions.maxRows`/`timeoutMs` — is
-confirmed true by my own independently constructed probe on two strategies
-whose SQL carries its own size-limiting clause, not merely by re-running
-the implementer's tests. Deterministic-hash reproducibility is confirmed
-independently across two separate connector instances. Injection safety is
-confirmed on five parameter paths beyond the two the implementer's own
-report investigated, including one case (identifier-typed
-`orderByColumn`/`keyColumn`) the implementer never adversarially tested,
-plus a documented, non-blocking exploration of a `QueryInput`-level
-mutation attempt (found inert due to DuckDB's own grammar, and a
-pre-existing property shared by `volume.ts`/`profiling.ts`, not a
-T-21-introduced gap). Scope is exactly the four files the brief owns.
-`npm run verify` independently reproduces 396 passed/27 skipped/423
-total/exit 0 exactly as claimed. The two Minor findings (T-21-01,
-T-21-02) are disclosed judgment calls the brief explicitly authorized
-without mandating a specific approach, do not weaken the review gate, and
-do not block approval — routed as non-blocking debt for future
-planner-integration work.
+Rationale: this is a low-risk, purely additive wiring task, and every one
+of the brief's own four reviewer-note risk items was independently
+confirmed rather than trusted:
+
+1. **Scope discipline** — confirmed via direct diff inspection: only the
+   three declared owned paths were touched with logic changes, plus the
+   correctly-disclosed and independently-verified minimal
+   `activate.test.ts` mock-only edit (assertions unchanged).
+2. **`packages/engine/src/index.ts` is genuinely re-export-only** —
+   confirmed by reading the full diff; three `export * from` statements
+   and a header comment, no new logic.
+3. **Error handling** — confirmed via 5 independent adversarial probes
+   (garbage YAML, empty object, credential-injection attempt, and two more
+   beyond what the implementer tested) that every failure path produces a
+   clean `showErrorMessage` call, never an unhandled rejection or crash.
+   One Minor finding (T-22-01) notes that the specific "unregistered
+   connection name" scenario the brief's reviewer note describes is
+   structurally unreachable through this command's own registry
+   construction — not a defect, since the generic catch-all still handles
+   it correctly, but a framing correction worth tracking.
+4. **Fixture-only disclosure** — confirmed genuinely user-visible at
+   runtime via `showInformationMessage`, fired unconditionally
+   (independently verified to fire even on a failing run), not just a code
+   comment.
+
+`npm run verify` independently reproduces 404 passed / 27 skipped / exit 0
+exactly as claimed, with test-count arithmetic re-derived and matching.
+The one Minor finding (T-22-01) is non-blocking, does not weaken any
+safety property, and does not violate the brief.
