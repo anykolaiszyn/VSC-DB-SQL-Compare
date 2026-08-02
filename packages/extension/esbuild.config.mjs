@@ -98,6 +98,15 @@
 // they need no `external` entry -- there is nothing in the actual bundle
 // graph referencing them to exclude.
 
+/* global process */
+// The repo's shared eslint.config.mjs uses flat config with no Node
+// `globals` environment configured (it lints as plain ECMAScript with no
+// ambient globals, and flat config no longer honors `eslint-env` comments),
+// so this file's one Node-only global (`process`) needs this local
+// `/* global */` opt-in. Scoped to this build script only -- not a change
+// to the shared eslint config, which is outside this task's file
+// ownership.
+
 import { build } from "esbuild";
 import { cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { fileURLToPath } from "node:url";
