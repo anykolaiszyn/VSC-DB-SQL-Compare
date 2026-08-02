@@ -141,8 +141,17 @@ export function compareRows(
   const ignoreColumns = new Set(options.ignoreColumns ?? []);
   const activeMapping = mapping.filter((entry) => !ignoreColumns.has(entry.target));
 
+  // T-28 fix: `keys` is declared in source-side naming (the YAML `keys:`
+  // example), but `targetColumns` uses target-side names -- these differ
+  // whenever the definition's `column_mapping` translates the key column
+  // (e.g. CustomerID source / CUSTOMER_ID target, the real-world scenario
+  // column_mapping exists for). Resolve each key name to its target-side
+  // name via the same `mapping` lookup `compareMatchedRow` already uses
+  // (`mappingSourceColumnName`) before indexing the target side, instead of
+  // reusing the source-side `keys` names directly against `targetColumns`.
+  const targetKeys = keys.map((keyName) => resolveTargetKeyName(keyName, mapping));
   const sourceIndex = indexByKey(resolveRows(sourceRows), sourceColumns, keys);
-  const targetIndex = indexByKey(resolveRows(targetRows), targetColumns, keys);
+  const targetIndex = indexByKey(resolveRows(targetRows), targetColumns, targetKeys);
 
   const results: RowDifference[] = [];
   const allKeys = new Set<string>([...sourceIndex.keys(), ...targetIndex.keys()]);
@@ -286,6 +295,24 @@ function compareMatchedRow(
 /** Resolves a `ColumnMappingEntry`'s source-side column name -- either the plain `source` field, or (for a derived mapping) the `name` field, per definition.ts's documented union shape. */
 function mappingSourceColumnName(entry: ColumnMappingEntry): string {
   return "source" in entry ? entry.source : entry.name;
+}
+
+/**
+ * T-28: resolves a `keys`-declared (source-side) key column name to its
+ * target-side name via `mapping`, the same lookup mechanism
+ * `compareMatchedRow` already uses for every other mapped column (see
+ * `mappingSourceColumnName` above) -- reused here rather than duplicated,
+ * so key-column translation and regular mapped-column translation share one
+ * source of truth. If no mapping entry's source-side name matches
+ * `keyName` (e.g. the key column is never listed in `column_mapping`
+ * because its name is identical on both sides, the common case), the
+ * source-side name is returned unchanged -- this preserves every existing
+ * caller's behavior where `keys` names already match target column names
+ * directly.
+ */
+function resolveTargetKeyName(keyName: string, mapping: ColumnMappingEntry[]): string {
+  const entry = mapping.find((candidate) => mappingSourceColumnName(candidate) === keyName);
+  return entry ? entry.target : keyName;
 }
 
 /** Looks up `columnName`'s value on a pre-indexed row. Throws if the column name isn't present for this row's side -- caught by `compareMatchedRow`'s try/catch and classified "unable-to-compare", per TASK-BRIEF.md ("a type is fundamentally incomparable"/missing-value case). */
