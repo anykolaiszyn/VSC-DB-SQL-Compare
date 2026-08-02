@@ -9,8 +9,8 @@
   built from `main` commit `6480f8c76e08811953b1a93afdd80e7feeba78e8`,
   approved by the owner with no conditions). Phase 4 (T-29–T-33) is
   approved and written into `IMPLEMENTATION-PLAN.md`. T-29 is COMPLETE and
-  merged; T-30 (real-connector run-command wiring) is next.
-- **Exactly one task may be active:** NONE
+  merged; T-30 (real-connector run-command wiring) is now active.
+- **Exactly one task may be active:** T-30
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
