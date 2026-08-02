@@ -1,6 +1,8 @@
 node_modules/
 dist/
+dist-bundle/
 out/
+packages/extension/native/
 *.log
 .DS_Store
 coverage/

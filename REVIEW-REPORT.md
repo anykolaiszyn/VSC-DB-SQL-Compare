@@ -1,278 +1,166 @@
-# ParityLens — Review Report T-26
+# ParityLens — Review Report T-27
 
-## Independence statement
+## Review independence
 
-This review was performed by a separate agent instance from whoever wrote
-`IMPLEMENTATION-REPORT.md` and the T-26 commits. No memory of authoring the
-change was available or used. Every factual claim in the implementation
-report was independently re-derived from the actual diff, the actual source
-files, and fresh command/tool execution rather than trusted at face value.
+I am a separate reviewer instance from both implementer sessions that
+produced `2342e57` (checkpoint) and `e3dbcfb` (final). I did not author any
+of the code under review. I read `TASK-BRIEF.md` as sole authority, treated
+every claim in `IMPLEMENTATION-REPORT.md` as something to independently
+verify rather than trust, and did not edit any implementation-owned file —
+this report and (if warranted) `PROGRESS-LEDGER.md`'s open-findings table
+are the only files I touched. All scratch/probe files I created during
+review (two independent Node harnesses, a `require.resolve` paths-behavior
+probe, reconstructed red-state/green-state `.vsix` unzip directories) were
+created only under the session scratchpad, never inside the repository, and
+were deleted before finishing; `git status`/`git diff --stat` on the repo
+show no residue.
 
-## Scope reviewed
+## Review scope
 
-- Branch `task/T-26-activity-bar-icon`, tip commit `f809230`, based on
-  `main` at `f164a36`.
-- Commits: `3ee2a64` (implementation), `f809230` (implementation report).
-- Files changed: `packages/extension/media/icon.svg` (new),
-  `packages/extension/package.json`, `IMPLEMENTATION-REPORT.md`.
-- Cross-checked against `TASK-BRIEF.md` (sole authority per this project's
-  `AGENTS.md`) and `PROGRESS-LEDGER.md`'s T-26 row / X-01 finding / the
-  2026-08-01 decision-log entry describing the original live smoke test.
+- **Task objective:** fix the packaged `.vsix` shipping with no
+  `node_modules/`, which caused `dist/activation/activate.js`'s
+  `require("@paritylens/engine")` to throw `MODULE_NOT_FOUND` at extension
+  activation (the shipped extension was completely non-functional), by
+  bundling the extension with esbuild into a single self-contained CommonJS
+  file, with DuckDB's native per-platform binary handled separately since
+  esbuild cannot bundle a `.node` file.
+- **Files and interfaces reviewed:** `packages/extension/esbuild.config.mjs`
+  (new, full read), `packages/extension/package.json` (`main`, `scripts`),
+  `packages/extension/.vscodeignore`, `.gitignore`, root `package.json`/
+  `package-lock.json` (esbuild devDependency), `IMPLEMENTATION-REPORT.md`,
+  `TASK-BRIEF.md`, `PROGRESS-LEDGER.md`. Diff base `32f27bc` (main) →
+  branch tip `e3dbcfb`. Confirmed `2342e57..e3dbcfb` touches only
+  `esbuild.config.mjs` (+9 lines, the `/* global process */` fix) and
+  `IMPLEMENTATION-REPORT.md`, matching the report's provenance claim exactly.
+- **Evidence reviewed:** `@vscode/vsce`'s own installed compiled source
+  (`node_modules/@vscode/vsce/out/package.js`, `out/npm.js`); an empirical
+  Node script confirming `require.resolve(..., {paths})` behavior; a fresh
+  rebuild of the `.vsix` from this branch tip; two independently-authored
+  Node harnesses (not the implementer's, written from scratch based on my
+  own reading of the actual bundle's `vscode.*` API surface) that mock the
+  `vscode` module and `require()` the real packaged bundle; a reconstruction
+  of `main`'s pre-fix package layout to confirm red-state failure; a fresh
+  `npm run verify` run.
 
-## Scope and ownership check
+## Critical findings
 
-`git diff main task/T-26-activity-bar-icon --stat` (excluding
-`IMPLEMENTATION-REPORT.md`, which every task rewrites by convention):
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-```
-packages/extension/media/icon.svg | 8 ++++++++
-packages/extension/package.json   | 3 ++-
-2 files changed, 10 insertions(+), 1 deletion(-)
-```
+## Important findings
 
-`packages/extension/package.json`'s full diff is exactly:
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| T-27-01 | `npm run bundle` (and therefore `npm run package`, which the brief's own scripts.package now runs as its first step) produces `packages/extension/dist-bundle/extension.js` on disk. That path is `.gitignore`'d but was **not** added to `eslint.config.mjs`'s `ignores` list (which excludes `**/dist/**` but has no `**/dist-bundle/**` entry). `npm run lint` (part of `npm run verify`) then lints the generated, minified bundle as source and fails hard: 221 problems / 219 errors (`no-undef` on `require`/`module`/`process`/`setTimeout`/`performance`, `no-require-imports`, etc.), exit 1. I reproduced this myself twice: ran `npm run bundle` then `npm run verify` → exit 1 with the error dump above; deleted `dist-bundle/` and re-ran `npm run verify` → exit 0, 404/27/431 (matching the report exactly). This means the report's clean `npm run verify` result is real but only holds in a specific ordering (verify-before-bundle, or bundle-output-deleted-before-verify) that the report never states or defends — a developer or CI job that runs `npm run package` (the brief's own new release-packaging entry point) and then `npm run verify` in the same working tree, a highly plausible release-checklist sequence, will get a false verify failure that has nothing to do with actual code correctness. Root cause is a one-line gap in `eslint.config.mjs`, a file outside T-27's declared ownership (`Files owned` in `TASK-BRIEF.md` lists only root `package.json`/`package-lock.json`, `packages/extension/package.json`, `packages/extension/esbuild.config.mjs`, `packages/extension/.vscodeignore`) — so the correct fix is a new bounded follow-up task, not an in-place edit here. | Route to a new bounded task (or amend `eslint.config.mjs`'s `ignores` array to add `"**/dist-bundle/**"`, mirroring the existing `**/dist/**`/`**/out/**` entries) before `npm run package` is used as a routine step in any release checklist or CI job. Does not block T-27's own approval since it is a build-tooling/lint-scope gap, not a defect in the packaged extension's actual runtime behavior, and T-27 correctly did not touch the out-of-ownership `eslint.config.mjs` itself — but it must be tracked, since the brief's own stated full-verification contract ("exits 0 with the same test count as the current baseline") is only true order-dependently, and this was not disclosed anywhere in `IMPLEMENTATION-REPORT.md`. |
 
-```diff
-         {
-           "id": "paritylens",
--          "title": "Data Parity"
-+          "title": "Data Parity",
-+          "icon": "media/icon.svg"
-         }
-```
+## Minor findings
 
-No other field in `package.json` changed (`name`, `publisher`, `private`,
-`views`, `commands`, `scripts` all untouched — confirmed by reading the
-full file). This matches the brief's "Files owned" section exactly:
-`packages/extension/media/**` (new) and the single `icon` field. No file
-under `packages/*/src/**` was touched. Scope check: **pass, no findings.**
+| ID | Finding | Evidence | Suggested resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-## Verification performed (fresh, independent)
+## Verification performed
 
-### 1. `npm run verify`
+| Check | Exact command or inspection | Result |
+| --- | --- | --- |
+| `vsce`'s hardcoded `node_modules/**` ignore claim | Read `node_modules/@vscode/vsce/out/package.js` (`defaultIgnore` array, `collectAllFiles`, `collectFiles`) and `out/npm.js` (`getDependencies`) directly | Confirmed accurate. `defaultIgnore` (applied unconditionally via `collectFiles`) contains no `node_modules` entry at all. The `ignore: 'node_modules/**'` glob option only appears inside `collectAllFiles`, evaluated per-`dep` where `deps = getDependencies(cwd, dependencies, ...)`; with `--no-dependencies`, `dependencies === 'none'` and `getDependencies` returns `[cwd]` (just `packages/extension/` itself) per `npm.js` line 188-189 — so the glob's `ignore` is evaluated relative to `packages/extension/`, matching only a literal top-level `packages/extension/node_modules/**`, never a nested `native/node_modules/**`. Matches the esbuild config's comment and the report's claim exactly. |
+| Node's `require.resolve(..., {paths})` directory-name requirement | Wrote and ran a standalone Node script (deleted after use) creating two directories — one literally named `node_modules`, one not — each containing an equivalent resolvable package, then calling `require.resolve(name, {paths: [dir]})` against each | Confirmed empirically: resolution against the non-`node_modules`-named directory threw `MODULE_NOT_FOUND`; resolution against the real `node_modules`-named directory succeeded. Matches the claim exactly. |
+| Bundle content — no remaining workspace `require()`s | `npm run bundle` (fresh, this branch tip) then `grep -c 'require("@paritylens' dist-bundle/extension.js` | `0` matches; `grep -c "compareSchemas\|profileColumn"` (internal engine symbols) → 6 matches, confirming genuine inlining, not just an absent standalone check |
+| `.vsix` structure | `npx vsce package --no-dependencies` (fresh rebuild) then unzipped the output | `extension/dist-bundle/extension.js` present; `extension/native/node_modules/@duckdb/node-bindings/`, `@duckdb/node-bindings-win32-x64/` (`duckdb.dll` 35.02 MB, `duckdb.node` 1.1 MB), `detect-libc/` all present; **no `extension/dist/` directory anywhere in the archive** |
+| Red-state reproduction | Reconstructed `main`'s (`32f27bc`) pre-fix package.json (`main: ./dist/index.js`, `package: vsce package --no-dependencies`, no bundle step) plus the current `tsc -b`-produced `dist/` (unchanged by T-27, confirmed via `git diff` showing zero `src/**` touches), then ran my own from-scratch mock-`vscode` Node harness against it | `REQUIRE_THREW: Error: Cannot find module '@paritylens/engine'` — the exact defect described in the brief, reproduced independently, not copy-pasted from the implementer's transcript |
+| Green-state confirmation (registration) | Ran my own from-scratch mock-`vscode` harness (built independently from reading the bundle's actual `vscode2.*`/`vscode.*` call sites via `grep`, not the implementer's script) against the freshly rebuilt, freshly unzipped `.vsix` payload | `REQUIRE_OK` / `CREATED_TREE_VIEW:paritylens.dataParityView` / `REGISTERED_COMMAND:paritylens.runComparison` / `ACTIVATE_OK` — confirms the harness genuinely discriminates red from green using an independently-derived implementation, not a reuse of the implementer's own script |
+| Green-state confirmation (deeper than the implementer's disclosed gap) | Wrote a second, deeper independent harness that also mocks `showOpenDialog` to return a real temp `.paritylens` YAML file, then actually **invokes** the registered `paritylens.runComparison` command handler end-to-end (not just confirming registration) | First run surfaced a probe-authoring mistake (`"version" is required and must be a number"` — my first test YAML was missing the required `version`/`name`/`keys` fields per `definition.ts`), fixed the probe's YAML against the real schema (confirmed via `planner.test.ts`'s own fixtures), then re-ran: `ACTIVATE_OK` → command invoked → `parseDefinition` → `runComparison` against real `FixtureConnector` instances (genuinely exercising the DuckDB native binding staged in `native/node_modules/`, not just resolving it) → `renderResultsHtml` output containing `"Schema Differences"`, 3026 characters, no error path taken. This is strictly stronger evidence than the implementer's own harness, which explicitly disclosed stopping at command *registration* and not exercising `runComparisonCommand`'s body. My probe closes that specific gap for the win32-x64 build machine and confirms the DuckDB native binding is not just present on disk but genuinely loads and executes real comparison logic through the packaged bundle. |
+| Full verification (clean tree) | `npm run verify` with `dist-bundle/`/`native/`/the built `.vsix` all removed first | Exit 0. `tsc -b --force` clean, `eslint .` clean, Vitest: 22 test files passed / 2 skipped (24), 404 tests passed / 27 skipped (431 total) — matches the report's claimed baseline exactly |
+| Full verification (dirty tree, adversarial order) | `npm run bundle` then `npm run verify` (bundle output left on disk) | Exit 1 — see T-27-01. Reproduced twice for certainty |
+| Scope/ownership check | `git diff 32f27bc..e3dbcfb --name-only` against `TASK-BRIEF.md`'s "Files owned" list; `git diff ... -- packages/extension/package.json` grepped for `name`/`publisher`/`private`/`icon`; `git diff --name-only \| grep 'packages/.*/src/'` | All changed files (`.gitignore`, `IMPLEMENTATION-REPORT.md`, `package-lock.json`, `package.json`, `packages/extension/.vscodeignore`, `packages/extension/esbuild.config.mjs`, `packages/extension/package.json`) are within, or are a minimal mechanically-forced consequence of, declared ownership. `.gitignore`'s two new lines (`dist-bundle/`, `packages/extension/native/`) are outside the literal "Files owned" list but are the necessary, minimal consequence of introducing new build-output directories that must not be committed — correctly attributed in the report to "the orchestrator," not disguised. No `name`/`publisher`/`private`/`icon` touches (prohibited). Zero `packages/*/src/**` files touched (prohibited) |
 
-Ran fresh from repo root on the checked-out branch:
+## Prior-finding disposition
 
-```
-Test Files  22 passed | 2 skipped (24)
-     Tests  404 passed | 27 skipped (431)
-Exit code: 0
-```
+No open finding in `PROGRESS-LEDGER.md` was explicitly routed to T-27 for
+resolution (T-27 itself is the routing target from the `32f27bc` release
+step 5 finding, and it fully resolves that finding — see below). X-01 (open
+since T-10, "no test proves the tree view registers against a real
+extension-host runtime") is adjacent but not this task's stated target; T-27
+does not close X-01 (still no `@vscode/test-electron` or real GUI-driven
+confirmation), but does provide materially stronger evidence than X-01's
+gap describes, via the two independent Node-level harnesses above. X-01
+should remain open, unchanged.
 
-Matches both the report's claim and the brief's expected baseline
-(404 passed / 27 skipped / 431 total) exactly. **Confirmed.**
+| Finding ID | Disposition | Evidence of resolution |
+| --- | --- | --- |
+| Release-step-5 finding routed to T-27 (`32f27bc`'s commit message: "packaged extension is non-functional") | RESOLVED | Independently reproduced the exact red-state failure (`Cannot find module '@paritylens/engine'`, the Node-level manifestation of `MODULE_NOT_FOUND`) against a reconstruction of `main`'s pre-fix layout, and independently confirmed the green-state fix via two from-scratch harnesses, one of which goes beyond registration to a full command-invocation-through-DuckDB round trip. The specific defect described in the brief is genuinely fixed in the shipped `.vsix`. |
+| X-01 (open, T-10) | NOT APPLICABLE to this task's closure — remains OPEN | T-27 strengthens the evidence available (Node-level harness exercising the real bundle) but does not add `@vscode/test-electron` or real GUI-driven confirmation; the brief itself frames this as an acceptable, disclosed gap for this environment, not something T-27 was scoped to close |
 
-### 2. Icon asset inspection
+## Assessment of the disclosed GUI-confirmation gap
 
-`packages/extension/media/icon.svg` exists, is well-formed SVG (24x24
-viewBox, parsed successfully with Node's basic string checks), and uses
-`stroke="currentColor"` on all three drawn elements (`fill="none"`
-throughout) — no hardcoded hex/named colors anywhere in the file. This
-correctly inherits VS Code's theme icon color in both light and dark
-themes, satisfying the brief's "do not hardcode a specific color"
-requirement.
+The brief explicitly anticipated this environment may have no GUI-automation
+tool and asked the reviewer to judge whether Node-harness evidence is strong
+enough to approve without a human/real-VS-Code GUI check. My own assessment,
+reached independently and with materially stronger evidence than what the
+implementer produced (two harnesses, not one; one of which exercises the
+full command-invocation path through real `FixtureConnector`/DuckDB
+execution, not just registration): **the Node-harness evidence is
+sufficient to approve this specific defect as fixed.** The reasoning:
 
-**Minor internal inconsistency noted:** the SVG's own header comment
-says `fill="currentColor"` twice, but the actual technique used is
-`stroke="currentColor"` with `fill="none"`. The implementation report
-correctly describes the real technique (`stroke="currentColor"`) and
-explicitly justifies deviating from the brief's literal `fill="currentColor"`
-suggestion as a judgment call (VS Code's own built-in icon convention) —
-so the report is accurate; only the in-file code comment is stale/wrong.
-Cosmetic, not a functional defect (browsers/VS Code do not parse SVG
-comments). See T-26-03 below.
+- The original defect was a `require()`-time `MODULE_NOT_FOUND` thrown
+  during `activate()`, before any VS Code UI event ever fires. A harness
+  that `require()`s the actual packaged bundle bytes and calls the real
+  exported `activate()` function exercises exactly the code path that threw
+  before — it is not a simulation of that code, it is that code, run against
+  a minimal (but API-surface-complete, confirmed via `grep`-derived
+  enumeration of every `vscode.*`/`vscode2.*` call site actually present in
+  the bundle) substitute for the one dependency (`vscode` itself) that VS
+  Code's real extension host would supply.
+- My second, deeper harness goes further than what the brief technically
+  required (registration only) and confirms the DuckDB native binding is not
+  merely present on disk or resolvable, but genuinely loads and executes —
+  closing the specific "DuckDB native binary correctly handled" concern the
+  brief's own note to the reviewer flagged as the thing to pay particular
+  attention to.
+- What remains unconfirmed (real activity-bar click, real Command Palette
+  invocation, visual rendering) is a materially different and narrower risk
+  category than "does `require()` throw" — it is UI-wiring/`package.json`
+  manifest correctness (already covered by T-26's own live human
+  confirmation of icon/view-container registration) plus the
+  `onView:paritylens.dataParityView` activation-event dispatch mechanism
+  itself, which is VS Code platform behavior, not something T-27's bundling
+  change touches or could plausibly break. T-26 already confirmed live that
+  the icon renders and the view container registers with no startup error;
+  T-27 does not change `contributes.viewsContainers`/`contributes.views`/
+  `activationEvents` at all (confirmed via the diff — only `main`,
+  `scripts`, and the new bundling file changed).
+- This is a case where the project's own established pattern (T-26's
+  precedent: "disclosed limitation, not something to penalize," per this
+  task's own dispatch instructions) applies squarely, and where a human GUI
+  click-through would mostly re-confirm T-26's already-closed finding plus
+  the specific `require()`-doesn't-throw fact this review's harnesses
+  already establish twice, independently, by two different authors.
 
-### 3. Real `.vsix` rebuild and content verification
+I do **not** believe this task should be blocked pending a human GUI check.
+If the owner wants belt-and-suspenders confidence, a real
+activity-bar-click/Command-Palette confirmation remains cheap to obtain
+before the next release-checklist step that actually ships this `.vsix` to
+an end user, but nothing in my independent probing found any reason to
+expect it would fail.
 
-Ran `npm run build` (tsc -b, exit 0) then, from `packages/extension`,
-`npx --no-install @vscode/vsce package --no-dependencies` against the
-current (fixed) branch tip. Output confirmed:
+## Approval status
 
-```
-extension/media/icon.svg [0.71 KB]
-DONE  Packaged: ...\paritylens-0.0.1.vsix (21 files, 23.3 KB)
-```
-
-Unzipped the produced `.vsix` directly (not trusting `vsce`'s own file
-listing) and confirmed `extension/media/icon.svg` is genuinely present in
-the archive with byte-identical content to the source file. **Confirmed —
-matches the implementation report's claim.**
-
-Also independently confirmed the pre-existing `WARNING  LICENSE,
-LICENSE.md, or LICENSE.txt not found` message from `vsce package`
-(present on every build, red and green state), and that a `LICENSE` file
-does exist at the repo root (`V:\...\VSC-DB-SQL-Compare\LICENSE`, MIT,
-added by T-24). This is accurately disclosed in the implementation
-report as pre-existing and out of T-26's scope (`vsce` only looks for a
-LICENSE colocated with the manifest it packages, not at the monorepo
-root) — **confirmed accurate, correctly not treated as a T-26 defect.**
-Filed as a new tracked finding below per the dispatch instructions,
-attributed to a future packaging-scope task, not T-26.
-
-### 4. Independent real extension-host sandbox launches (green state)
-
-Installed the freshly-built `.vsix` into my own fresh sandbox
-(`--extensions-dir`/`--user-data-dir` under a scratch OS temp folder,
-never any real profile) and launched with `--verbose` against a scratch
-workspace. Extension installed successfully
-(`parity-lens-dev.paritylens-0.0.1` present in the sandbox's extensions
-dir). Let the workbench run to a fully-idle state (lifecycle phase 4,
-observed continuously for ~50+ seconds of console output) before
-searching.
-
-Searched every log file under the session's `logs/<timestamp>/` tree —
-`main.log`, `window1/renderer.log`, `window1/exthost/exthost.log`,
-`window1/views.log`, and all others — for `icon is mandatory` and
-`View container 'paritylens' does not exist`. **Zero matches for either
-string, in any log file.** The only `paritylens`-containing lines found
-were two benign trace lines (`pickRunningLocation for
-parity-lens-dev.paritylens...`, `Checking updates for extensions
-github.copilot-chat, parity-lens-dev.paritylens`) — matching the
-implementation report's description almost exactly.
-
-### 5. Independent real extension-host sandbox launch (red state) — material discrepancy found
-
-Per the brief's explicit "Note to reviewer" instruction to independently
-reproduce the red state, I did not rely on reading `main`'s manifest
-alone (though I did confirm `main`'s `package.json` genuinely has no
-`icon` field via `git show main:packages/extension/package.json`). I
-went further and actually rebuilt and launched the pre-fix `.vsix`:
-created a `git worktree` of `main` (`f164a36`), ran `npm install`,
-`npm run build`, and `vsce package --no-dependencies` there — producing
-a genuinely icon-less `.vsix` (20 files vs. 21 for the fixed build, no
-`media/` directory) — then installed and launched it in a **second,
-independent, fresh sandbox** (different scratch folders from the
-green-state run), with `--verbose`, letting it settle to a fully-idle
-workbench state before searching (confirmed via live process listing
-that the instance was not killed mid-startup; watched console output
-run continuously from initial launch through ~60 seconds of idle
-`User data changed` / chat-model heartbeat lines, i.e. genuinely
-fully loaded, not truncated).
-
-**Result: my independent red-state reproduction found zero occurrences
-of either target error string (`icon is mandatory`, `View container
-'paritylens' does not exist`) anywhere in any log file, including
-`main.log`, `renderer.log`, and `exthost.log`.** No `[warning]`-level
-log line of any kind appears in this sandbox's logs at all — the same
-absence of warning-level entries in the red-state run as in the
-green-state run.
-
-This directly contradicts the implementation report's specific red-state
-evidence claim, which cites exact locations: `renderer.log (line 753)`
-and `telemetry.log (line 417)` containing the verbatim error text. I
-could not reproduce that. I made two independent attempts (one shorter,
-one with a longer, verified-not-killed-early settle period) with the
-same negative result both times.
-
-**What this finding does and does not mean:**
-- It does **not** mean the fix itself is wrong. VS Code's manifest schema
-  genuinely requires an `icon` for a custom `viewsContainers.activitybar`
-  entry per Microsoft's own extension manifest documentation, and adding
-  one is unambiguously correct regardless of whether this specific VS
-  Code build's error-surfacing behavior matches what was originally
-  observed. The green-state fix — icon field added, real SVG asset
-  shipped, packaged into the `.vsix` — is independently confirmed correct
-  on its own terms (finding #3/#4 above).
-- It **does** mean I cannot independently corroborate the implementation
-  report's claimed direct evidence that the specific red-state error text
-  was reproduced by the implementer, because my own attempt to reproduce
-  the same red state, using the same method the brief itself prescribes,
-  did not surface it. Plausible explanations include: a VS Code version
-  or build-channel difference between my environment and the
-  implementer's/original smoke-test's session (both report and my
-  session used the same locally-installed VS Code v1.131.0 CLI, so a
-  version mismatch is not obviously the explanation, but a state/cache
-  difference in a shared local install is possible); the warning being
-  logged at a verbosity/channel my grep didn't cover; or the original
-  report's cited line numbers being inaccurate. I am not able to
-  determine which from available evidence.
-- Given the fix is independently correct and verifiable on its own merits
-  (finding #4, and the manifest-schema requirement is well-documented and
-  not in dispute), I am **not** blocking approval on this alone, but it
-  is a real, material verification-evidence discrepancy that must be
-  recorded rather than silently accepted, per this project's "don't
-  report a pass because the implementer said so" discipline.
-
-## Adversarial / disclosed-risk probing
-
-- The implementer disclosed they could not visually confirm the icon
-  glyph renders legibly (no screenshot/GUI tooling in their session).
-  This is an honest, correctly-scoped limitation — I do not have
-  screenshot-capable GUI tooling in this review session either, so I
-  cannot close this gap. **This remains open, needing human visual
-  confirmation**, exactly as both the brief and the report state.
-- Checked whether the icon path could be exploited/malformed (e.g. path
-  traversal in the `icon` field) — not applicable; it's a static
-  relative path (`media/icon.svg`) inside the extension's own owned
-  directory, packaged correctly, no user input involved.
-- Confirmed no credentials, secrets, or mutating-statement logic are
-  touched by this task (static asset + one manifest string field) — no
-  security-relevant surface exists in this change to adversarially probe
-  beyond the verification already performed.
-
-## Findings
-
-| ID | Severity | Description | Evidence | Required/suggested resolution |
-| --- | --- | --- | --- | --- |
-| T-26-01 | Important | Implementation report's red-state evidence (exact claimed log lines "renderer.log line 753" / "telemetry.log line 417" containing the two error strings) could not be independently reproduced. Two independent sandbox launches of a freshly-built pre-fix `.vsix` (from a `main`-worktree rebuild), both allowed to settle to a fully-idle workbench state, produced zero matches for either error string in any log file. | See "Verification performed" section 5 above; scratch sandbox logs were inspected then deleted per this task's cleanup requirement, so the negative evidence itself is not preserved as an artifact — reproducible by any reviewer following the same red-state rebuild-and-launch steps in the brief. | Does not block approval: the fix itself (icon field + valid themed SVG asset, correctly packaged) is independently verified correct on its own merits against VS Code's documented manifest requirement, independent of whether this specific error string reproduces in this environment. Recommend a follow-up note in the ledger flagging that the original smoke test's error text should be treated as strong but not independently reconfirmed evidence, and that future extension-host smoke tests capture the full session log bundle as a durable artifact (not deleted) so this class of discrepancy can be diagnosed rather than re-litigated from scratch each time. |
-| T-26-02 | Minor | Pre-existing `vsce package` "LICENSE, LICENSE.md, or LICENSE.txt not found" warning, confirmed accurate (LICENSE exists at repo root from T-24; `vsce` only checks alongside the manifest it packages, i.e. `packages/extension/`). Correctly disclosed by the implementer as out of T-26's scope and not fixed here. | Reproduced directly: `vsce package --no-dependencies` printed the warning on every build in this review session; `LICENSE` confirmed present at `V:\...\VSC-DB-SQL-Compare\LICENSE`. | Not a T-26 defect. File as a new tracked finding for a future packaging-scope task (e.g. copy/symlink `LICENSE` into `packages/extension/`, or accept via `--allow-missing-repository`-style flag if `vsce` offers an equivalent for LICENSE). Recorded in `PROGRESS-LEDGER.md`'s open findings below. |
-| T-26-03 | Minor | `packages/extension/media/icon.svg`'s own header comment says the icon uses `fill="currentColor"`, but the actual technique used on all three shapes is `stroke="currentColor"` with `fill="none"`. The implementation report correctly and explicitly describes the real `stroke`-based technique as a deliberate judgment call — only the in-file SVG comment is stale/inaccurate. | `packages/extension/media/icon.svg` lines 2-4 (comment) vs. lines 5-7 (actual `stroke`/`fill="none"` attributes). | Cosmetic only — does not affect rendering or theme-color inheritance (SVG comments are not parsed). Suggest a one-line comment fix next time this file is touched; not worth a dedicated task. |
-
-**No Critical findings.**
-
-## Prior findings disposition
-
-- **X-01** (extension tests use a mocked `vscode` module, no real
-  extension-host verification) — T-26 does not close X-01 in general
-  (it remains open and correctly scoped to a future dedicated
-  extension-host test-harness task), but T-26 is the concrete instance
-  the ledger already logged as X-01 "turning out to hide a real defect."
-  This task's own verification (both the report's and mine) is itself
-  additional real-extension-host evidence, consistent with X-01's
-  remediation direction, though it does not substitute for an automated
-  `@vscode/test-electron`-based regression test — none was added or
-  required by this task's brief.
-
-## Disposition
-
-**APPROVED.**
-
-Rationale: the change is exactly and only what the brief authorized (one
-manifest field, one new static asset, both within declared ownership).
-The fix is independently correct against VS Code's own documented
-manifest schema requirement for custom activity-bar containers,
-regardless of the T-26-01 evidence discrepancy. The icon asset is valid,
-theme-adaptive, and confirmed present byte-for-byte inside a freshly
-rebuilt `.vsix`. `npm run verify` is unchanged from baseline (404
-passed / 27 skipped / 431 total, exit 0). No Critical or Important
-finding blocks approval — T-26-01 is recorded as Important but explicitly
-does not block, per the reasoning given in that row (the underlying fix
-is independently verifiable correct on its own terms, and the
-discrepancy is about whether a specific historical error string
-reproduces in this specific environment, not about whether the shipped
-fix is right). The one remaining gap — visual, human confirmation that
-the icon glyph renders legibly in a live activity bar — was honestly
-disclosed as out of both the implementer's and this reviewer's tooling
-reach, and is recommended as the next concrete step before Release step
-5 is marked closed.
-
-## Suggested ledger updates (for the Lead Orchestrator, not applied by this reviewer)
-
-- Close T-26 as APPROVED, 0 Critical / 1 Important (non-blocking,
-  T-26-01) / 2 Minor (T-26-02, T-26-03).
-- Add T-26-02 as a new open finding (LICENSE not colocated with
-  `packages/extension/package.json` for `vsce` packaging purposes),
-  routed to a future packaging-scope task — do not attribute it to T-26
-  or T-25, both correctly disclosed it as pre-existing/out-of-scope.
-- Record T-26-01 as an open observation: the original live-smoke-test
-  error text is not independently re-confirmed reproducible in a
-  from-scratch rebuild-and-relaunch, though the fix is still correct and
-  approved. Recommend the next real extension-host smoke test (Release
-  step 5's re-run) preserve its full log bundle as a committed or
-  attached artifact rather than deleting it after transcript capture, so
-  this class of discrepancy is diagnosable rather than repeatedly
-  re-investigated.
-- Release step 5 still needs a human to visually confirm the Data Parity
-  icon actually renders legibly in the activity bar — neither this
-  review nor the implementation had GUI/screenshot tooling available to
-  close that specific gap.
+- **Status:** APPROVED
+- **Reviewer:** Independent reviewer subagent (Sonnet 5), separate instance
+  from both T-27 implementer sessions
+- **Date:** 2026-08-01
+- **Release or dependency impact:** The core defect this task exists to fix
+  (shipped `.vsix` with no `node_modules/`, `MODULE_NOT_FOUND` on
+  activation, extension completely non-functional) is genuinely resolved
+  and independently re-verified via two from-scratch harnesses plus direct
+  `.vsix` content inspection — safe to proceed with this as the release
+  candidate's packaging approach. One Important, non-blocking finding
+  (T-27-01) must be tracked and fixed before `npm run package` becomes a
+  routine step immediately preceding `npm run verify` in any release
+  checklist or CI pipeline, since that specific ordering currently produces
+  a false verify failure (a lint-scope gap in `eslint.config.mjs`, not a
+  packaging or runtime defect). Recommend the orchestrator open a small
+  bounded follow-up task to add `"**/dist-bundle/**"` to
+  `eslint.config.mjs`'s `ignores` array before relying on that ordering in
+  the release checklist.
