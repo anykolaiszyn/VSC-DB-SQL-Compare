@@ -72,6 +72,65 @@ Development Phases), mapped onto the approved design's five components.
 | T-20 | T-14 | Implement hash-based comparison strategy (table/partition/key-range/row/column hash levels, progressive narrowing per idea doc "Strategy C") as an alternative to full row-level pull for large datasets | `packages/engine/src/comparison-core/hash-comparison/**` | Row-level matching contracts from T-14 | `compareByHash(source, target, level): HashComparisonResult` | Red: test comparing two fixture partitions by hash expecting a mismatch at partition 2 fails (function doesn't exist). Green: same test passes, matches idea doc's progressive-narrowing example structure. Full: `npm run verify` | Independent reviewer confirms hash comparison and full row-level comparison agree on the same fixture mismatch case | Branch `task/T-20-hash-comparison` |
 | T-21 | T-07 | Implement sampling strategies (first-N, random, deterministic hash, stratified, date-window, key-range per idea doc "Strategy A") for use when row-level or profile checks are configured with a sample strategy | `packages/engine/src/comparison-core/sampling/**` | `QueryInput`/connector execution | `buildSampleQuery(strategy, input): GeneratedQuery` | Red: test requesting a deterministic-hash sample expecting reproducible row selection fails (function doesn't exist). Green: same test passes with two runs producing identical sample sets. Full: `npm run verify` | Independent reviewer confirms sampling never bypasses the row-cap/timeout safety limits from `DESIGN-SPEC.md` | Branch `task/T-21-sampling` |
 
+### Phase 4 — Self-service UI (added 2026-08-02, after the "engine +
+fixture-demo command" release; T-01–T-21 plus T-22/T-25/T-27/T-28
+integration-and-release remediation were approved and released before
+this phase was scoped — see `PROGRESS-LEDGER.md`'s decision log for the
+release record and the owner's request that prompted this phase)
+
+`DESIGN-SPEC.md`'s Architecture table names five components: VS Code
+Extension Layer, Parity Orchestration API, Connector SDK, Comparison
+Core, and Result Store. The first release delivered full, real,
+live-container-tested implementations of the Orchestration API,
+Connector SDK (SQL Server + PostgreSQL), and Comparison Core, plus a
+minimal Extension Layer (one working command, `paritylens.runComparison`,
+against fixture data only). **Connection management, comparison
+authoring, and the Result Store were never scoped as buildable tasks in
+the original 21-task plan** — `DESIGN-SPEC.md`/`Idea Prompt.md` name them
+as part of the full architecture, but T-10 built only their tree-view
+empty-state shell and an unused `SecretStore` wrapper. This phase closes
+that gap for the pieces judged genuinely necessary for a self-service
+tool; see the Backlog section below for pieces deliberately still
+excluded.
+
+| ID | Depends on | Objective | Files owned | Interfaces consumed | Interfaces produced | Focused red/green verification | Review gate | Commit or patch checkpoint |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T-29 | T-10 | Connection profile management: a `ConnectionProfile` type (name, platform, host/port/database/user — never an inline secret), persisted via `context.globalState` for non-secret metadata and the existing `SecretStore` wrapper (T-10) for the credential; `paritylens.addConnection`/`editConnection`/`deleteConnection` commands; wires real, already-implemented `SqlServerConnector`/`PostgresConnector` (T-17/T-19) as the profile's underlying connector | `packages/extension/src/connections/**` (new), `packages/extension/src/activation/activate.ts` (extends T-10/T-22, command registration only) | `SqlServerConnectionOptions`/`PostgresConnectionOptions` (T-17/T-19, already defined), `SecretStore` (T-10) | `ConnectionProfile` type, profile CRUD commands, a profile-to-connector resolver | Red: test adding a connection profile and reading it back expecting the non-secret fields persisted and the password readable only via `SecretStore` fails (not implemented). Green: same test passes; a second test confirms no credential ever appears in `globalState`'s own stored value. Full: `npm run verify` | Independent reviewer confirms no credential ever touches `globalState`/`workspaceState` (same review gate T-10 itself used) and that deleting a profile also deletes its `SecretStore` entry (no orphaned credential) | Branch `task/T-29-connection-profiles` |
+| T-30 | T-22, T-29 | Extend `paritylens.runComparison`'s connector registry resolution: when a `.paritylens` definition's `source.connection`/`target.connection` name matches a saved `ConnectionProfile` (T-29), resolve to a real `SqlServerConnector`/`PostgresConnector` instance instead of always falling back to `FixtureConnector`; fixture fallback remains for names that don't match a saved profile (preserves T-22's existing fixture-demo behavior when no profile is configured) | `packages/extension/src/activation/activate.ts` (extends T-22's `buildFixtureRegistry`/`runComparisonCommand`, real-connector resolution only) | `ConnectionProfile` resolver (T-29), `SqlServerConnector`/`PostgresConnector` (T-17/T-19) | Real-connection-aware `ConnectorRegistry` construction | Red: test running a comparison with a definition naming a saved (mocked) SQL Server profile, expecting a real `SqlServerConnector` to be constructed, fails (still always resolves to fixtures). Green: same test passes; a second test confirms an unrecognized connection name still falls back to fixtures, unchanged from T-22's existing behavior. Full: `npm run verify` | Independent reviewer confirms the fixture fallback path is genuinely unchanged (no regression to T-22's existing fixture-demo behavior) and that connection failures against a real profile produce the Layer-1 connectivity-failure result `DESIGN-SPEC.md`'s error/recovery table describes, not a crash | Branch `task/T-30-real-connector-wiring` |
+| T-31 | T-09/T-15 | Implement the Result Store component named in `DESIGN-SPEC.md`'s Architecture table: persist each `ComparisonResult` as an immutable JSON record under the safe output root (reusing T-16's existing safe-output-root containment pattern from `writeExport.ts`), one file per run, filename including a timestamp and the comparison's `name`; a `listRecentRuns()`/`loadRun(id)` read API for the tree view and a future "Open Last Result" command to consume | `packages/extension/src/runHistory/**` (new) | `ComparisonResult` (T-02/T-09), safe-output-root containment logic (T-16, read-only reuse — do not duplicate the path-traversal check, import it) | `persistRun(result): Promise<string>` (returns the stored record's path/id), `listRecentRuns(): Promise<RunRecord[]>`, `loadRun(id): Promise<ComparisonResult>` | Red: test persisting a `ComparisonResult` and reading it back via `loadRun` expecting a byte-for-byte-equivalent object fails (not implemented). Green: same test passes; a second test confirms a run record written outside the safe output root is rejected, reusing T-16's exact containment behavior. Full: `npm run verify` | Independent reviewer confirms records are genuinely immutable (no run ever overwrites another, per `DESIGN-SPEC.md`'s "Results are immutable per run" requirement) and that the safe-output-root reuse is genuine (imported, not reimplemented with subtly different logic) | Branch `task/T-31-result-store` |
+| T-32 | T-08, T-29 | Comparison-authoring scaffold: a `paritylens.newComparison` command that quick-picks source/target from configured connection profiles (T-29) or fixture names, prompts for object names and key column(s), and writes a valid, minimal `.paritylens` YAML file to the workspace (via `parseDefinition`-round-trippable output — the scaffolded file must itself parse cleanly through T-08's existing parser). Explicitly not the full custom editor/webview from `DESIGN-SPEC.md`'s Extension Layer row (see Backlog) — a scaffolding wizard only, so users stop hand-writing YAML from a blank file | `packages/extension/src/activation/activate.ts` (extends T-10/T-22, new command registration only), `packages/extension/src/authoring/**` (new) | `ConnectionProfile` list (T-29), `parseDefinition` (T-08, for round-trip validation of the scaffolded output) | `paritylens.newComparison` command; a scaffolded `.paritylens` file | Red: test invoking the scaffold command with mocked quick-pick answers, expecting a written file that `parseDefinition` accepts, fails (not implemented). Green: same test passes; the scaffolded file round-trips through `parseDefinition` without error. Full: `npm run verify` | Independent reviewer confirms the scaffolded YAML never embeds a credential (same no-inline-credentials rule T-08's parser already enforces) and that an existing file at the target path is never silently overwritten | Branch `task/T-32-comparison-authoring-scaffold` |
+| T-33 | T-30, T-31 | Wire the tree view's "Comparisons" section (T-10) to list `.paritylens` files discovered in the current workspace (click to run via T-30's real-connector-aware command), and "Recent Runs" to list T-31's persisted run history (click to reopen a past result in the results webview); wire the existing, currently-unused `parityStatusBar.ts` (T-11) to show `Parity: N passed | N warnings | N failed` after each run, per `Idea Prompt.md`'s status-bar sketch | `packages/extension/src/views/parityTreeDataProvider.ts` (extends T-10), `packages/extension/src/statusbar/parityStatusBar.ts` (extends T-11) | `listRecentRuns`/`loadRun` (T-31), workspace file discovery (VS Code `workspace.findFiles`), the real-connector-aware run command (T-30) | Populated tree sections; a wired status bar | Red: test opening the tree view in a workspace containing a `.paritylens` file, expecting it to appear under "Comparisons," fails (section is still always empty, T-10's original scaffold). Green: same test passes; a second test confirms "Recent Runs" lists a persisted run from T-31. Full: `npm run verify` | Independent reviewer confirms clicking a listed comparison/run genuinely invokes the correct command/loads the correct result (not just that the tree items render) | Branch `task/T-33-tree-status-bar-wiring` |
+
+## Backlog (deferred, not scheduled)
+
+Named in `DESIGN-SPEC.md`/`Idea Prompt.md` but deliberately excluded from
+Phase 4's scope — real, separate design-level investments, not gaps in
+"finishing the plan." No task ID assigned; each needs its own scoping
+pass (and, for the editor/CodeLens items, likely its own design
+discussion) before being added to a future phase.
+
+- **Custom comparison editor/webview** — `DESIGN-SPEC.md`'s Extension
+  Layer row and `Idea Prompt.md` section 6 describe a full custom editor
+  (`[Source] SQL Server ... [Target] Snowflake` with
+  Schema/Profile/Aggregates/Rows/Differences/Run History tabs) as the
+  eventual authoring surface. T-32 (Phase 4) delivers a scaffolding
+  wizard only — a genuinely different, much larger UI investment.
+- **CodeLens actions** — `Idea Prompt.md` section 6's "Run Profile | Run
+  Schema Check | Run Full Comparison | Open Last Result" inline actions
+  inside an open `.paritylens` file. Depends on the comparison-authoring
+  surface existing in a more mature form than T-32's scaffold.
+- **SQL preview panel wired into the run command** — T-16b built a real
+  SQL preview panel and `queriesUsed` field, but it's only ever populated
+  by the planner's own internal execution path, not exposed as a
+  pre-execution confirmation step in `paritylens.runComparison` (the
+  design's "generated SQL is shown to the user for preview before
+  execution wherever the definition requests it" requirement). Needs
+  scoping once T-30's real-connector wiring exists to confirm.
+- **Snowflake connector (T-18)** — deferred since 2026-07-27 (no trial
+  account available); tracked in `PROGRESS-LEDGER.md`'s task register
+  and blockers table, not repeated here. Reactivate by resolving its
+  trial-account blocker and following T-17/T-19's established pattern.
+
 ## Execution rules
 
 1. Start only the task identified as active in `PROGRESS-LEDGER.md` after all dependencies are approved.
@@ -115,3 +174,9 @@ preserve that property or receive a revised brief before starting.
 
 - **Plan approved by:** alex.nykolaiszyn@gmail.com
 - **Approval date:** 2026-07-27
+- **Amendment (Phase 4, T-29–T-33):** proposed and approved
+  2026-08-02, after T-01–T-28 released as the "engine + fixture-demo
+  command" milestone (see `RELEASE-CHECKLIST.md`). Owner directly
+  confirmed the 5-task scope and sequencing via `AskUserQuestion` before
+  this amendment was written into the plan; see `PROGRESS-LEDGER.md`'s
+  decision log for the full record.
