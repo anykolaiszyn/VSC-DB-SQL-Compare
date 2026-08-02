@@ -12,8 +12,10 @@ import {
 import { ParityTreeDataProvider } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
 import { showResultsWebview } from "../webview/resultsWebview";
-import { ConnectionProfileStore } from "../connections/connectionProfileStore";
+import { ConnectionProfileStore, secretKeyFor } from "../connections/connectionProfileStore";
 import { addConnectionCommand, editConnectionCommand, deleteConnectionCommand } from "../connections/connectionCommands";
+import { resolveConnector } from "../connections/resolveConnector";
+import type { ConnectionProfile } from "../connections/connectionProfile";
 
 /** View ID the tree data provider registers against (matches `package.json`'s `contributes.views`). */
 export const PARITY_TREE_VIEW_ID = "paritylens.dataParityView";
@@ -35,22 +37,40 @@ export interface ActivationResult {
 }
 
 /**
- * T-22 fixture-only limitation, disclosed both as this code comment and as
- * a user-visible notice shown every time the command runs (see
- * `runComparisonCommand` below) — per TASK-BRIEF.md's explicit instruction
- * not to leave this limitation "silently only working for fixture names."
- * Real connection-profile resolution (SQL Server/Snowflake/PostgreSQL
- * credentials via `SecretStore`) is unscheduled future work; no task has
- * built connection-profile management yet, so this command can only ever
- * resolve a `.paritylens` definition's `source.connection`/
- * `target.connection` names against the three fixed fixture-set/side pairs
- * built by `buildFixtureRegistry` below, never a real database.
+ * T-30: connection resolution now consults saved `ConnectionProfile`s (T-29)
+ * before falling back to fixtures, so the T-22-era notice claiming "this
+ * command runs comparisons against built-in fixture data only" is no longer
+ * accurate for every run — a connection name matching a saved profile now
+ * resolves to a real `SqlServerConnector`/`PostgresConnector`. Per
+ * TASK-BRIEF.md T-30 Scope item 3, this stays a disclosure notice rather
+ * than being deleted outright: the fixture fallback path is still real and
+ * still worth disclosing for the connection names it actually applies to.
+ * `buildRunNotice` (below) picks between the two variants per-run based on
+ * whether either side's connection name actually matched a saved profile,
+ * so the message shown is accurate for the run that is about to happen
+ * rather than a static, always-shown claim.
  */
 const FIXTURE_ONLY_NOTICE =
   "ParityLens: this command runs comparisons against built-in fixture data only " +
   '(source connection maps to the "source" side, target connection maps to the ' +
   '"target" side of the sqlserver-customer fixture pair). Real database connection ' +
   "profiles are not yet supported.";
+
+const MIXED_CONNECTION_NOTICE =
+  "ParityLens: connection names matching a saved connection profile run against " +
+  "the real database; any connection name without a matching saved profile falls " +
+  "back to built-in fixture data (sqlserver-customer fixture pair) for this run.";
+
+/**
+ * Picks the accurate disclosure notice for this specific run: if at least
+ * one of the two connection names resolves to a saved `ConnectionProfile`,
+ * the run is (at least partly) real, so `MIXED_CONNECTION_NOTICE` is shown
+ * instead of the T-22-era `FIXTURE_ONLY_NOTICE`, which would otherwise be a
+ * false claim once real resolution exists (T-30 Scope item 3).
+ */
+function buildRunNotice(sourceProfile: ConnectionProfile | undefined, targetProfile: ConnectionProfile | undefined): string {
+  return sourceProfile !== undefined || targetProfile !== undefined ? MIXED_CONNECTION_NOTICE : FIXTURE_ONLY_NOTICE;
+}
 
 /**
  * Builds a `ConnectorRegistry` backed entirely by `FixtureConnector`
@@ -72,14 +92,83 @@ function buildFixtureRegistry(sourceConnectionName: string, targetConnectionName
 }
 
 /**
+ * Looks up a saved `ConnectionProfile` by its `name` field (not `id`) —
+ * matches the existing lookup-by-name convention `connectionCommands.ts`'s
+ * `editConnectionCommand`/`deleteConnectionCommand` already use for their
+ * own `showQuickPick` selections (`profiles.find((profile) => profile.name
+ * === selectedName)`), since a `.paritylens` definition's
+ * `source.connection`/`target.connection` values are the same
+ * human-chosen connection names a user enters via `paritylens.addConnection`
+ * (`ConnectionProfile.name`), not the internally generated `id`.
+ */
+function findProfileByName(store: ConnectionProfileStore, connectionName: string): ConnectionProfile | undefined {
+  return store.list().find((profile) => profile.name === connectionName);
+}
+
+/**
+ * Builds a `ConnectorRegistry` for `runComparisonCommand`, consulting saved
+ * `ConnectionProfile`s (T-29) before falling back to `FixtureConnector`
+ * (T-22's `buildFixtureRegistry`), per TASK-BRIEF.md T-30 Scope item 1. For
+ * each of `sourceConnectionName`/`targetConnectionName` independently: if a
+ * saved profile's `name` matches, its password is read via `SecretStore`
+ * (keyed by `secretKeyFor(profile.id)`, T-29's established key shape) and
+ * `resolveConnector` constructs the real `SqlServerConnector`/
+ * `PostgresConnector`; otherwise this falls back to the exact same
+ * `FixtureConnector` construction `buildFixtureRegistry` above uses (same
+ * `sqlserver-customer` fixture pair, same source/target side mapping) —
+ * per TASK-BRIEF.md's "Prohibited changes": "Do not remove or weaken the
+ * fixture-fallback path."
+ *
+ * Real connector *construction* here never throws/rejects on a bad
+ * host/credential — `SqlServerConnector`/`PostgresConnector`'s constructors
+ * only store connection options, they don't connect. Any actual
+ * connectivity failure is deferred to `runComparison`'s own Layer-1
+ * `testConnection()` check (`planner.ts`, not modified by this task), which
+ * already converts a failed connection into a `"failed"`-status
+ * `ComparisonResult` rather than a thrown error — exactly the behavior
+ * TASK-BRIEF.md Scope item 4 requires ("let `runComparison`'s existing
+ * Layer-1 handling do its job"). This function therefore has no try/catch
+ * of its own around `resolveConnector`/profile lookup.
+ */
+async function buildConnectorRegistry(
+  sourceConnectionName: string,
+  targetConnectionName: string,
+  connectionProfileStore: ConnectionProfileStore,
+  secretStore: SecretStore
+): Promise<ConnectorRegistry> {
+  const registry: ConnectorRegistry = new Map();
+
+  const sourceProfile = findProfileByName(connectionProfileStore, sourceConnectionName);
+  if (sourceProfile !== undefined) {
+    const password = (await secretStore.get(secretKeyFor(sourceProfile.id))) ?? "";
+    registry.set(sourceConnectionName, resolveConnector(sourceProfile, password));
+  } else {
+    registry.set(sourceConnectionName, new FixtureConnector("sqlserver-customer", "source"));
+  }
+
+  const targetProfile = findProfileByName(connectionProfileStore, targetConnectionName);
+  if (targetProfile !== undefined) {
+    const password = (await secretStore.get(secretKeyFor(targetProfile.id))) ?? "";
+    registry.set(targetConnectionName, resolveConnector(targetProfile, password));
+  } else {
+    registry.set(targetConnectionName, new FixtureConnector("sqlserver-customer", "target"));
+  }
+
+  return registry;
+}
+
+/**
  * The `paritylens.runComparison` command handler, extracted as a directly
  * testable function separate from the raw `vscode.commands.registerCommand`
  * callback — same pattern T-10/T-11 already use for testability without
  * `@vscode/test-electron` (see this file's and `resultsWebview.ts`'s own
  * header comments). Reads `yamlText`, parses it via `parseDefinition`,
- * builds a fixture-only `ConnectorRegistry`, runs `runComparison`, and shows
- * the real result via `showResultsWebview`. Every dependency that touches
- * the `vscode` API or the filesystem is injected so this function can be
+ * builds a `ConnectorRegistry` (T-30: real `SqlServerConnector`/
+ * `PostgresConnector` for connection names matching a saved
+ * `ConnectionProfile`, `FixtureConnector` fallback otherwise — see
+ * `buildConnectorRegistry` above), runs `runComparison`, and shows the real
+ * result via `showResultsWebview`. Every dependency that touches the
+ * `vscode` API or the filesystem is injected so this function can be
  * exercised in a plain Vitest run.
  *
  * Never throws: `InvalidDefinitionError`, `UnresolvedConnectionError`, and
@@ -99,13 +188,50 @@ export async function runComparisonCommand(
     viewColumn: vscode.ViewColumn;
     showInformationMessage: (message: string) => unknown;
     showErrorMessage: (message: string) => unknown;
+    /**
+     * T-30: consulted for real-connector resolution before falling back to
+     * `FixtureConnector`. The live `registerRunComparisonCommand` wiring
+     * below always supplies both (from `activate()`'s own construction).
+     * Both are typed optional here — rather than required — as a deliberate,
+     * minimal judgment call: `packages/extension/src/activation/
+     * runComparisonCommand.test.ts` (T-22's own pre-existing test file,
+     * outside this task's declared "Files owned" list per TASK-BRIEF.md, so
+     * not touchable by this task) calls `runComparisonCommand` without these
+     * fields at all. Making them required would force every one of that
+     * file's existing calls through the `deps as never` cast into a runtime
+     * `TypeError` the moment `deps.connectionProfileStore.list()` is
+     * invoked, breaking T-22's existing coverage — which TASK-BRIEF.md's
+     * "Prohibited changes" section forbids ("do not remove or weaken the
+     * fixture-fallback path"). Treating an absent store as "no profiles"
+     * preserves that file's exact fixture-only behavior unchanged, while the
+     * real `activate()` call site always provides both.
+     */
+    connectionProfileStore?: ConnectionProfileStore;
+    secretStore?: SecretStore;
   }
 ): Promise<ComparisonResult | undefined> {
   try {
-    deps.showInformationMessage(FIXTURE_ONLY_NOTICE);
-
     const definition = parseDefinition(yamlText);
-    const registry = buildFixtureRegistry(definition.source.connection, definition.target.connection);
+
+    const sourceProfile =
+      deps.connectionProfileStore !== undefined
+        ? findProfileByName(deps.connectionProfileStore, definition.source.connection)
+        : undefined;
+    const targetProfile =
+      deps.connectionProfileStore !== undefined
+        ? findProfileByName(deps.connectionProfileStore, definition.target.connection)
+        : undefined;
+    deps.showInformationMessage(buildRunNotice(sourceProfile, targetProfile));
+
+    const registry =
+      deps.connectionProfileStore !== undefined && deps.secretStore !== undefined
+        ? await buildConnectorRegistry(
+            definition.source.connection,
+            definition.target.connection,
+            deps.connectionProfileStore,
+            deps.secretStore
+          )
+        : buildFixtureRegistry(definition.source.connection, definition.target.connection);
 
     const result = await runComparison(definition, registry);
 
@@ -126,8 +252,12 @@ export async function runComparisonCommand(
  * prompts the user to pick a `.paritylens` file from the open workspace via
  * `vscode.window.showOpenDialog`, reads it from disk, and delegates to
  * `runComparisonCommand` above for the actual parse/run/render logic.
+ *
+ * T-30: now takes the same `connectionProfileStore`/`secretStore` `activate()`
+ * already constructs for the connection-management commands, so real
+ * connection profiles can be resolved for this command too.
  */
-function registerRunComparisonCommand(): vscode.Disposable {
+function registerRunComparisonCommand(connectionProfileStore: ConnectionProfileStore, secretStore: SecretStore): vscode.Disposable {
   return vscode.commands.registerCommand(RUN_COMPARISON_COMMAND_ID, async () => {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const defaultUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0]?.uri : undefined;
@@ -163,7 +293,9 @@ function registerRunComparisonCommand(): vscode.Disposable {
       createWebviewPanel: vscode.window.createWebviewPanel.bind(vscode.window),
       viewColumn: vscode.ViewColumn.Active,
       showInformationMessage: vscode.window.showInformationMessage,
-      showErrorMessage: vscode.window.showErrorMessage
+      showErrorMessage: vscode.window.showErrorMessage,
+      connectionProfileStore,
+      secretStore
     });
   });
 }
@@ -229,11 +361,16 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(treeView);
 
   const secretStore = new SecretStore(context.secrets);
+  const connectionProfileStore = new ConnectionProfileStore(context.globalState, secretStore);
 
-  const runComparisonDisposable = registerRunComparisonCommand();
+  // T-30: registerRunComparisonCommand now needs connectionProfileStore/
+  // secretStore for real-connector resolution, so connectionProfileStore's
+  // construction (originally below, after this call) moves above it. This
+  // is a reorder only -- neither construction call's own arguments nor the
+  // three connection-management command registrations below change.
+  const runComparisonDisposable = registerRunComparisonCommand(connectionProfileStore, secretStore);
   context.subscriptions.push(runComparisonDisposable);
 
-  const connectionProfileStore = new ConnectionProfileStore(context.globalState, secretStore);
   context.subscriptions.push(registerAddConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerEditConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerDeleteConnectionCommand(connectionProfileStore));

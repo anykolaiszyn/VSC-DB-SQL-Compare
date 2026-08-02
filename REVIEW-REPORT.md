@@ -1,46 +1,48 @@
-# ParityLens — Review Report T-29
+# ParityLens — Review Report T-30
 
 ## Review independence
 
 This review was performed by a separate agent instance from whoever
-implemented T-29. I did not author any of the changed files under review. I
+implemented T-30. I did not author any of the changed files under review. I
 did not edit any implementation-owned file, `TASK-BRIEF.md`, or
 `IMPLEMENTATION-REPORT.md` while producing this report. All findings below
 are based on my own inspection of the actual diff, my own fresh execution of
-`npm run verify`, and my own adversarial probes (constructed as throwaway
-test files, run, and deleted — confirmed via `git status` that no residue
-beyond this report remains).
+`npm run verify`, and my own read-only adversarial tracing (no throwaway test
+files were needed — the two required adversarial checks could be confirmed
+by direct code inspection plus the implementer's own new tests, which I
+independently re-derived rather than trusted; `git status` confirms no
+residue from this review beyond `REVIEW-REPORT.md` itself).
 
 ## Review scope
 
-- **Task objective:** Implement connection profile management — a
-  `ConnectionProfile` type, a `ConnectionProfileStore` (globalState +
-  `SecretStore`-backed), a `resolveConnector` profile-to-connector factory,
-  and three CRUD commands (`paritylens.addConnection`/`editConnection`/
-  `deleteConnection`), per `TASK-BRIEF.md`'s current (amended) form. Does
-  **not** wire these into `runComparisonCommand` (T-30's scope).
-- **Branch / commits reviewed:** `task/T-29-connection-profiles`, commits
-  `87336b6` (implementation) and `38aab83` (report hash correction), diffed
+- **Task objective:** Wire `paritylens.runComparison`'s connector-registry
+  resolution to consult saved `ConnectionProfile`s (T-29) before falling
+  back to `FixtureConnector` (T-22), without a redundant try/catch — real
+  connection failures must flow through `runComparison`'s existing Layer-1
+  `"failed"`-status path.
+- **Branch / commits reviewed:** `task/T-30-real-connector-wiring`, commits
+  `165a665` (implementation) and `af06323` (report hash correction), diffed
   against `main`.
-- **Files and interfaces reviewed:**
-  - `packages/extension/src/connections/connectionProfile.ts` (new)
-  - `packages/extension/src/connections/connectionProfileStore.ts` (new)
-  - `packages/extension/src/connections/resolveConnector.ts` (new)
-  - `packages/extension/src/connections/connectionCommands.ts` (new)
-  - `packages/extension/src/connections/*.test.ts` (new, all three)
+- **Files changed:**
   - `packages/extension/src/activation/activate.ts` (extended)
-  - `packages/extension/package.json` (`contributes.commands` append)
-  - `packages/engine/src/index.ts` (Amendment-scoped re-export widening)
-  - `packages/extension/src/secrets/secretStore.ts` — confirmed **not**
-    modified (read-only consumption requirement)
-  - `packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.ts`,
-    `packages/engine/src/connector-sdk/postgres/postgresConnector.ts` —
-    confirmed **not** modified
-- **Evidence reviewed:** `TASK-BRIEF.md` (current amended form),
-  `IMPLEMENTATION-REPORT.md`, the actual `git diff main..38aab83` for every
-  changed file, `git show` on both commits individually (confirming neither
-  touches `PROGRESS-LEDGER.md`), and my own fresh `npm run verify` run plus
-  four throwaway adversarial probe tests (deleted after use).
+  - `packages/extension/src/activation/activate.test.ts` (extended)
+  - `IMPLEMENTATION-REPORT.md`
+- **Files confirmed untouched (read-only consumption / prohibited-change
+  compliance):**
+  - `packages/extension/src/activation/runComparisonCommand.test.ts` (T-22's
+    file, not in this task's Files owned) — `git diff main..HEAD` empty.
+  - `packages/extension/src/connections/**` (T-29's owned files) — empty
+    diff.
+  - `packages/engine/**` (planner, connectors, `index.ts`) — empty diff.
+  - `paritylens.addConnection`/`editConnection`/`deleteConnection` command
+    registrations/handlers — unchanged apart from the two-line construction
+    reorder discussed below (call arguments and handler bodies identical).
+- **Evidence reviewed:** `TASK-BRIEF.md`, `IMPLEMENTATION-REPORT.md`, the
+  full `git diff main..HEAD` for every changed file, `git show main:...` of
+  the pre-T-30 `activate.ts` for byte-level comparison, the full text of
+  `connectionProfileStore.ts`, `resolveConnector.ts`, `connectionProfile.ts`,
+  `secretStore.ts`, `connectionCommands.ts`, and `planner.ts`'s Layer-1
+  connectivity-check section, plus my own fresh `npm run verify` run.
 
 ## Critical findings
 
@@ -58,49 +60,43 @@ beyond this report remains).
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-29-01 | `ConnectionProfileStore.add`/`update` perform no runtime validation that the object being persisted to `globalState` is free of credential-shaped fields — the "never leaks a password" guarantee rests entirely on `ConnectionProfile`'s static TypeScript shape (no `password` field) plus disciplined call sites, not a runtime allowlist/strip. Confirmed by an adversarial probe: constructing a `{ ...profile, password: "leaked!!" }` object via `as unknown as ConnectionProfile` (simulating a future caller bypassing the type system, e.g. via a bug or a careless spread) and passing it to `store.update()` results in the `password` property being written verbatim into the mocked `globalState`'s raw stored array — i.e. `ConnectionProfileStore` is a pass-through store, and the only real defense is the type system + the one call site (`connectionCommands.ts`) never doing this today, which I confirmed it does not. This matches the same design already accepted for the rest of this codebase (`ConnectionProfile`'s own header comment even documents this as the enforcement mechanism), so it is not a deviation from convention, but it is worth recording as residual defense-in-depth debt given the credential-leak severity class, mirroring how `assertReadOnlyStatement`'s known gaps are tracked as accepted Minor findings rather than silently unmentioned. | Adversarial probe (throwaway test, deleted after use): `store.update({ ...p, password: "leaked!!" } as unknown as ConnectionProfile)` → raw `globalState` array contains a `password` key. | No action required to approve this task (the two call sites that exist today — `add`/`update` inside `connectionCommands.ts` — are correctly typed and never do this). Consider a lightweight runtime `omit`-based guard in `ConnectionProfileStore.add`/`update` in a future task if this store gains additional call sites, as low-cost defense in depth. |
-| T-29-02 | `packages/engine/src/index.test.ts` (T-22's package-entry-point smoke test) was not extended to assert `SqlServerConnector`/`PostgresConnector` are reachable from `@paritylens/engine`'s public entry point, even though the Amendment specifically added those two re-export lines to that file. The re-export is exercised indirectly (via `resolveConnector.test.ts` importing `SqlServerConnector`/`PostgresConnector` from `@paritylens/engine`), so there is real test coverage of the new surface, just not a direct assertion in the file whose own header comment says it exists precisely so "a missing export here would only surface indirectly." `index.test.ts` is not in T-29's declared Files owned, so this is not a scope violation, just a coverage gap the implementer reasonably could have closed via `resolveConnector.test.ts` (which it effectively already does). | `packages/engine/src/index.test.ts` unchanged in `git diff main..38aab83`; `resolveConnector.test.ts` imports `SqlServerConnector`, `PostgresConnector` from `@paritylens/engine` and asserts `instanceof`, which does exercise the amendment's export lines. | No action required; optionally add two `expect(...).toBeDefined()` lines to `index.test.ts` in a future task touching that file for direct, co-located coverage. |
-| T-29-03 | `deleteConnectionCommand`/`editConnectionCommand` select a profile by matching `showQuickPick`'s returned *name* string back to a profile via `profiles.find((p) => p.name === selectedName)`. If two profiles share the same display name (nothing in the brief or the type prevents this), the picker's returned string is ambiguous and `.find()` silently resolves to the first array match, deleting/editing that one rather than surfacing the ambiguity to the user. Confirmed via an adversarial probe: two profiles with `name: "dup"` but different `id`s — `deleteConnectionCommand` deletes only `id-1` (list order), and `id-2`'s `SecretStore` entry is left intact and un-orphaned (correct — nothing was falsely deleted), but the user has no way to control or even see which of the two "dup"-named connections they just removed. | Adversarial probe (throwaway test, deleted after use): two profiles both named `"dup"` with distinct ids; `deleteConnectionCommand` with quick-pick answer `"dup"` deletes `id-1` and leaves `id-2`'s secret in place. Not a credential-leak or orphan bug — purely a UX ambiguity. | No action required for T-29 (not called out in the brief, no data-loss/leak consequence, since a full profile round-trip through `SecretStore` is still correct for whichever profile is matched). Worth a future UX task disambiguating by id (e.g. quick-pick items styled with a `description` showing host/database, VS Code's own `QuickPickItem` convention) if duplicate names turn out to be common in practice. |
-| T-29-04 | `activate.ts`'s three new `register*ConnectionCommand` functions cast `buildConnectionCommandDeps()` to `as never` when passing it to the extracted command handlers, e.g. `addConnectionCommand(store, buildConnectionCommandDeps() as never)`. This silences a real structural type mismatch between VS Code's actual `showInputBox`/`showQuickPick` overloaded signatures and `ConnectionCommandDeps`'s narrower shape, rather than adapting the real API's return type explicitly. `npm run typecheck` passes only because `as never` suppresses the check entirely (not because the shapes are actually compatible) — the same risk class as an `any`-cast, just spelled differently. This is a code-quality concern, not a scope or security defect: the underlying real-object binding (`vscode.window.showInputBox.bind(vscode.window)`, etc.) is behaviorally correct for the subset of the API this code path actually calls. | `packages/extension/src/activation/activate.ts` lines ~189, ~196, ~203 (`registerAddConnectionCommand`/`registerEditConnectionCommand`/`registerDeleteConnectionCommand`), each ending in `... as never)`. | No action required to approve; a future pass through `activate.ts` (not owned by this task) could replace the `as never` cast with a proper adapter or narrower explicit typing of `buildConnectionCommandDeps()`'s return value against `ConnectionCommandDeps`. |
+| T-30-01 | `findProfileByName` resolves via `store.list().find((p) => p.name === connectionName)`, the first list-order match. If two saved profiles share the same `name` (nothing prevents this — same limitation already recorded as T-29-03 for `connectionCommands.ts`'s own quick-pick lookups), a `.paritylens` definition naming that connection silently resolves to whichever profile happens to be first in `list()`, with no error or disclosure that the match was ambiguous. Not a new risk class introduced by this task — it inherits an already-accepted T-29 limitation — but this task adds a second call site with the same ambiguity, worth noting for the same future-task follow-up T-29-03 already flagged. | `packages/extension/src/activation/activate.ts`, `findProfileByName` (uses `Array.prototype.find`, first match wins); same pattern as `connectionCommands.ts` lines 162/205, already recorded as T-29-03. | No action required to approve T-30; track alongside T-29-03 if a future task disambiguates duplicate profile names (e.g. requiring unique `name` at save time). |
+| T-30-02 | When a matched profile's stored password is missing from `SecretStore` (e.g. deleted out-of-band, or `get` returns `undefined`), `buildConnectorRegistry` substitutes `""` (`(await secretStore.get(...)) ?? ""`) and still constructs a real connector with an empty password rather than falling back to fixtures or surfacing a distinct "credential missing" signal. Functionally safe — the resulting connector will fail `testConnection()`/authentication and correctly flow through Layer-1's existing `"failed"`-status path (same mechanism as any other connection failure, confirmed working via this task's own third test) — but the failure will read as a generic connectivity failure rather than distinguishing "no credential stored" from "bad host/network," which could confuse a user debugging why a previously-working profile now fails. | `packages/extension/src/activation/activate.ts`, `buildConnectorRegistry`, both `(await secretStore.get(secretKeyFor(...))) ?? ""` lines. | No action required to approve; a future task could have `runComparisonCommand`/`buildConnectorRegistry` distinguish a missing-secret case with a clearer message, if this proves confusing in practice. |
 
 ## Verification performed
 
 | Check | Exact command or inspection | Result |
 | --- | --- | --- |
-| Fresh full verification | `npm run verify` (Node v24.3.0, no stale `dist-bundle` present) | Exit 0. `typecheck` clean, `lint` clean, `test`: **25 passed / 2 skipped (27) test files, 425 passed / 27 skipped (452) tests** — matches `IMPLEMENTATION-REPORT.md`'s claimed numbers exactly (425/27/452). |
-| `packages/engine/src/index.ts` amendment scope | `git diff main..38aab83 -- packages/engine/src/index.ts` (full-file read) | Exactly two additive `export *` lines added, plus a comment block extending the existing convention in the same style; the three pre-existing re-export lines and their original comment text are byte-identical to `main`. No other edit present. Matches the Amendment's authorization exactly. |
-| Connector/SecretStore read-only consumption | `git diff main..38aab83 -- packages/extension/src/secrets/secretStore.ts packages/engine/src/connector-sdk/sqlserver/sqlServerConnector.ts packages/engine/src/connector-sdk/postgres/postgresConnector.ts` | Empty diff on all three files — confirmed unmodified, satisfying "Prohibited changes." |
-| `activate.ts` scope | `git diff main..38aab83 -- packages/extension/src/activation/activate.ts` (full diff read) | Only additive: three new command-ID constants, `buildConnectionCommandDeps()`, three `register*ConnectionCommand` functions, and three `context.subscriptions.push(...)` calls plus one `ConnectionProfileStore` construction inside `activate()`. Existing tree-view, `SecretStore`, and `runComparisonCommand` wiring lines are untouched. |
-| `package.json` scope | `git diff main..38aab83 -- packages/extension/package.json` (full diff read) | Only the `contributes.commands` array gained three new entries (`addConnection`/`editConnection`/`deleteConnection`); no other field touched. |
-| Credential-in-`globalState` adversarial probe #1 (brief's own required test) | Read `connectionProfileStore.test.ts`'s "never writes a credential-shaped property..." test in full; independently re-derived its assertions rather than trusting the pass | Test inspects the *raw* mock `globalState` map directly (bypassing the store's own accessors), asserting no key matches `/password\|secret\|credential\|token/i` and the plaintext password string does not appear anywhere in any raw stored value (`JSON.stringify` scan across the whole map, not just the profiles array). This is a real, not cosmetic, raw-storage inspection — matches the brief's Green-state requirement and T-10's own review-gate pattern. |
-| Credential-in-`globalState` adversarial probe #2 (my own, beyond the given tests) | Throwaway test: `store.update({ ...profile, password: "leaked!!" } as unknown as ConnectionProfile)`, then inspected `globalState.__raw` | `password` key **was** present in the raw stored array — confirms `ConnectionProfileStore` has no runtime filtering and depends entirely on the static type + correct call sites (recorded as Minor finding T-29-01; not a live bug since no real call site does this). |
-| Orphaned-secret adversarial probe #1 (brief's own required test) | Read `connectionProfileStore.test.ts`'s `delete()` test and `connectionCommands.test.ts`'s delete-command test in full | Both assert `secretStore.get(secretKeyFor(id))` is `undefined` after delete, and the store test additionally asserts `secrets.__raw.has(secretKeyFor(id))` is `false` — a real raw-storage check, not just an accessor-mediated one. Traced `ConnectionProfileStore.delete()`'s implementation directly (not just the test): it unconditionally calls `this.secretStore.delete(secretKeyFor(id))` in the same method body that removes the metadata, with no branch that could skip it. |
-| Orphaned-secret adversarial probe #2 (my own) | Throwaway test: delete a nonexistent id — confirms no unrelated secret is touched | `store.delete("does-not-exist")` leaves an existing unrelated profile's secret (`pw-a`) intact. No false-positive deletion. |
-| Orphaned-secret adversarial probe #3 (my own) | Throwaway test: two profiles sharing a display name, delete by name via the command handler | Only the first list-order match (`id-1`) is deleted; `id-2`'s secret remains correctly intact (not orphaned, not falsely deleted) — but surfaced as a UX ambiguity, recorded as Minor finding T-29-03. |
-| Cancel-mid-edit adversarial probe (my own) | Throwaway test: cancel `editConnectionCommand` at the password prompt (last field) | `store.update()` is never called; the original profile and its original stored password are both left untouched. Confirms partial-edit state cannot corrupt an existing profile. |
-| Cleanup | `git status --short` after removing the throwaway adversarial test file | Clean — no residual files beyond this `REVIEW-REPORT.md`. |
+| Fresh full verification | `npm run verify` | Exit 0. `typecheck` clean, `lint` clean, `test`: **25 passed / 2 skipped (27) test files, 428 passed / 27 skipped (455) tests** — matches `IMPLEMENTATION-REPORT.md`'s claimed numbers exactly (428/27/455, net +3 tests vs. T-29 baseline of 425/27/452, skip count unchanged — same two Docker-gated integration suites). |
+| Fixture-fallback byte-for-byte adversarial check (Handoff item 1) | `git show main:packages/extension/src/activation/activate.ts` vs. current, diffed by hand for `buildFixtureRegistry` specifically | `buildFixtureRegistry` (the actual function body, its `sqlserver-customer`/`"source"`/`"target"` construction) is **untouched** in the diff — zero lines changed inside that function. It is still called, unconditionally per-side, whenever `findProfileByName` returns `undefined` for that side (`buildConnectorRegistry`'s two `else` branches use the exact same two `new FixtureConnector(...)` calls `buildFixtureRegistry` uses) or whenever `deps.connectionProfileStore`/`deps.secretStore` are absent entirely (the `runComparisonCommand.test.ts` call sites, confirmed unmodified). Also independently re-derived the implementer's own second test (`"falls back to FixtureConnector for a connection name with no matching saved profile"`) by reading its assertions against the known fixture data (`CreditLimit` "missing-in-target" schema finding) rather than trusting the pass — this is the same known fixture mismatch `runComparisonCommand.test.ts`'s pre-existing T-22 test asserts, confirming identical behavior, not just superficially similar output. |
+| Layer-1 failure-path adversarial check (Handoff item 2) | Read `runComparisonCommand`'s full body (the only `try/catch` in the function, unchanged position/scope from T-22) plus `buildConnectorRegistry`'s full body (no `try/catch` at all) plus `planner.ts`'s Layer-1 `testConnection()`/`buildFailedResult` section | Confirmed: (1) `buildConnectorRegistry` contains no try/catch of its own — `resolveConnector` only constructs option objects and connector instances (`new SqlServerConnector(options)`), it does not connect, so nothing here can throw on a bad host; (2) the sole `try/catch` in `runComparisonCommand` is T-22's original outer backstop, unchanged in scope — it wraps `parseDefinition`/registry-building/`runComparison`/`showResultsWebview` exactly as before, with no new inner catch added around the new registry-building call; (3) `runComparison`'s own Layer-1 `testConnection()` check (`planner.ts`, confirmed unmodified — empty diff) is what actually converts a real connectivity failure into a `"failed"`-status `ComparisonResult`, which then flows through `runComparisonCommand`'s normal `showResultsWebview` success path, not the outer catch. Independently re-derived the implementer's third test's reasoning: a `SqlServerConnector` pointed at `db.example.internal` (non-existent host) with a saved profile produces `result.status === "failed"`, `result.summary.failed === 1`, `result.schemaDifferences === []` (no fixture data leaked into the result), and `showErrorMessage` is never called — this is the correct falsifiable signature distinguishing "Layer-1 handled it" from "a redundant catch reshaped it into a generic error," and the test's own comment correctly identifies why. |
+| Scope / file-ownership check | `git diff main..HEAD --name-only` | Exactly `IMPLEMENTATION-REPORT.md`, `packages/extension/src/activation/activate.ts`, `packages/extension/src/activation/activate.test.ts` — matches "Files owned" exactly, no unauthorized file touched. |
+| Read-only consumption check | `git diff main..HEAD -- packages/extension/src/connections/ packages/engine/` | Empty diff on both paths — `ConnectionProfileStore`, `resolveConnector`, `SecretStore`, and all of `packages/engine/**` confirmed unmodified. |
+| `runComparisonCommand.test.ts` untouched | `git diff main..HEAD -- packages/extension/src/activation/runComparisonCommand.test.ts` | Empty diff — confirms the implementer's stated judgment call (did not touch this out-of-scope file) was actually honored, not just claimed. |
+| No existing test weakened | `git diff main..HEAD -- packages/extension/src/activation/activate.test.ts \| grep '^-' \| grep -v '^---'` | Only removed lines are an import statement and a mock-object literal being widened (`window: { createTreeView }` → `window: { createTreeView, createWebviewPanel, showInformationMessage, showErrorMessage }`), both additive changes to the shared mock scaffold; no existing `it(...)`/`expect(...)` assertion was deleted or altered. |
+| `activate()` reorder judgment call | Read `activate()`'s full body before/after | The reorder moves `new ConnectionProfileStore(...)` two lines earlier so `registerRunComparisonCommand` (now requiring it as a parameter) can receive it. `ConnectionProfileStore`'s constructor is pure (stores two references, no I/O), so the reorder has no observable side-effect difference — the three `addConnection`/`editConnection`/`deleteConnection` command registrations below are registered in the same relative order with identical arguments. Confirmed via diff that neither those three registration calls nor their handler bodies changed. Judged acceptable as a minimal, mechanically-forced consequence of Scope item 2's own instruction, consistent with `AGENTS.md`'s "minimal, mechanically-forced consequence of authorized work" carve-out. |
+| Judgment call: `deps` fields optional vs. required | Inspected `runComparisonCommand`'s type signature and both call sites (`runComparisonCommand.test.ts`, unmodified; `registerRunComparisonCommand`, always supplies both) | Confirmed optional typing is the only choice that (a) keeps `runComparisonCommand.test.ts` working unmodified (that file is out of scope) and (b) still lets the fixture-fallback path stay reachable when no store is supplied at all, which is exactly what a bare-`deps` T-22-style caller needs. Real call site (`activate()` → `registerRunComparisonCommand`) always supplies both, so production code never exercises the "absent" branch — the optionality only matters for the pre-existing test file's continued compatibility. Agreed with the implementer's reasoning as the lowest-risk resolution available within this task's declared ownership. |
+| Judgment call: lookup by `.name` not `.id` | Read `ConnectionProfileStore.get(id)` (id-keyed) vs. `connectionCommands.ts`'s own `profiles.find((p) => p.name === selectedName)` pattern (lines 162, 205) | Confirmed `ConnectionProfileStore.get()` is genuinely id-keyed, not name-keyed, so a literal reading of Scope item 1 ("by name via `ConnectionProfileStore`") could not mean calling `.get()` with a connection name. `findProfileByName`'s `store.list().find(...)` by `.name` is the same convention T-29's own command handlers already use, confirmed by direct comparison of both implementations. Read-only consumption of `ConnectionProfileStore` (`.list()` only) — no modification to that file. Agreed this is the correct, brief-consistent resolution; see T-30-01 above for the pre-existing duplicate-name caveat this inherits. |
 
-## Prior-finding disposition
+## Disposition of prior findings
 
-No prior open finding names T-29 as its resolving task. `PROGRESS-LEDGER.md`'s
-open-findings table (T-25-02, and others) is unrelated to this task's scope
-and untouched by either reviewed commit. No prior finding to re-verify here.
+T-30 does not carry forward any specific open finding from `PROGRESS-LEDGER.md` as required scope (T-29's open Minor findings T-29-01 through T-29-04 were accepted debt, not blocking, and none was assigned to T-30 specifically). No prior finding required re-verification for this task.
 
 ## Approval status
 
-- **Status:** APPROVED
-- **Reviewer:** Independent Reviewer subagent (Claude Sonnet 5), separate
-  instance from the T-29 implementer
-- **Date:** 2026-08-02
-- **Release or dependency impact:** Unblocks T-30 (wiring `resolveConnector`
-  into `runComparisonCommand`), which depends on this task's
-  `ConnectionProfile`/`ConnectionProfileStore`/`resolveConnector` interfaces
-  exactly as produced here. No release-candidate impact — this task does not
-  touch anything in the already-shipped `paritylens-0.0.1.vsix` release
-  scope. Four Minor findings recorded (T-29-01 through T-29-04), none
-  blocking; T-29-01 (no runtime credential-field guard on
-  `ConnectionProfileStore`) is the one worth the most attention from T-30's
-  implementer/reviewer, since T-30 will add the first real call site
-  consuming `resolveConnector`'s output and should confirm it continues the
-  same discipline of never spreading a password onto a `ConnectionProfile`-
-  shaped object.
+**APPROVED**
+
+0 Critical, 0 Important, 2 Minor (both non-blocking, tracked for optional
+future follow-up). Fresh `npm run verify` matches the implementation
+report's claimed numbers exactly (428 passed / 27 skipped / 455 total, exit
+0). Both Handoff-flagged adversarial checks hold: the fixture-fallback path
+is confirmed byte-for-byte unchanged in behavior for any unmatched
+connection name (same `buildFixtureRegistry` function body, same
+`sqlserver-customer` fixture pair, same side mapping), and a real-profile
+connection failure is confirmed to flow through `runComparison`'s existing
+Layer-1 `"failed"`-status path with no redundant try/catch added anywhere
+in `activate.ts`. All three disclosed judgment calls are sound and
+consistent with the brief's literal text and this codebase's established
+conventions. File ownership matches the brief exactly — no unauthorized
+file touched, `runComparisonCommand.test.ts` confirmed genuinely untouched,
+no existing test coverage deleted or weakened.
