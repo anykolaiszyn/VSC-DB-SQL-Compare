@@ -1,200 +1,163 @@
-# ParityLens — Task Brief T-27
+# ParityLens — Task Brief T-28
 
 ## Objective
 
-Found during the prompt-07 Release step 5 live smoke test's second pass
-(2026-08-01, after T-26 fixed the activity-bar icon), on a real,
-non-fixture human observation: after installing the freshly rebuilt
-`.vsix` and confirming the icon/tree-view registration now works, the
-owner reported two further live failures: clicking the Data Parity icon
-shows "There is no data provider registered that can provide view data,"
-and running "ParityLens: Run Comparison" from the Command Palette fails
-with "command not found."
+Found during the prompt-07 Release step 5 live smoke test's third pass
+(2026-08-02), after T-27's fix confirmed the extension is genuinely
+functional end-to-end: the owner ran a real comparison against a
+`.paritylens` definition using `keys: [CustomerID]` and a `column_mapping`
+translating `CustomerID` (source) → `CUSTOMER_ID` (target) — i.e. the key
+column has a genuinely different name on each side, the exact scenario
+`column_mapping` exists to handle. Every row-level finding's `Key Values`
+column showed `undefined` instead of the actual key value.
 
-**Root cause, confirmed by direct inspection of the actual packaged
-`.vsix` contents** (unzipped and listed): the archive contains
-`extension/dist/**` (compiled TypeScript) and `extension/package.json`,
-but **no `node_modules/` directory at all**. `dist/activation/activate.js`
-does `require("@paritylens/engine")` at module-load time (confirmed via
-`grep -n "require(" dist/activation/activate.js`). When VS Code's
-extension host tries to activate this extension, that `require()` throws
-`MODULE_NOT_FOUND` (uncaught, since no defensive try/catch exists around
-module-load-time requires), `activate()` never runs to completion,
-nothing it would have registered (`ParityTreeDataProvider`, the
-`paritylens.runComparison` command handler) actually gets registered —
-exactly producing both symptoms observed live.
+**Root cause, confirmed by direct inspection of
+`packages/engine/src/comparison-core/row-level/row-level.ts`:**
+`compareRows` (line ~144-145) calls `indexByKey` for both the source and
+target row sets, passing the *same* `keys` array (source-side naming,
+e.g. `["CustomerID"]`) to both calls:
 
-**Why `node_modules/` is missing:** `@paritylens/engine` and
-`@paritylens/shared` are npm-workspaces packages, symlinked into the
-repo-root `node_modules/@paritylens/**` rather than living inside
-`packages/extension/node_modules/`. T-25 added `vsce package
---no-dependencies` specifically because `vsce`'s default dependency-walk
-climbed past the npm-workspaces boundary and swept the entire monorepo
-(8,946 files, 224 MB, including `.git/`) into the package — a real
-problem `--no-dependencies` correctly solved. But `--no-dependencies`
-also means `vsce` never resolves or bundles *any* runtime dependency,
-including the two workspace packages this extension's own code actually
-`require()`s. `vsce` offers no middle-ground flag (`--dependencies` is
-all-or-nothing walk-the-whole-tree; `--no-dependencies` is walk-nothing)
-— confirmed via `npx --no-install @vscode/vsce package --help`.
+```typescript
+const sourceIndex = indexByKey(resolveRows(sourceRows), sourceColumns, keys);
+const targetIndex = indexByKey(resolveRows(targetRows), targetColumns, keys);
+```
 
-**This is a structural gap neither T-25's implementer, T-25's reviewer,
-nor T-26's implementer/reviewer could reasonably have caught without
-exactly this live, human-driven "run the actual command" smoke test** —
-every automated check performed so far (unit tests, `.vsix` content
-listing for file-leak concerns, VS Code's own startup log for the icon
-registration error) genuinely passed, because none of them actually
-*invoked* the extension's runtime code path that hits the missing
-`require()`.
+`indexByKey` (line ~188) looks up each key name directly in the row set's
+own `columns` array via `columns.indexOf(keyName)`, with no
+`column_mapping` translation applied:
+
+```typescript
+function indexByKey(rows: unknown[][], columns: string[], keys: string[]): Map<string, IndexedRow[]> {
+  const keyIndexes = keys.map((keyName) => columns.indexOf(keyName));
+  ...
+  const keyValues = keyIndexes.map((columnIndex) => (columnIndex >= 0 ? row[columnIndex] : undefined));
+```
+
+When `indexByKey` runs against `targetColumns` (which contains
+`CUSTOMER_ID`, not `CustomerID`), `columns.indexOf("CustomerID")` returns
+`-1`, so every target-side `keyValues` entry becomes `[undefined]`.
+Row *matching* itself still worked correctly in this smoke-test run
+(the classification — missing-from-target, duplicate-in-target — was
+accurate), because matching happens via the JSON-stringified key text as
+a Map key, and `compareMatchedRow` (for actually-matched rows) applies
+`columnMapping` correctly elsewhere in the same file — **this bug is
+narrowly confined to `indexByKey`'s own key-value lookup, not the whole
+row-level comparison pipeline.** But every row-level finding's displayed
+`Key Values` field is wrong (`[undefined]` instead of the real key) for
+any row on the side where the key column's name differs from the
+`keys` array's declared name.
+
+**Why this was never caught before:** confirmed by reading every existing
+test — `packages/engine/src/comparison-core/row-level/row-level.test.ts`
+has no test scenario where the key column's name genuinely differs
+between source and target rows (composite-key and other tests all use
+identical column names on both row sets). `planner.test.ts`'s
+`ROW_LEVEL_ONLY_YAML` fixture (the closest existing coverage) declares
+`column_mapping: { CustomerID: CustomerID }` — an *identity* mapping,
+same name both sides — not the doc's own real-world scenario
+(`CustomerID` → `CUSTOMER_ID`, matching `sqlserver-customer`'s actual
+fixture column names and `Idea Prompt.md`'s own worked example). The
+existing planner test also only asserts a `missing-from-target` finding
+*exists*, never inspects its `keyValues` field, so this bug would pass
+silently there too.
 
 ## Scope
 
-**The correct, standard fix for a VS Code extension built from an npm
-workspaces monorepo is to bundle the extension into a single
-self-contained JS file** (inlining `@paritylens/engine`/
-`@paritylens/shared`'s code directly, rather than depending on
-`node_modules` resolution at runtime) — this is the standard pattern
-VS Code's own extension-samples repository and most real-world monorepo
-extensions use, and it also eliminates the underlying tension `vsce
---no-dependencies` exists to route around in the first place.
+Fix `indexByKey`'s key-name resolution to correctly translate the key
+column name for whichever side (source or target) it's indexing, using
+the same `column_mapping` translation `compareMatchedRow` already applies
+elsewhere in this file — investigate the exact translation direction and
+helper function already in use (read the rest of `row-level.ts` first;
+do not invent a second, parallel mapping mechanism) and reuse it rather
+than writing new translation logic. The fix should be narrowly targeted
+at `indexByKey`'s `keyIndexes` computation — do not restructure
+`compareRows`'s broader flow, matching algorithm, or classification logic
+beyond what's strictly necessary to correctly resolve each side's actual
+key column index.
 
-1. **Add a bundler** to `packages/extension`. `esbuild` is the
-   lightweight, fast, standard choice for this (used by VS Code's own
-   official extension templates) — add it as a **root-level
-   devDependency** (same network-install exception category as T-25's
-   `@vscode/vsce` install; this is a new tool install, disclose it the
-   same way, no separate owner approval needed since the precedent and
-   rationale are identical and already recorded).
-2. **Write a bundle script** (e.g. `packages/extension/esbuild.config.mjs`
-   or inline in `package.json`'s scripts, your choice, document which)
-   that bundles `packages/extension/src/index.ts` (the actual extension
-   entry point) into a single output file — e.g.
-   `packages/extension/dist-bundle/extension.js` (choose a directory name
-   that clearly distinguishes this from the existing `dist/` produced by
-   `tsc -b`, which remains needed for typecheck/test purposes and should
-   NOT be replaced or removed) — with:
-   - `platform: "node"`, `format: "cjs"` (VS Code extension hosts are
-     CommonJS/Node).
-   - `external: ["vscode"]` (the `vscode` module is provided by the
-     extension host at runtime, never bundle it).
-   - `bundle: true` so `@paritylens/engine`/`@paritylens/shared` (and
-     their own dependencies like `yaml`, `@duckdb/node-api` if the
-     bundle's actual code path reaches them — investigate what's truly
-     needed vs. what can stay external; native-binary packages like
-     `@duckdb/node-api`'s per-platform bindings typically CANNOT be
-     bundled by esbuild and must be marked `external` and shipped
-     alongside the bundle instead — this is a real, non-trivial
-     investigation step, do not assume bundling "just works" for every
-     dependency without checking) are inlined.
-   - Minification is optional (your judgment; not required for
-     correctness, only for artifact size).
-3. **Update `packages/extension/package.json`'s `main` field** to point
-   at the new bundled output instead of `./dist/index.js`.
-4. **Update `.vscodeignore`** so the packaged `.vsix` includes the new
-   bundled output (and any unbundleable native dependencies it needs
-   alongside it, if applicable per the investigation in step 2) instead
-   of (or in addition to, if genuinely still needed) the raw `tsc`-built
-   `dist/`.
-5. **Update the `package` npm script** to run the bundle step before
-   `vsce package`, and confirm whether `--no-dependencies` is still the
-   correct flag now that the bundle inlines the workspace packages
-   itself (it likely still is, to avoid re-triggering T-25's original
-   monorepo-sweep problem for whatever *is* left as an external/real npm
-   dependency — but verify this rather than assume, since the dependency
-   surface has changed).
-6. **Verify the actual fix the way this defect was found**: rebuild
-   everything, install into a fresh sandboxed VS Code profile (scratch
-   temp folders, never a real profile), launch it, and this time actually
-   invoke the runtime path that failed before — you have the same CLI
-   access previous tasks used; if you cannot fully automate clicking the
-   activity-bar icon or running the command palette entry yourself,
-   at minimum confirm via VS Code's own extension-host log output that
-   `activate()` completes without a `MODULE_NOT_FOUND` (or any other)
-   error, and disclose plainly what you could versus couldn't confirm
-   without human interaction — same honesty standard T-26 already set.
-   If you have a way to programmatically execute a registered VS Code
-   command from the CLI/a script against the sandboxed instance
-   (investigate `code --command` or similar if the installed `code` CLI
-   version supports it; do not assume, check), use it to actually invoke
-   `paritylens.runComparison` end-to-end and confirm it doesn't fail with
-   "command not found" — this would be strictly stronger evidence than
-   log inspection alone.
+Add test coverage for the specific gap: a row-level comparison test where
+the key column has a genuinely different name on source vs. target
+(e.g. `CustomerID`/`CUSTOMER_ID`, matching the real-world scenario that
+surfaced this), asserting the resulting `keyValues` field contains the
+actual key value (not `undefined`) for findings on both the source and
+target side. Also add or extend a `planner.test.ts` case using a
+non-identity `column_mapping` for the key column specifically (not just
+matching column names, unlike the existing `ROW_LEVEL_ONLY_YAML` fixture)
+and assert on the resulting `rowDifferences[].keyValues` field directly,
+not just that a finding of the right category exists.
 
 ## Dependencies
 
-- **Required completed tasks:** T-22 (the command this bug affects),
-  T-25 (packaging setup, being extended), T-26 (icon fix, already
-  reconciled — this task's smoke-test evidence builds on that fix already
-  being in place).
-- **Required decisions or approvals:** the esbuild devDependency install
-  is a disclosed network-install exception, same category and rationale
-  as T-25's `@vscode/vsce` install (already owner-approved in principle
-  for this release phase) — no separate approval needed.
-- **Environment:** No WSL/Docker containers needed. Network access needed
-  only for the one-time `esbuild` install.
+- **Required completed tasks:** NONE beyond what's already merged — this
+  is a bug fix in existing, already-approved T-14 code (`row-level.ts`),
+  found live via T-27's now-functional extension.
+- **Required decisions or approvals:** NONE — straightforward bug fix
+  with clear, already-diagnosed root cause.
+- **Environment:** No WSL/Docker containers needed. Fixture-only.
 
 ## Files owned
 
-- `package.json` (root — new devDependency for `esbuild` only)
-- `package-lock.json` (regenerated by `npm install`)
-- `packages/extension/package.json` (`main` field, `scripts.package`,
-  and a new bundling-related script entry — do not touch `name`/
-  `publisher`/`private`/the `icon` field T-26 already fixed)
-- `packages/extension/esbuild.config.mjs` (or equivalent — new file,
-  exact name your choice, document it)
-- `packages/extension/.vscodeignore` (update to match the new build
-  output layout)
+- `packages/engine/src/comparison-core/row-level/row-level.ts`
+  (T-14's owned file — this task extends it with a bounded, targeted fix)
+- `packages/engine/src/comparison-core/row-level/row-level.test.ts`
+- `packages/engine/src/orchestration/planner/planner.test.ts` (test-only
+  addition/extension for the non-identity-key-mapping scenario — do not
+  touch `planner.ts` itself unless the investigation reveals the bug
+  actually needs a fix at that layer too; if so, stop and report rather
+  than silently expanding scope)
 
-Do not touch any file under `packages/*/src/**` — this task changes how
-existing, already-approved code is bundled/packaged, not what it does.
-Do not remove or break the existing `tsc -b`-produced `dist/` output or
-the `npm run typecheck`/`npm run test` scripts' reliance on it — those
-must keep working exactly as before; this task adds a new, separate
-bundling step for packaging purposes only.
+Do not touch any other file. Do not modify
+`packages/engine/src/comparison-core/mapping/**` or
+`packages/engine/src/comparison-core/normalization/**` (T-12's owned
+files) — reuse their exported functions if `row-level.ts` already imports
+from them, do not reimplement anything from those modules.
 
 ## Interfaces
 
-None — this task changes build/packaging tooling only. No runtime
-interface is consumed or produced.
+None new — `RowDifference.keyValues`'s existing shape/contract is
+unchanged; this task fixes what value populates it, not its type.
 
 ## Prohibited changes
 
-- Do not modify any file under `packages/*/src/**`.
-- Do not remove the existing `tsc -b` build/typecheck pathway.
-- Do not touch `name`/`publisher`/`private`/`icon` in
-  `packages/extension/package.json` — already correctly resolved by
-  T-25/T-26.
-- Do not expand scope into fixing other things this investigation might
-  surface (e.g. if native-dependency bundling turns out to need real
-  connector code changes) — stop and report as a new finding instead.
+- Do not touch any file outside the three declared owned paths.
+- Do not change `RowDifference`'s shape or any other exported interface.
+- Do not "fix" this by changing `compareRows`'s call sites (e.g. in
+  `planner.ts`) to pass already-translated column names — the correct
+  fix is inside `indexByKey`'s own resolution logic, using the
+  `column_mapping` data it's already given (or should be given) access
+  to, matching how `compareMatchedRow` already handles this correctly
+  elsewhere in the same file.
+- Do not expand scope without a revised task brief and ledger decision.
 
 ## Red-state evidence
 
-- **Check to add:** none in the traditional Vitest sense — like T-26,
-  this defect is only observable via a real extension-host runtime
-  invocation. Red-state evidence is the exact failure already captured
-  above (unzip the *current*, pre-fix `.vsix` and confirm no
-  `node_modules/` is present; `grep -n "require(" dist/activation/activate.js`
-  showing the `@paritylens/engine` require that will fail) — reproduce
-  this yourself before making any change, to have a genuine before/after.
+- **Test to add:** a `row-level.test.ts` case using two `RecordBatch`es
+  (or the bare-array form, whichever the file's existing tests prefer)
+  where the key column is named differently on each side (mirroring
+  `sqlserver-customer`'s real `CustomerID`/`CUSTOMER_ID` naming), with a
+  `column_mapping` correctly declaring the key's translation. Assert the
+  resulting findings' `keyValues` contain the real key value, not
+  `undefined`. This test must fail against the current code before the
+  fix (reproduce the exact live bug).
+- **Command:** `npx vitest run packages/engine/src/comparison-core/row-level`
+- **Expected failure reason:** `keyValues` currently resolves to
+  `[undefined]` for the side whose column name differs from the `keys`
+  array's declared name.
 
 ## Green-state and full verification
 
-- **Focused evidence:** unzip the post-fix `.vsix` and confirm
-  `@paritylens/engine`/`@paritylens/shared`'s code is now actually
-  present (bundled into the new output file, or as a real
-  `node_modules/` subset if you determine that's the more correct
-  approach after investigation — document which and why). Confirm via
-  extension-host log output (and, if you find a way, direct command
-  invocation) that `activate()` completes without a `MODULE_NOT_FOUND`
-  error and the `paritylens.runComparison` command is genuinely
-  registered.
+- **Focused command:** `npx vitest run packages/engine/src/comparison-core/row-level`
 - **Full command:** `npm run verify`
-- **Expected evidence:** exits 0 with the same test count as the current
-  baseline (404 passed, 27 pre-existing skips, 431 total) — this task
-  changes packaging/bundling only, `npm run test`'s Vitest suite doesn't
-  consume the bundled output, only the `tsc -b`-produced `dist/`, which
-  must remain unchanged in behavior.
+- **Expected evidence:** the new test passes; all previously passing
+  tests (404 as of T-27) still pass with no regression. `npm run verify`
+  exits 0. Additionally, manually re-verify against the exact scenario
+  that surfaced this live: rebuild the `.vsix`, install into a fresh
+  sandbox, run `paritylens.runComparison` against a `.paritylens`
+  definition using `CustomerID`→`CUSTOMER_ID` key mapping (the same
+  `sqlserver-customer` fixture, `keys: [CustomerID]`,
+  `column_mapping: {CustomerID: CUSTOMER_ID, ...}`), and confirm the
+  results webview shows real key values (e.g. `1`, `2`, `3`) instead of
+  `undefined`.
 
 ## Handoff
 
@@ -202,22 +165,16 @@ interface is consumed or produced.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-27-extension-bundling`
+- **Commit or patch checkpoint:** Branch `task/T-28-row-level-key-mapping`
 
-**Note to reviewer:** this is the most consequential packaging task so
-far — a broken `require()` at activation time means the shipped extension
-is completely non-functional despite every prior automated check passing.
-Independently reproduce both red state (unzip `main`'s current `.vsix`,
-confirm the missing `node_modules/`) and green state (unzip the fixed
-`.vsix`, confirm the workspace packages' code is genuinely reachable from
-the bundled/shipped output — actually trace a `require`/import path by
-hand if needed, don't just check a directory exists). If you have the
-same CLI access, independently install and launch the fixed `.vsix` in
-your own fresh sandbox and check extension-host logs for activation
-success. Pay particular attention to whether `@duckdb/node-api`'s native
-per-platform bindings (used somewhere in `@paritylens/engine`'s
-dependency chain) were correctly handled — esbuild cannot bundle native
-`.node` binaries, so if the bundled code path reaches DuckDB, those
-binaries need a real solution (shipped alongside the bundle, or
-`external`+documented as a known gap for a future connector-specific
-task) rather than silently missing.
+**Note to reviewer:** independently construct your own adversarial case
+distinct from the implementer's own test — e.g. a composite key where
+only one of two key columns has a differing name, or a
+`column_mapping` that maps the key column to a name that doesn't exist
+in the target's actual columns at all (confirm this produces a sensible
+error/finding rather than a different silent-`undefined` variant).
+Confirm `compareMatchedRow`'s existing, already-correct column-mapping
+usage elsewhere in the file was genuinely reused, not duplicated with
+slightly different logic. Re-run the live extension-host verification
+yourself if you have the same sandbox/CLI access prior tasks used,
+rather than trusting the implementer's manual re-check alone.
