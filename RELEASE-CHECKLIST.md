@@ -236,6 +236,16 @@
      native binding for win32-x64 only; it will not activate correctly
      on macOS or Linux without a separate per-platform build (T-27's
      disclosed scope boundary).
+  3a. **T-18 (Snowflake connector) deferred — `DESIGN-SPEC.md` Acceptance
+     Criterion 5 not fully satisfied.** AC5 requires mutating-statement
+     rejection "across all three connector implementations and the
+     fixture connector." Only SQL Server (T-17) and PostgreSQL (T-19) are
+     implemented and independently verified against this criterion;
+     Snowflake was never built (owner's explicit, recorded decision — no
+     trial account available, no other task depended on it). This is a
+     genuine, disclosed gap against the design's literal acceptance
+     criteria, not a defect in what was built (per T-RELEASE-01, flagged
+     by independent release review).
   4. **Row-level `keyValues` config-error edge case (T-28-01)** — a
      `column_mapping` entry pointing at a target column name that
      doesn't actually exist in the target's real columns produces the
@@ -256,11 +266,35 @@
 
 ## Independent release review
 
-- **Independent reviewer:** [PENDING — see Verification note below]
-- **Review report:** [PENDING]
-- **Approval decision:** [PENDING]
-- **Approval date:** [PENDING]
-- **Release notes or conditions:** [PENDING]
+- **Independent reviewer:** Claude Code Independent Reviewer subagent (Sonnet
+  5), a separate agent instance from every implementer/reviewer subagent
+  across T-01–T-28 and from whoever authored this checklist. Performed fresh,
+  independent re-derivation of every material claim (see review report),
+  not a re-statement of this checklist's own prose.
+- **Review report:** `RELEASE-REVIEW-REPORT.md` (repo root)
+- **Approval decision:** APPROVED
+- **Approval date:** 2026-08-02
+- **Release notes or conditions:** 0 Critical, 0 Important, 1 Minor
+  (T-RELEASE-01, non-blocking: `DESIGN-SPEC.md` Acceptance Criterion 5
+  literally requires mutating-statement rejection "across all three
+  connector implementations," but Snowflake (T-18) was deferred and never
+  implemented — the deferral itself was an explicit, recorded, informed
+  owner decision, and SQL Server/PostgreSQL both independently pass this
+  check, but the checklist's "Known limitations" section does not
+  explicitly name AC5 by number when disclosing the Snowflake gap;
+  recommend a small future edit connecting the two explicitly). Fresh
+  verification independently reproduced test counts (408/27/435, exit 0),
+  rebuilt the `.vsix` byte-for-byte content-identical to the recorded
+  listing (19 files, 13.02 MB; SHA-256 differs due to the already-disclosed
+  T-25-01 build-timestamp variance, confirmed genuinely content-identical
+  rather than merely asserted), independently re-scanned for secrets/PII
+  (none found), independently re-derived the offline license inventory
+  (100 installed packages, 100% permissive), and adversarially re-probed
+  `assertReadOnlyStatement` (6/8 hand-built bypass attempts correctly
+  blocked; the two that succeeded are the already-disclosed M-05/M-06
+  gaps, confirmed genuinely real, no new bypass found). No regression
+  found against any prior open finding. See `RELEASE-REVIEW-REPORT.md` for
+  full verification detail.
 
 ## Final human release approval
 
