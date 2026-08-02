@@ -158,11 +158,9 @@ value does not appear anywhere in the raw stored data.
 ## Patch or commit identity
 
 - **Branch:** `task/T-29-connection-profiles`
-- **Commit:** see the commit immediately following this report in the branch
-  history (this file is committed together with the implementation, per the
-  brief's Handoff instructions) — subject line
-  `"Implement T-29: connection profile management (ConnectionProfile,
-  ConnectionProfileStore, resolveConnector, CRUD commands)"`.
+- **Commit:** `87336b6` — "Implement T-29: connection profile management
+  (ConnectionProfile, ConnectionProfileStore, resolveConnector, CRUD
+  commands)".
 
 ## Recommended next step
 
