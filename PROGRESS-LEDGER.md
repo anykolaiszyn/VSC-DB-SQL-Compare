@@ -2,16 +2,14 @@
 
 ## Current lifecycle state
 
-- **Phase:** RELEASE (prompt 07) — **COMPLETE.** All 8 steps done.
-  `paritylens-0.0.1.vsix` (SHA-256 `90903419CD4941CBDC6ABBB9F716865ECB646B2DF338687BAD15E60682D539D`,
-  built from `main` commit `6480f8c76e08811953b1a93afdd80e7feeba78e8`)
-  is the approved release candidate for the "engine + fixture-demo
-  command" milestone. Final human release approval recorded 2026-08-02
-  by the project owner, no conditions. **Next: owner-requested
-  `DESIGN-SPEC.md` review and new-task scoping for the missing
-  self-service UI layer (connection management, comparison authoring,
-  run history) as a deliberate next phase — not yet started.**
-- **Exactly one task may be active:** NONE
+- **Phase:** TASK LOOP — Phase 4 (self-service UI), resumed 2026-08-02
+  after a deliberate pause. Release (prompt 07) remains COMPLETE for the
+  "engine + fixture-demo command" milestone (`paritylens-0.0.1.vsix`,
+  SHA-256 `90903419CD4941CBDC6ABBB9F716865ECB646B2DF338687BAD15E60682D539D`,
+  built from `main` commit `6480f8c76e08811953b1a93afdd80e7feeba78e8`,
+  approved by the owner with no conditions). Phase 4 (T-29–T-33) is
+  approved and written into `IMPLEMENTATION-PLAN.md`; T-29 is now active.
+- **Exactly one task may be active:** T-29 (connection profile management)
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
