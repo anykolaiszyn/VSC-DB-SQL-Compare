@@ -8,6 +8,41 @@ src/**
 tsconfig.json
 tsconfig.tsbuildinfo
 **/*.tsbuildinfo
-node_modules/@types/**
-**/*.map
 .gitignore
+esbuild.config.mjs
+
+# T-27: `dist/` (the raw `tsc -b` output) is no longer what ships -- the
+# packaged extension runs from `dist-bundle/extension.js` instead, which
+# inlines `@paritylens/engine`/`@paritylens/shared`. `dist/` stays needed
+# locally for `npm run typecheck`/`npm run test`, but does not need to be
+# in the .vsix. The bundle's own sourcemap (dist-bundle/extension.js.map)
+# is excluded too -- useful for local debugging, not needed at runtime.
+dist/**
+dist-bundle/**/*.map
+
+# T-27: DuckDB's native per-platform binary bindings cannot be bundled by
+# esbuild (a `.node` file, loaded via a dynamically-computed `require()`
+# specifier -- see esbuild.config.mjs's header comment and
+# IMPLEMENTATION-REPORT.md for the full investigation). esbuild.config.mjs
+# stages them into packages/extension/native/node_modules/ before
+# packaging.
+#
+# That nested location is deliberate, not arbitrary: `vsce package`
+# hardcodes `ignore: 'node_modules/**'` in its own file-collection code
+# (confirmed by reading @vscode/vsce/out/package.js), but confirmed
+# empirically to only apply to the TOP-LEVEL packages/extension/node_modules
+# -- a node_modules/ nested one level deeper (native/node_modules/) is not
+# excluded. Node's own module resolution, in turn, only honors a `paths`
+# search-root option when that root is itself literally a directory named
+# `node_modules` (also confirmed empirically) -- so native/node_modules/ is
+# the one location that satisfies both constraints simultaneously. Do not
+# rename or relocate it without re-verifying both constraints still hold.
+#
+# Trim non-runtime files from what was staged; do not exclude
+# native/node_modules/** itself, or the DuckDB require() calls the
+# bundle's runtime resolution patch depends on would fail again with the
+# shipped .vsix -- the same class of bug this whole task exists to fix.
+native/**/*.md
+native/**/README.md
+native/**/*.d.ts
+native/**/CHANGELOG.md

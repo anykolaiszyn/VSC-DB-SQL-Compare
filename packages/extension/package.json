@@ -4,7 +4,7 @@
   "version": "0.0.1",
   "description": "ParityLens VS Code extension host",
   "license": "MIT",
-  "main": "./dist/index.js",
+  "main": "./dist-bundle/extension.js",
   "types": "src/index.ts",
   "engines": {
     "vscode": "^1.85.0"
@@ -39,7 +39,8 @@
   },
   "scripts": {
     "test": "vitest run",
-    "package": "vsce package --no-dependencies"
+    "bundle": "node esbuild.config.mjs",
+    "package": "npm run bundle && vsce package --no-dependencies"
   },
   "dependencies": {
     "@paritylens/engine": "*",
