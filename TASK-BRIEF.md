@@ -1,147 +1,200 @@
-# ParityLens — Task Brief T-26
+# ParityLens — Task Brief T-27
 
 ## Objective
 
-Found during the prompt-07 Release step 5 live smoke test (2026-08-01,
-first-ever real VS Code extension-host launch of this project — a
-human-driven test in a sandboxed profile, `--extensions-dir`/
-`--user-data-dir` pointed at scratch folders, never touching the real VS
-Code environment): the extension fails to register its own tree view at
-all. Two real, cascading VS Code errors observed directly:
+Found during the prompt-07 Release step 5 live smoke test's second pass
+(2026-08-01, after T-26 fixed the activity-bar icon), on a real,
+non-fixture human observation: after installing the freshly rebuilt
+`.vsix` and confirming the icon/tree-view registration now works, the
+owner reported two further live failures: clicking the Data Parity icon
+shows "There is no data provider registered that can provide view data,"
+and running "ParityLens: Run Comparison" from the Command Palette fails
+with "command not found."
 
-```
-property icon is mandatory and must be of type string
-View container 'paritylens' does not exist and all views registered to it will be added to 'Explorer'.
-```
+**Root cause, confirmed by direct inspection of the actual packaged
+`.vsix` contents** (unzipped and listed): the archive contains
+`extension/dist/**` (compiled TypeScript) and `extension/package.json`,
+but **no `node_modules/` directory at all**. `dist/activation/activate.js`
+does `require("@paritylens/engine")` at module-load time (confirmed via
+`grep -n "require(" dist/activation/activate.js`). When VS Code's
+extension host tries to activate this extension, that `require()` throws
+`MODULE_NOT_FOUND` (uncaught, since no defensive try/catch exists around
+module-load-time requires), `activate()` never runs to completion,
+nothing it would have registered (`ParityTreeDataProvider`, the
+`paritylens.runComparison` command handler) actually gets registered —
+exactly producing both symptoms observed live.
 
-Root cause, confirmed by reading `packages/extension/package.json`
-directly: `contributes.viewsContainers.activitybar[0]` (the `"paritylens"`
-container, registered by T-10) declares `id`/`title` but no `icon` field.
-VS Code's manifest schema requires an `icon` for any custom activity-bar
-container; without one, VS Code refuses to register the container
-entirely, and the view registered against it (`paritylens.dataParityView`,
-also from T-10) silently falls back into the built-in Explorer container
-instead of getting its own "Data Parity" activity-bar icon — the exact
-UX T-10's `TASK-BRIEF.md` intended.
+**Why `node_modules/` is missing:** `@paritylens/engine` and
+`@paritylens/shared` are npm-workspaces packages, symlinked into the
+repo-root `node_modules/@paritylens/**` rather than living inside
+`packages/extension/node_modules/`. T-25 added `vsce package
+--no-dependencies` specifically because `vsce`'s default dependency-walk
+climbed past the npm-workspaces boundary and swept the entire monorepo
+(8,946 files, 224 MB, including `.git/`) into the package — a real
+problem `--no-dependencies` correctly solved. But `--no-dependencies`
+also means `vsce` never resolves or bundles *any* runtime dependency,
+including the two workspace packages this extension's own code actually
+`require()`s. `vsce` offers no middle-ground flag (`--dependencies` is
+all-or-nothing walk-the-whole-tree; `--no-dependencies` is walk-nothing)
+— confirmed via `npx --no-install @vscode/vsce package --help`.
 
-**Why this was never caught before now:** every prior task (T-10, T-11,
-T-16, T-16b, T-22) tested extension-layer code exclusively via Vitest
-against a hand-mocked `vscode` module — never against a real VS Code
-extension host. This is the concrete, first-observed instance of the
-already-disclosed X-01 finding ("no test proves the tree view registers
-against a real extension-host runtime") turning out to hide a real
-defect, not just an unverified-but-fine assumption. `zero` icon assets of
-any kind exist anywhere in this repository — this needs a genuinely new
-asset added, not just a manifest field pointed at something that already
-exists.
+**This is a structural gap neither T-25's implementer, T-25's reviewer,
+nor T-26's implementer/reviewer could reasonably have caught without
+exactly this live, human-driven "run the actual command" smoke test** —
+every automated check performed so far (unit tests, `.vsix` content
+listing for file-leak concerns, VS Code's own startup log for the icon
+registration error) genuinely passed, because none of them actually
+*invoked* the extension's runtime code path that hits the missing
+`require()`.
 
 ## Scope
 
-1. **Create an icon asset** at `packages/extension/media/icon.svg` (or
-   another path of your choosing inside `packages/extension/media/` —
-   document your choice). Convention for a VS Code activity-bar container
-   icon: a monochrome SVG, roughly 24x24 viewBox, using `fill="currentColor"`
-   (or equivalent) rather than a fixed color, so it inherits VS Code's
-   theme-appropriate icon color automatically in both light and dark
-   themes — do not hardcode a specific color. Keep the icon simple
-   (VS Code renders activity-bar icons small); a simple geometric mark
-   representing "parity"/"comparison" (e.g. two overlapping or
-   side-by-side shapes, a checkmark-vs-diff motif, or similar) is
-   appropriate — this does not need to be a polished professional logo,
-   it needs to be a valid, reasonable placeholder that satisfies VS
-   Code's manifest requirement and doesn't look broken/blank.
-2. **Add the `icon` field** to `packages/extension/package.json`'s
-   `contributes.viewsContainers.activitybar[0]` entry, pointing at the
-   new asset's path relative to the extension root (e.g.
-   `"icon": "media/icon.svg"`).
-3. **Verify the fix in a real extension host**, the same way this defect
-   was found: rebuild the `.vsix` (`npm run package` inside
-   `packages/extension`, after `npm run build` — confirm `dist/` is
-   current), install it into a sandboxed profile (`code
-   --extensions-dir <scratch> --user-data-dir <scratch>
-   --install-extension <path-to-vsix>`, never the real environment), then
-   launch `code --extensions-dir <scratch> --user-data-dir <scratch>
-   <a-scratch-workspace-folder>` and confirm directly: no `icon is
-   mandatory` error, no `View container 'paritylens' does not exist`
-   error, and the Data Parity activity-bar icon and tree view actually
-   appear. You have terminal/CLI access to do this yourself (the `code`
-   CLI is available in this environment) — this is not blocked on human
-   interaction the way the original smoke test's visual confirmation
-   was, since you can capture VS Code's own startup log output
-   (`--verbose` or checking `user-data-dir`'s log files) as evidence
-   rather than needing a human to look at a rendered icon.
-4. **Clean up your sandbox test folders** after verification — do not
-   leave scratch VS Code profiles/extension installations lying around
-   in the repo or its parent directories; use the OS temp directory.
+**The correct, standard fix for a VS Code extension built from an npm
+workspaces monorepo is to bundle the extension into a single
+self-contained JS file** (inlining `@paritylens/engine`/
+`@paritylens/shared`'s code directly, rather than depending on
+`node_modules` resolution at runtime) — this is the standard pattern
+VS Code's own extension-samples repository and most real-world monorepo
+extensions use, and it also eliminates the underlying tension `vsce
+--no-dependencies` exists to route around in the first place.
+
+1. **Add a bundler** to `packages/extension`. `esbuild` is the
+   lightweight, fast, standard choice for this (used by VS Code's own
+   official extension templates) — add it as a **root-level
+   devDependency** (same network-install exception category as T-25's
+   `@vscode/vsce` install; this is a new tool install, disclose it the
+   same way, no separate owner approval needed since the precedent and
+   rationale are identical and already recorded).
+2. **Write a bundle script** (e.g. `packages/extension/esbuild.config.mjs`
+   or inline in `package.json`'s scripts, your choice, document which)
+   that bundles `packages/extension/src/index.ts` (the actual extension
+   entry point) into a single output file — e.g.
+   `packages/extension/dist-bundle/extension.js` (choose a directory name
+   that clearly distinguishes this from the existing `dist/` produced by
+   `tsc -b`, which remains needed for typecheck/test purposes and should
+   NOT be replaced or removed) — with:
+   - `platform: "node"`, `format: "cjs"` (VS Code extension hosts are
+     CommonJS/Node).
+   - `external: ["vscode"]` (the `vscode` module is provided by the
+     extension host at runtime, never bundle it).
+   - `bundle: true` so `@paritylens/engine`/`@paritylens/shared` (and
+     their own dependencies like `yaml`, `@duckdb/node-api` if the
+     bundle's actual code path reaches them — investigate what's truly
+     needed vs. what can stay external; native-binary packages like
+     `@duckdb/node-api`'s per-platform bindings typically CANNOT be
+     bundled by esbuild and must be marked `external` and shipped
+     alongside the bundle instead — this is a real, non-trivial
+     investigation step, do not assume bundling "just works" for every
+     dependency without checking) are inlined.
+   - Minification is optional (your judgment; not required for
+     correctness, only for artifact size).
+3. **Update `packages/extension/package.json`'s `main` field** to point
+   at the new bundled output instead of `./dist/index.js`.
+4. **Update `.vscodeignore`** so the packaged `.vsix` includes the new
+   bundled output (and any unbundleable native dependencies it needs
+   alongside it, if applicable per the investigation in step 2) instead
+   of (or in addition to, if genuinely still needed) the raw `tsc`-built
+   `dist/`.
+5. **Update the `package` npm script** to run the bundle step before
+   `vsce package`, and confirm whether `--no-dependencies` is still the
+   correct flag now that the bundle inlines the workspace packages
+   itself (it likely still is, to avoid re-triggering T-25's original
+   monorepo-sweep problem for whatever *is* left as an external/real npm
+   dependency — but verify this rather than assume, since the dependency
+   surface has changed).
+6. **Verify the actual fix the way this defect was found**: rebuild
+   everything, install into a fresh sandboxed VS Code profile (scratch
+   temp folders, never a real profile), launch it, and this time actually
+   invoke the runtime path that failed before — you have the same CLI
+   access previous tasks used; if you cannot fully automate clicking the
+   activity-bar icon or running the command palette entry yourself,
+   at minimum confirm via VS Code's own extension-host log output that
+   `activate()` completes without a `MODULE_NOT_FOUND` (or any other)
+   error, and disclose plainly what you could versus couldn't confirm
+   without human interaction — same honesty standard T-26 already set.
+   If you have a way to programmatically execute a registered VS Code
+   command from the CLI/a script against the sandboxed instance
+   (investigate `code --command` or similar if the installed `code` CLI
+   version supports it; do not assume, check), use it to actually invoke
+   `paritylens.runComparison` end-to-end and confirm it doesn't fail with
+   "command not found" — this would be strictly stronger evidence than
+   log inspection alone.
 
 ## Dependencies
 
-- **Required completed tasks:** T-10 (owns the `activitybar`/`views`
-  contribution being fixed), T-25 (packaging — this task will rebuild
-  and re-verify the `.vsix`).
-- **Required decisions or approvals:** NONE beyond this brief — icon
-  *content* (what it visually looks like) is a bounded implementation
-  judgment call within "simple, valid, theme-appropriate placeholder,"
-  not a decision requiring owner sign-off, unlike T-24's license choice
-  or T-25's publisher identity.
-- **Environment:** No WSL/Docker containers needed. No network access
-  needed (an SVG can be authored directly as text, no external asset
-  download required).
+- **Required completed tasks:** T-22 (the command this bug affects),
+  T-25 (packaging setup, being extended), T-26 (icon fix, already
+  reconciled — this task's smoke-test evidence builds on that fix already
+  being in place).
+- **Required decisions or approvals:** the esbuild devDependency install
+  is a disclosed network-install exception, same category and rationale
+  as T-25's `@vscode/vsce` install (already owner-approved in principle
+  for this release phase) — no separate approval needed.
+- **Environment:** No WSL/Docker containers needed. Network access needed
+  only for the one-time `esbuild` install.
 
 ## Files owned
 
-- `packages/extension/media/**` (new directory, icon asset)
-- `packages/extension/package.json` (`contributes.viewsContainers.activitybar[0].icon`
-  field only — do not touch any other field, including `name`/`publisher`
-  which T-25 already resolved correctly)
+- `package.json` (root — new devDependency for `esbuild` only)
+- `package-lock.json` (regenerated by `npm install`)
+- `packages/extension/package.json` (`main` field, `scripts.package`,
+  and a new bundling-related script entry — do not touch `name`/
+  `publisher`/`private`/the `icon` field T-26 already fixed)
+- `packages/extension/esbuild.config.mjs` (or equivalent — new file,
+  exact name your choice, document it)
+- `packages/extension/.vscodeignore` (update to match the new build
+  output layout)
 
-Do not touch any file under `packages/*/src/**`. Do not modify
-`contributes.views` or `contributes.commands` — this task fixes exactly
-the missing `icon` field and its required asset, nothing else.
+Do not touch any file under `packages/*/src/**` — this task changes how
+existing, already-approved code is bundled/packaged, not what it does.
+Do not remove or break the existing `tsc -b`-produced `dist/` output or
+the `npm run typecheck`/`npm run test` scripts' reliance on it — those
+must keep working exactly as before; this task adds a new, separate
+bundling step for packaging purposes only.
 
 ## Interfaces
 
-None — this task adds a static asset and one manifest field. No runtime
+None — this task changes build/packaging tooling only. No runtime
 interface is consumed or produced.
 
 ## Prohibited changes
 
 - Do not modify any file under `packages/*/src/**`.
-- Do not touch `name`/`publisher`/`private` in `packages/extension/package.json`
-  (T-25 already resolved these correctly).
-- Do not expand scope into other extension-host defects that live
-  verification might surface beyond this specific icon issue — if you
-  find something else broken during your verification pass, stop and
-  report it as a new finding rather than silently fixing it here too.
-- Do not commit any `.vsix` build artifact or scratch VS Code profile
-  directory to git.
+- Do not remove the existing `tsc -b` build/typecheck pathway.
+- Do not touch `name`/`publisher`/`private`/`icon` in
+  `packages/extension/package.json` — already correctly resolved by
+  T-25/T-26.
+- Do not expand scope into fixing other things this investigation might
+  surface (e.g. if native-dependency bundling turns out to need real
+  connector code changes) — stop and report as a new finding instead.
 
 ## Red-state evidence
 
-- **Check to add:** none in the traditional Vitest sense — this defect
-  is only observable via a real extension-host launch, which is exactly
-  what a Vitest-mocked test cannot exercise (that gap is the pre-existing
-  X-01 finding, out of this task's scope to close in general — this task
-  only needs to prove *this specific* fix). Red-state evidence is the
-  exact error text already captured above, reproduced by you rebuilding
-  the *current* (unfixed) `.vsix` and launching it in a sandbox, before
-  making any change — confirm you see the same two errors, then apply
-  the fix.
+- **Check to add:** none in the traditional Vitest sense — like T-26,
+  this defect is only observable via a real extension-host runtime
+  invocation. Red-state evidence is the exact failure already captured
+  above (unzip the *current*, pre-fix `.vsix` and confirm no
+  `node_modules/` is present; `grep -n "require(" dist/activation/activate.js`
+  showing the `@paritylens/engine` require that will fail) — reproduce
+  this yourself before making any change, to have a genuine before/after.
 
 ## Green-state and full verification
 
-- **Focused evidence:** rebuild the `.vsix` after the fix, install and
-  launch it in a fresh sandbox profile, and capture evidence that the
-  `icon is mandatory` and `View container 'paritylens' does not exist`
-  errors are both gone. If VS Code's CLI/log output doesn't directly
-  confirm the tree view rendered (some UI-only confirmations may need
-  a human), state plainly in `IMPLEMENTATION-REPORT.md` exactly what
-  you were able to verify via CLI/logs versus what still needs human
-  visual confirmation, rather than overclaiming full verification.
+- **Focused evidence:** unzip the post-fix `.vsix` and confirm
+  `@paritylens/engine`/`@paritylens/shared`'s code is now actually
+  present (bundled into the new output file, or as a real
+  `node_modules/` subset if you determine that's the more correct
+  approach after investigation — document which and why). Confirm via
+  extension-host log output (and, if you find a way, direct command
+  invocation) that `activate()` completes without a `MODULE_NOT_FOUND`
+  error and the `paritylens.runComparison` command is genuinely
+  registered.
 - **Full command:** `npm run verify`
 - **Expected evidence:** exits 0 with the same test count as the current
-  baseline (404 passed, 27 pre-existing skips, 431 total) — this is a
-  static-asset-plus-manifest-field change, no test-relevant code changes.
+  baseline (404 passed, 27 pre-existing skips, 431 total) — this task
+  changes packaging/bundling only, `npm run test`'s Vitest suite doesn't
+  consume the bundled output, only the `tsc -b`-produced `dist/`, which
+  must remain unchanged in behavior.
 
 ## Handoff
 
@@ -149,16 +202,22 @@ interface is consumed or produced.
 - **Independent reviewer:** `reviewer` subagent (separate instance from
   whichever `implementer` subagent does this task)
 - **Review report location:** `REVIEW-REPORT.md`
-- **Commit or patch checkpoint:** Branch `task/T-26-activity-bar-icon`
+- **Commit or patch checkpoint:** Branch `task/T-27-extension-bundling`
 
-**Note to reviewer:** independently reproduce both the red state (rebuild
-the pre-fix `.vsix` — or just inspect `main`'s current `package.json`
-directly, don't need to actually launch it if you trust reading the
-manifest — and confirm the `icon` field is genuinely absent before this
-task's commit) and the green state (confirm the `icon` field now points
-at a real, valid SVG file that actually exists at that relative path
-inside the built `.vsix`'s contents, not just in source). If you have the
-same terminal/`code` CLI access the implementer used, independently
-launch the fixed `.vsix` in your own fresh sandbox profile and confirm
-the two specific errors are gone, per this project's "don't just re-run
-the implementer's own evidence" discipline.
+**Note to reviewer:** this is the most consequential packaging task so
+far — a broken `require()` at activation time means the shipped extension
+is completely non-functional despite every prior automated check passing.
+Independently reproduce both red state (unzip `main`'s current `.vsix`,
+confirm the missing `node_modules/`) and green state (unzip the fixed
+`.vsix`, confirm the workspace packages' code is genuinely reachable from
+the bundled/shipped output — actually trace a `require`/import path by
+hand if needed, don't just check a directory exists). If you have the
+same CLI access, independently install and launch the fixed `.vsix` in
+your own fresh sandbox and check extension-host logs for activation
+success. Pay particular attention to whether `@duckdb/node-api`'s native
+per-platform bindings (used somewhere in `@paritylens/engine`'s
+dependency chain) were correctly handled — esbuild cannot bundle native
+`.node` binaries, so if the bundled code path reaches DuckDB, those
+binaries need a real solution (shipped alongside the bundle, or
+`external`+documented as a known gap for a future connector-specific
+task) rather than silently missing.
