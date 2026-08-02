@@ -34,6 +34,18 @@
       {
         "command": "paritylens.runComparison",
         "title": "ParityLens: Run Comparison"
+      },
+      {
+        "command": "paritylens.addConnection",
+        "title": "ParityLens: Add Connection"
+      },
+      {
+        "command": "paritylens.editConnection",
+        "title": "ParityLens: Edit Connection"
+      },
+      {
+        "command": "paritylens.deleteConnection",
+        "title": "ParityLens: Delete Connection"
       }
     ]
   },
