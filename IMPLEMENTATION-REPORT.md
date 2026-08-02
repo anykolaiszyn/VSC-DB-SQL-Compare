@@ -142,7 +142,7 @@ All commands run from the repo root (`V:\Secret Projects\VSC-DB-SQL-Compare`).
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see below)
+- **Patch or commit:** 165a665
 - **Branch or workspace:** `task/T-30-real-connector-wiring`
 
 ## Recommended next step
