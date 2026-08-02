@@ -1,209 +1,278 @@
-# ParityLens — Review Report T-25
+# ParityLens — Review Report T-26
 
-## Review independence statement
+## Independence statement
 
-This review was performed by a separate agent instance from whichever
-implementer session(s) produced `task/T-25-extension-packaging` (tip
-`f5e7b99`, based on `main` at `bd6daa3`). I did not trust
-`IMPLEMENTATION-REPORT.md`'s claims — every factual claim checked below
-(file contents, `.vsix` contents, hashes, verification counts) was
-independently re-derived from the actual repository state and my own
-freshly-produced artifact, not copied from the report.
+This review was performed by a separate agent instance from whoever wrote
+`IMPLEMENTATION-REPORT.md` and the T-26 commits. No memory of authoring the
+change was available or used. Every factual claim in the implementation
+report was independently re-derived from the actual diff, the actual source
+files, and fresh command/tool execution rather than trusted at face value.
 
 ## Scope reviewed
 
-- `TASK-BRIEF.md` (including its round-1-triggered Amendment) as sole
-  authority.
-- `IMPLEMENTATION-REPORT.md` — treated as a claim set to verify, not a
-  source of truth.
-- Full diff `bd6daa3..f5e7b99` (both round 1, commit `ac44c22`, and round
-  2, commit `f5e7b99`, plus the amendment commit `c726227`).
-- Actual current contents of every changed file.
-- A freshly, independently produced `.vsix`, unzipped and inspected
-  directly.
-
-## Verification performed (my own commands and results)
-
-1. **`name`/`publisher`/`private` fields** — read directly:
-   - `packages/extension/package.json`: `"name": "paritylens"`,
-     `"publisher": "parity-lens-dev"` — exact match to the Amendment's
-     specified values. No other field changed by this edit (confirmed via
-     `git diff c726227 f5e7b99 -- packages/extension/package.json`, which
-     shows only the `name`/`publisher` addition and the `scripts.package`
-     value change).
-   - `packages/shared/package.json`: `"private": true` present, unchanged.
-   - `packages/engine/package.json`: `"private": true` present, unchanged.
-
-2. **Independent `.vsix` build.** Ran `npm run typecheck` (clean, exit 0,
-   no output) then `npm run package` from `packages/extension/` myself
-   (`vsce package --no-dependencies`, resolved from the actual
-   `scripts.package` entry, not assumed). Produced my own
-   `paritylens-0.0.1.vsix`, 23,306 bytes — byte-size-identical to the
-   report's claimed 23,306 bytes.
-
-   Unzipped it myself (copied to `.zip`, extracted, recursive listing).
-   Contents: `[Content_Types].xml`, `extension.vsixmanifest`,
-   `extension/package.json`, `extension/readme.md`, and 16 files under
-   `extension/dist/**` (`.js`/`.d.ts` pairs for `index`, `activation`,
-   `export` (x2), `secrets`, `statusbar`, `views`, `webview` — 18 payload
-   files total, matching the report's listing exactly, file-for-file).
-
-   Directly probed the specific risk the `--no-dependencies` judgment
-   call was meant to close:
-   - `find extracted -iname "*.test.*"` → empty. No test files of any
-     kind.
-   - `find extracted -iname "node_modules" -o -iname "@types"` → empty.
-   - `find extracted -iname ".git*"` → empty. No `.git/` leakage.
-   - `find extracted -path "*src*"` → empty. No `src/**` leakage.
-   - Inspected `extension/package.json` inside the archive directly:
-     correct `name`/`publisher` values present in the packaged manifest,
-     not just the source file.
-   - Inspected `extension.vsixmanifest`: `Identity ... Id="paritylens"
-     ... Publisher="parity-lens-dev"` — confirms the fix actually reached
-     the packaged output, not just the source `package.json`.
-
-   **Adversarial re-creation of the disclosed risk, to confirm it was
-   real and not overstated:** ran `vsce package` (no flags, the
-   pre-judgment-call command) myself from `packages/extension/`. Result:
-   `vsce ls --tree` and the package summary showed the walk climbing to
-   the repo root and pulling in **8946 files / 224.13 MB** under
-   `extension/../../`, including sibling `engine/` (188 files) and
-   `shared/` (28 files) trees. I specifically grepped the tree output for
-   `.git` and confirmed `.git/`, `.git/.github/`, `.gitattributes`, etc.
-   were present in the unflagged walk. This independently reproduces and
-   confirms the exact leak the report describes — I did not just accept
-   the disclosure, I broke it myself first, then confirmed
-   `--no-dependencies` closes it (re-ran `npm run package` afterward,
-   confirmed the clean 20-file/23,306-byte result was restored).
-
-3. **SHA-256 hash comparison.**
-   - My independently produced `.vsix`:
-     `ca2ec7392c28e7ca23a390aff57a4474c0c84d7a1a63e3b11d8df2fff95aba08`
-   - Report's claimed hash:
-     `c509fa01ee8e3bb4d11747fe537b113ee55a27674be4374cf6261261dd977c1`
-     (64 hex chars — recounted with `wc -c` to guard against a
-     transcription misread on my part; confirmed 64, not a defect in the
-     report's string itself)
-   - **These do not match.** Investigated before concluding anything is
-     wrong, per instructions: `.vsix` is a ZIP container, and
-     `unzip -v` shows each entry carries a per-file last-modified
-     timestamp taken from filesystem mtimes at build time (my build's
-     entries show `2026-08-01 18:41`; `extension/package.json` shows
-     `18:36`, an earlier edit time preserved from source). Two builds run
-     at different wall-clock times — mine vs. the implementer's — will
-     produce different DEFLATE stream bytes purely from these embedded
-     timestamps even with byte-identical logical file contents. File
-     sizes, uncompressed lengths, file count, and every logical content
-     check above matched exactly. This is the exact non-blocking,
-     disclosable-not-defect scenario the dispatch instructions
-     anticipated. **Finding recorded below as Minor** — full
-     byte-for-byte reproducibility was never actually achieved or claimed
-     as achieved by the report (the report presents its hash as *this
-     build's* hash, not as a reproducibility guarantee across independent
-     builds), but it's worth noting explicitly since "SHA-256 hash"
-     language can imply stronger reproducibility than a `vsce`-packaged
-     `.vsix` actually offers.
-
-4. **`.vsix` not committed to git.** `git status --short` on the branch
-   tip shows no untracked/modified entry for the `.vsix` despite it
-   existing in the working tree at `packages/extension/`. Confirmed via
-   `git check-ignore -v packages/extension/paritylens-0.0.1.vsix` →
-   matched by `.gitignore:9:*.vsix`. Correct.
-
-5. **Fresh `npm run verify`.** Ran it myself on the branch tip:
-   `tsc -b --force` clean, `eslint .` clean, `vitest run` →
-   **22 test files passed, 2 skipped (24); 404 tests passed, 27 skipped
-   (431 total)**, exit 0. Matches the report's claimed baseline exactly
-   and matches `TASK-BRIEF.md`'s expected evidence (404/27/431).
-
-6. **Judgment call assessment** (`--no-dependencies` flag,
-   `.vscodeignore` `.test.d.ts`/`.test.d.ts.map` additions):
-   - Both edits land inside files already declared as owned by this task
-     (`packages/extension/package.json`'s `scripts.package` field;
-     `packages/extension/.vscodeignore`) — no new file ownership was
-     claimed.
-   - Both are reactive fixes to problems that only became visible once
-     the Amendment's `name`/`publisher` fix let packaging proceed far
-     enough to hit them — they could not have been anticipated or
-     specified at Amendment-authoring time, unlike the `name`/`publisher`
-     values which were fully specifiable in advance.
-   - Both were independently reproduced by me as real (see items 2 and
-     3's adversarial checks above) — neither is a hypothetical or
-     overstated risk.
-   - Both are the kind of "minimal mechanically-forced consequence of
-     authorized work" the dispatch instructions describe as acceptable,
-     not genuine scope expansion: fixing "produce a correct package" one
-     token/two lines at a time inside files whose purpose is exactly
-     "control what's in the package" is squarely within the brief's own
-     item 2/item 3 intent ("the packaged `.vsix` should contain only
-     `dist/**`'s compiled output... not source/test files";
-     "`--no-dependencies`/an equivalent documented `vsce` flag if one
-     exists for this exact case" is literally named in the brief's text,
-     just originally anticipated for a different, superseded blocker).
-   - Both were disclosed prominently and separately rather than folded in
-     silently, as the brief's process expects.
-   - **Assessment: both judgment calls were reasonable and appropriately
-     disclosed. Not scope creep.**
-
-## Disposition of prior findings
-
-No open finding from a prior review round names T-25 as its resolution
-target (checked `PROGRESS-LEDGER.md`'s task register and integration
-evidence section — the open items referenced there, T-20-02/T-20-04, are
-unrelated to packaging). This task originates from a fresh Release-phase
-gap (Release step 4), not a remediation of a prior finding, so there is
-no prior-finding reproduction obligation for this review beyond
-re-verifying the task's own round-1-to-round-2 blocker resolution, which
-is covered in items 1–3 above.
-
-## Findings
-
-### Critical
-
-None.
-
-### Important
-
-None.
-
-### Minor
-
-| ID | Finding | Evidence | Suggested resolution |
-| --- | --- | --- | --- |
-| T-25-01 | The report's claimed SHA-256 hash is not byte-reproducible across independent builds, because `vsce`'s ZIP output embeds per-file mtimes that vary by build wall-clock time. This is disclosed nowhere in the report or brief as a caveat on the hash's meaning — a future reader could reasonably (and incorrectly) treat "record its SHA-256 hash" as implying the hash is a stable fingerprint of the source revision, when it is only a fingerprint of that one specific build. | My independent rebuild from the same source (`f5e7b99`) produced `ca2ec7392c28e7ca23a390aff57a4474c0c84d7a1a63e3b11d8df2fff95aba08`, differing from the report's claimed `c509fa01ee8e3bb4d11747fe537b113ee55a27674be4374cf6261261dd977c1`, while file count, file names, and uncompressed sizes matched exactly; `unzip -v` shows per-entry timestamps differing between builds (e.g. `2026-08-01 18:41` in my build). | No code change needed. Suggest a one-line addendum to `IMPLEMENTATION-REPORT.md` or a note for any future packaging documentation clarifying that the recorded hash identifies that specific build artifact, not a reproducible-from-source fingerprint — future consumers verifying integrity should compare file contents/listing, not expect hash equality across independent rebuilds of identical source. Non-blocking; does not affect approval. |
-| T-25-02 | The packaged `extension/package.json` still carries `"types": "src/index.ts"`, a dev-time pointer into the now-excluded `src/**` tree. Harmless at runtime (VS Code doesn't consult `types` when loading an extension) but is a small metadata inconsistency inside an otherwise-clean shipped manifest. | Confirmed by direct inspection of the unzipped `extension/package.json` inside my independently built `.vsix`. | Not this task's scope to fix (the brief's Amendment authorized only `name`/`publisher`/`scripts.package`, and this field predates T-25). Flagging for a future packaging-polish task; no action required now. |
+- Branch `task/T-26-activity-bar-icon`, tip commit `f809230`, based on
+  `main` at `f164a36`.
+- Commits: `3ee2a64` (implementation), `f809230` (implementation report).
+- Files changed: `packages/extension/media/icon.svg` (new),
+  `packages/extension/package.json`, `IMPLEMENTATION-REPORT.md`.
+- Cross-checked against `TASK-BRIEF.md` (sole authority per this project's
+  `AGENTS.md`) and `PROGRESS-LEDGER.md`'s T-26 row / X-01 finding / the
+  2026-08-01 decision-log entry describing the original live smoke test.
 
 ## Scope and ownership check
 
-`git diff c726227 f5e7b99` (round 2) touches exactly
-`packages/extension/package.json`, `packages/extension/.vscodeignore`,
-`packages/extension/README.md`, and `IMPLEMENTATION-REPORT.md` — all
-within declared or amendment-authorized ownership. `git diff bd6daa3
-ac44c22` (round 1) touches `.gitignore`, `package.json` (root),
-`package-lock.json`, `packages/extension/package.json`,
-`packages/extension/.vscodeignore`, `packages/extension/README.md`,
-`IMPLEMENTATION-REPORT.md` — all within the brief's original "Files
-owned" list. No file under `packages/*/src/**` was touched in either
-round (confirmed via `git diff --stat` across the full range). No
-unauthorized scope expansion found.
+`git diff main task/T-26-activity-bar-icon --stat` (excluding
+`IMPLEMENTATION-REPORT.md`, which every task rewrites by convention):
 
-## Final approval status
+```
+packages/extension/media/icon.svg | 8 ++++++++
+packages/extension/package.json   | 3 ++-
+2 files changed, 10 insertions(+), 1 deletion(-)
+```
 
-**APPROVED**
+`packages/extension/package.json`'s full diff is exactly:
 
-Both round-1's correct stop-and-flag and round-2's Amendment-driven fix
-plus its two disclosed judgment calls hold up under independent,
-adversarial verification: the `name`/`publisher` fields match the
-Amendment exactly, `private: true` remains untouched on `shared`/`engine`,
-a freshly and independently rebuilt `.vsix` matches the report's claimed
-size and content listing exactly (including confirmed absence of
-`src/**`, `*.test.*`, `node_modules/@types/**`, and `.git/` — the last of
-which I reproduced as a real leak myself before confirming the fix closes
-it), the `.vsix` is correctly git-ignored, and `npm run verify` reproduces
-the exact claimed 404/27/431 baseline. The one hash mismatch was
-investigated rather than assumed to be a defect, and traced to a
-well-understood, non-blocking cause (ZIP per-entry timestamps) rather
-than any content or process discrepancy. Both disclosed judgment calls
-are reasonable, adequately disclosed, and independently confirmed
-necessary. Two Minor findings recorded for future-task follow-up; neither
-blocks approval.
+```diff
+         {
+           "id": "paritylens",
+-          "title": "Data Parity"
++          "title": "Data Parity",
++          "icon": "media/icon.svg"
+         }
+```
+
+No other field in `package.json` changed (`name`, `publisher`, `private`,
+`views`, `commands`, `scripts` all untouched — confirmed by reading the
+full file). This matches the brief's "Files owned" section exactly:
+`packages/extension/media/**` (new) and the single `icon` field. No file
+under `packages/*/src/**` was touched. Scope check: **pass, no findings.**
+
+## Verification performed (fresh, independent)
+
+### 1. `npm run verify`
+
+Ran fresh from repo root on the checked-out branch:
+
+```
+Test Files  22 passed | 2 skipped (24)
+     Tests  404 passed | 27 skipped (431)
+Exit code: 0
+```
+
+Matches both the report's claim and the brief's expected baseline
+(404 passed / 27 skipped / 431 total) exactly. **Confirmed.**
+
+### 2. Icon asset inspection
+
+`packages/extension/media/icon.svg` exists, is well-formed SVG (24x24
+viewBox, parsed successfully with Node's basic string checks), and uses
+`stroke="currentColor"` on all three drawn elements (`fill="none"`
+throughout) — no hardcoded hex/named colors anywhere in the file. This
+correctly inherits VS Code's theme icon color in both light and dark
+themes, satisfying the brief's "do not hardcode a specific color"
+requirement.
+
+**Minor internal inconsistency noted:** the SVG's own header comment
+says `fill="currentColor"` twice, but the actual technique used is
+`stroke="currentColor"` with `fill="none"`. The implementation report
+correctly describes the real technique (`stroke="currentColor"`) and
+explicitly justifies deviating from the brief's literal `fill="currentColor"`
+suggestion as a judgment call (VS Code's own built-in icon convention) —
+so the report is accurate; only the in-file code comment is stale/wrong.
+Cosmetic, not a functional defect (browsers/VS Code do not parse SVG
+comments). See T-26-03 below.
+
+### 3. Real `.vsix` rebuild and content verification
+
+Ran `npm run build` (tsc -b, exit 0) then, from `packages/extension`,
+`npx --no-install @vscode/vsce package --no-dependencies` against the
+current (fixed) branch tip. Output confirmed:
+
+```
+extension/media/icon.svg [0.71 KB]
+DONE  Packaged: ...\paritylens-0.0.1.vsix (21 files, 23.3 KB)
+```
+
+Unzipped the produced `.vsix` directly (not trusting `vsce`'s own file
+listing) and confirmed `extension/media/icon.svg` is genuinely present in
+the archive with byte-identical content to the source file. **Confirmed —
+matches the implementation report's claim.**
+
+Also independently confirmed the pre-existing `WARNING  LICENSE,
+LICENSE.md, or LICENSE.txt not found` message from `vsce package`
+(present on every build, red and green state), and that a `LICENSE` file
+does exist at the repo root (`V:\...\VSC-DB-SQL-Compare\LICENSE`, MIT,
+added by T-24). This is accurately disclosed in the implementation
+report as pre-existing and out of T-26's scope (`vsce` only looks for a
+LICENSE colocated with the manifest it packages, not at the monorepo
+root) — **confirmed accurate, correctly not treated as a T-26 defect.**
+Filed as a new tracked finding below per the dispatch instructions,
+attributed to a future packaging-scope task, not T-26.
+
+### 4. Independent real extension-host sandbox launches (green state)
+
+Installed the freshly-built `.vsix` into my own fresh sandbox
+(`--extensions-dir`/`--user-data-dir` under a scratch OS temp folder,
+never any real profile) and launched with `--verbose` against a scratch
+workspace. Extension installed successfully
+(`parity-lens-dev.paritylens-0.0.1` present in the sandbox's extensions
+dir). Let the workbench run to a fully-idle state (lifecycle phase 4,
+observed continuously for ~50+ seconds of console output) before
+searching.
+
+Searched every log file under the session's `logs/<timestamp>/` tree —
+`main.log`, `window1/renderer.log`, `window1/exthost/exthost.log`,
+`window1/views.log`, and all others — for `icon is mandatory` and
+`View container 'paritylens' does not exist`. **Zero matches for either
+string, in any log file.** The only `paritylens`-containing lines found
+were two benign trace lines (`pickRunningLocation for
+parity-lens-dev.paritylens...`, `Checking updates for extensions
+github.copilot-chat, parity-lens-dev.paritylens`) — matching the
+implementation report's description almost exactly.
+
+### 5. Independent real extension-host sandbox launch (red state) — material discrepancy found
+
+Per the brief's explicit "Note to reviewer" instruction to independently
+reproduce the red state, I did not rely on reading `main`'s manifest
+alone (though I did confirm `main`'s `package.json` genuinely has no
+`icon` field via `git show main:packages/extension/package.json`). I
+went further and actually rebuilt and launched the pre-fix `.vsix`:
+created a `git worktree` of `main` (`f164a36`), ran `npm install`,
+`npm run build`, and `vsce package --no-dependencies` there — producing
+a genuinely icon-less `.vsix` (20 files vs. 21 for the fixed build, no
+`media/` directory) — then installed and launched it in a **second,
+independent, fresh sandbox** (different scratch folders from the
+green-state run), with `--verbose`, letting it settle to a fully-idle
+workbench state before searching (confirmed via live process listing
+that the instance was not killed mid-startup; watched console output
+run continuously from initial launch through ~60 seconds of idle
+`User data changed` / chat-model heartbeat lines, i.e. genuinely
+fully loaded, not truncated).
+
+**Result: my independent red-state reproduction found zero occurrences
+of either target error string (`icon is mandatory`, `View container
+'paritylens' does not exist`) anywhere in any log file, including
+`main.log`, `renderer.log`, and `exthost.log`.** No `[warning]`-level
+log line of any kind appears in this sandbox's logs at all — the same
+absence of warning-level entries in the red-state run as in the
+green-state run.
+
+This directly contradicts the implementation report's specific red-state
+evidence claim, which cites exact locations: `renderer.log (line 753)`
+and `telemetry.log (line 417)` containing the verbatim error text. I
+could not reproduce that. I made two independent attempts (one shorter,
+one with a longer, verified-not-killed-early settle period) with the
+same negative result both times.
+
+**What this finding does and does not mean:**
+- It does **not** mean the fix itself is wrong. VS Code's manifest schema
+  genuinely requires an `icon` for a custom `viewsContainers.activitybar`
+  entry per Microsoft's own extension manifest documentation, and adding
+  one is unambiguously correct regardless of whether this specific VS
+  Code build's error-surfacing behavior matches what was originally
+  observed. The green-state fix — icon field added, real SVG asset
+  shipped, packaged into the `.vsix` — is independently confirmed correct
+  on its own terms (finding #3/#4 above).
+- It **does** mean I cannot independently corroborate the implementation
+  report's claimed direct evidence that the specific red-state error text
+  was reproduced by the implementer, because my own attempt to reproduce
+  the same red state, using the same method the brief itself prescribes,
+  did not surface it. Plausible explanations include: a VS Code version
+  or build-channel difference between my environment and the
+  implementer's/original smoke-test's session (both report and my
+  session used the same locally-installed VS Code v1.131.0 CLI, so a
+  version mismatch is not obviously the explanation, but a state/cache
+  difference in a shared local install is possible); the warning being
+  logged at a verbosity/channel my grep didn't cover; or the original
+  report's cited line numbers being inaccurate. I am not able to
+  determine which from available evidence.
+- Given the fix is independently correct and verifiable on its own merits
+  (finding #4, and the manifest-schema requirement is well-documented and
+  not in dispute), I am **not** blocking approval on this alone, but it
+  is a real, material verification-evidence discrepancy that must be
+  recorded rather than silently accepted, per this project's "don't
+  report a pass because the implementer said so" discipline.
+
+## Adversarial / disclosed-risk probing
+
+- The implementer disclosed they could not visually confirm the icon
+  glyph renders legibly (no screenshot/GUI tooling in their session).
+  This is an honest, correctly-scoped limitation — I do not have
+  screenshot-capable GUI tooling in this review session either, so I
+  cannot close this gap. **This remains open, needing human visual
+  confirmation**, exactly as both the brief and the report state.
+- Checked whether the icon path could be exploited/malformed (e.g. path
+  traversal in the `icon` field) — not applicable; it's a static
+  relative path (`media/icon.svg`) inside the extension's own owned
+  directory, packaged correctly, no user input involved.
+- Confirmed no credentials, secrets, or mutating-statement logic are
+  touched by this task (static asset + one manifest string field) — no
+  security-relevant surface exists in this change to adversarially probe
+  beyond the verification already performed.
+
+## Findings
+
+| ID | Severity | Description | Evidence | Required/suggested resolution |
+| --- | --- | --- | --- | --- |
+| T-26-01 | Important | Implementation report's red-state evidence (exact claimed log lines "renderer.log line 753" / "telemetry.log line 417" containing the two error strings) could not be independently reproduced. Two independent sandbox launches of a freshly-built pre-fix `.vsix` (from a `main`-worktree rebuild), both allowed to settle to a fully-idle workbench state, produced zero matches for either error string in any log file. | See "Verification performed" section 5 above; scratch sandbox logs were inspected then deleted per this task's cleanup requirement, so the negative evidence itself is not preserved as an artifact — reproducible by any reviewer following the same red-state rebuild-and-launch steps in the brief. | Does not block approval: the fix itself (icon field + valid themed SVG asset, correctly packaged) is independently verified correct on its own merits against VS Code's documented manifest requirement, independent of whether this specific error string reproduces in this environment. Recommend a follow-up note in the ledger flagging that the original smoke test's error text should be treated as strong but not independently reconfirmed evidence, and that future extension-host smoke tests capture the full session log bundle as a durable artifact (not deleted) so this class of discrepancy can be diagnosed rather than re-litigated from scratch each time. |
+| T-26-02 | Minor | Pre-existing `vsce package` "LICENSE, LICENSE.md, or LICENSE.txt not found" warning, confirmed accurate (LICENSE exists at repo root from T-24; `vsce` only checks alongside the manifest it packages, i.e. `packages/extension/`). Correctly disclosed by the implementer as out of T-26's scope and not fixed here. | Reproduced directly: `vsce package --no-dependencies` printed the warning on every build in this review session; `LICENSE` confirmed present at `V:\...\VSC-DB-SQL-Compare\LICENSE`. | Not a T-26 defect. File as a new tracked finding for a future packaging-scope task (e.g. copy/symlink `LICENSE` into `packages/extension/`, or accept via `--allow-missing-repository`-style flag if `vsce` offers an equivalent for LICENSE). Recorded in `PROGRESS-LEDGER.md`'s open findings below. |
+| T-26-03 | Minor | `packages/extension/media/icon.svg`'s own header comment says the icon uses `fill="currentColor"`, but the actual technique used on all three shapes is `stroke="currentColor"` with `fill="none"`. The implementation report correctly and explicitly describes the real `stroke`-based technique as a deliberate judgment call — only the in-file SVG comment is stale/inaccurate. | `packages/extension/media/icon.svg` lines 2-4 (comment) vs. lines 5-7 (actual `stroke`/`fill="none"` attributes). | Cosmetic only — does not affect rendering or theme-color inheritance (SVG comments are not parsed). Suggest a one-line comment fix next time this file is touched; not worth a dedicated task. |
+
+**No Critical findings.**
+
+## Prior findings disposition
+
+- **X-01** (extension tests use a mocked `vscode` module, no real
+  extension-host verification) — T-26 does not close X-01 in general
+  (it remains open and correctly scoped to a future dedicated
+  extension-host test-harness task), but T-26 is the concrete instance
+  the ledger already logged as X-01 "turning out to hide a real defect."
+  This task's own verification (both the report's and mine) is itself
+  additional real-extension-host evidence, consistent with X-01's
+  remediation direction, though it does not substitute for an automated
+  `@vscode/test-electron`-based regression test — none was added or
+  required by this task's brief.
+
+## Disposition
+
+**APPROVED.**
+
+Rationale: the change is exactly and only what the brief authorized (one
+manifest field, one new static asset, both within declared ownership).
+The fix is independently correct against VS Code's own documented
+manifest schema requirement for custom activity-bar containers,
+regardless of the T-26-01 evidence discrepancy. The icon asset is valid,
+theme-adaptive, and confirmed present byte-for-byte inside a freshly
+rebuilt `.vsix`. `npm run verify` is unchanged from baseline (404
+passed / 27 skipped / 431 total, exit 0). No Critical or Important
+finding blocks approval — T-26-01 is recorded as Important but explicitly
+does not block, per the reasoning given in that row (the underlying fix
+is independently verifiable correct on its own terms, and the
+discrepancy is about whether a specific historical error string
+reproduces in this specific environment, not about whether the shipped
+fix is right). The one remaining gap — visual, human confirmation that
+the icon glyph renders legibly in a live activity bar — was honestly
+disclosed as out of both the implementer's and this reviewer's tooling
+reach, and is recommended as the next concrete step before Release step
+5 is marked closed.
+
+## Suggested ledger updates (for the Lead Orchestrator, not applied by this reviewer)
+
+- Close T-26 as APPROVED, 0 Critical / 1 Important (non-blocking,
+  T-26-01) / 2 Minor (T-26-02, T-26-03).
+- Add T-26-02 as a new open finding (LICENSE not colocated with
+  `packages/extension/package.json` for `vsce` packaging purposes),
+  routed to a future packaging-scope task — do not attribute it to T-26
+  or T-25, both correctly disclosed it as pre-existing/out-of-scope.
+- Record T-26-01 as an open observation: the original live-smoke-test
+  error text is not independently re-confirmed reproducible in a
+  from-scratch rebuild-and-relaunch, though the fix is still correct and
+  approved. Recommend the next real extension-host smoke test (Release
+  step 5's re-run) preserve its full log bundle as a committed or
+  attached artifact rather than deleting it after transcript capture, so
+  this class of discrepancy is diagnosable rather than repeatedly
+  re-investigated.
+- Release step 5 still needs a human to visually confirm the Data Parity
+  icon actually renders legibly in the activity bar — neither this
+  review nor the implementation had GUI/screenshot tooling available to
+  close that specific gap.
