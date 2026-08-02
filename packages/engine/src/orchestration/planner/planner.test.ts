@@ -123,6 +123,38 @@ checks:
     enabled: true
 `;
 
+// T-28: unlike ROW_LEVEL_ONLY_YAML above (which declares an *identity*
+// column_mapping for the key column, CustomerID: CustomerID -- never
+// exercising the real-world scenario column_mapping exists for, and not
+// even matching customer_target's actual CUSTOMER_ID column name), this
+// fixture declares the key column's genuine, non-identity translation
+// (CustomerID source -> CUSTOMER_ID target, sqlserver-customer.ts's real
+// target column name), reproducing the live smoke-test bug report in
+// TASK-BRIEF.md where every row-level finding's keyValues showed
+// [undefined] instead of the real key value.
+const ROW_LEVEL_KEY_MAPPING_YAML = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+column_mapping:
+  CustomerID: CUSTOMER_ID
+  CustomerName: CUSTOMER_NAME
+checks:
+  schema:
+    enabled: false
+  row_count:
+    enabled: false
+  row_level:
+    enabled: true
+`;
+
 const BOTH_DISABLED_YAML = `
 version: 1
 name: customer-migration-parity
@@ -280,6 +312,42 @@ checks:
       const result = await runComparison(definition, fixtureRegistry());
 
       expect(result.rowDifferences).toEqual([]);
+    });
+
+    // T-28: reproduces the live smoke-test bug -- a genuinely non-identity
+    // column_mapping for the key column (CustomerID -> CUSTOMER_ID, the
+    // real sqlserver-customer target column name) must still produce real
+    // key values in rowDifferences[].keyValues, not [undefined], for
+    // findings on both the source side (missing-from-target) and the
+    // target side (matched-key-differing-values, duplicate-in-target).
+    it("populates real keyValues (not undefined) when the key column has a genuinely different name on source vs target", async () => {
+      const definition = parseDefinition(ROW_LEVEL_KEY_MAPPING_YAML);
+      const result = await runComparison(definition, fixtureRegistry());
+
+      expect(result.rowDifferences.length).toBeGreaterThan(0);
+
+      // CustomerID 4: present in source, missing from target -- key value
+      // resolved entirely from the source-side row, so this alone would
+      // pass even with the bug. Included for completeness.
+      const missingFromTarget = result.rowDifferences.find((d) => d.category === "missing-from-target");
+      expect(missingFromTarget?.keyValues).toEqual([4]);
+
+      // CustomerID 2: differing CustomerName, matched via the target-side
+      // row's CUSTOMER_ID column -- this is the finding the bug corrupted
+      // (target-side keyIndexes resolution via the unmapped source-side
+      // name "CustomerID" against target columns, which only contains
+      // "CUSTOMER_ID", returned -1, so keyValues was [undefined]).
+      const differing = result.rowDifferences.find((d) => d.category === "matched-key-differing-values");
+      expect(differing?.keyValues).toEqual([2]);
+
+      // CustomerID 5: duplicated in target -- every duplicate-in-target
+      // finding's keyValues is resolved from the target-side row via the
+      // translated key column and must show the real value, not undefined.
+      const duplicatesInTarget = result.rowDifferences.filter((d) => d.category === "duplicate-in-target");
+      expect(duplicatesInTarget.length).toBeGreaterThan(0);
+      for (const dup of duplicatesInTarget) {
+        expect(dup.keyValues).toEqual([5]);
+      }
     });
   });
 });

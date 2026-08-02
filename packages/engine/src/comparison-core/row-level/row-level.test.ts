@@ -177,6 +177,73 @@ describe("compareRows", () => {
     });
   });
 
+  // T-28: bug fix -- indexByKey looked up the key column's index using the
+  // source-side key name (from `keys`) against BOTH source and target
+  // column lists, with no column_mapping translation applied to the key
+  // lookup itself. When the key column is named differently on each side
+  // (e.g. CustomerID source / CUSTOMER_ID target -- the real-world scenario
+  // column_mapping exists for), the target-side lookup silently failed
+  // (columns.indexOf returns -1), producing keyValues: [undefined] for
+  // every target-side finding. Mirrors sqlserver-customer's real
+  // CustomerID/CUSTOMER_ID naming and the live smoke-test bug report in
+  // TASK-BRIEF.md.
+  describe("T-28: key column named differently on source vs target", () => {
+    const sourceColumns = ["CustomerID", "Name"];
+    const targetColumns = ["CUSTOMER_ID", "NAME"];
+    const mapping: ColumnMappingEntry[] = [
+      { source: "CustomerID", target: "CUSTOMER_ID" },
+      { source: "Name", target: "NAME" },
+    ];
+
+    it("resolves real key values (not undefined) for missing-from-target findings", () => {
+      const sourceRows = [[1, "Alice"]];
+      const targetRows: unknown[][] = [];
+
+      const results = compareRows(
+        { columns: sourceColumns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns: targetColumns, rows: targetRows, rowCount: targetRows.length },
+        ["CustomerID"],
+        mapping
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("missing-from-target");
+      expect(results[0]?.keyValues).toEqual([1]);
+    });
+
+    it("resolves real key values (not undefined) for missing-from-source findings (target-side row, translated key column)", () => {
+      const sourceRows: unknown[][] = [];
+      const targetRows = [[2, "Bob"]];
+
+      const results = compareRows(
+        { columns: sourceColumns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns: targetColumns, rows: targetRows, rowCount: targetRows.length },
+        ["CustomerID"],
+        mapping
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("missing-from-source");
+      expect(results[0]?.keyValues).toEqual([2]);
+    });
+
+    it("resolves real key values (not undefined) for a matched pair", () => {
+      const sourceRows = [[3, "Carl"]];
+      const targetRows = [[3, "Carl"]];
+
+      const results = compareRows(
+        { columns: sourceColumns, rows: sourceRows, rowCount: sourceRows.length },
+        { columns: targetColumns, rows: targetRows, rowCount: targetRows.length },
+        ["CustomerID"],
+        mapping
+      );
+
+      expect(results).toHaveLength(1);
+      expect(results[0]?.category).toBe("matching");
+      expect(results[0]?.keyValues).toEqual([3]);
+    });
+  });
+
   describe("Idea Prompt.md section 2 worked example: ORDER_ID = 1008924", () => {
     // Column           Source                 Target                Result
     // STATUS           Shipped                SHIPPED               Match after normalization

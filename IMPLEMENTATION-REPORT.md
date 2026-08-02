@@ -1,264 +1,147 @@
-# ParityLens — Implementation Report T-27
+# ParityLens — Implementation Report T-28
 
 ## Status and objective
 
-- **Status:** COMPLETE (implementation and evidence only — not reviewed or approved; see Recommended next step)
-- **Objective:** per `TASK-BRIEF.md`, fix the packaged `.vsix` shipping with no
-  `node_modules/`, which caused `dist/activation/activate.js`'s
-  `require("@paritylens/engine")` to throw `MODULE_NOT_FOUND` at extension-host
-  activation time, so that `activate()` completes and the Data Parity tree
-  view / `paritylens.runComparison` command actually register — by bundling
-  `packages/extension/src/index.ts` and its `@paritylens/engine`/
-  `@paritylens/shared` workspace dependencies into a single self-contained
-  CommonJS file with esbuild, while handling DuckDB's native per-platform
-  binary bindings (which esbuild cannot bundle) as a separately staged,
-  runtime-resolved directory.
-
-## Provenance note (read this first)
-
-This task resumed from checkpoint commit `2342e57` on this branch, which a
-prior implementer session left mid-task after being interrupted by a
-session/infrastructure limit (not a design failure — its own commit message
-documents this honestly). That commit already contained, and I inherited
-without rewriting:
-
-- `esbuild` added as a root devDependency.
-- `packages/extension/esbuild.config.mjs` — the full bundling script,
-  including the documented investigation into `vsce`'s hardcoded
-  `node_modules/**` ignore and Node's `require.resolve` `paths` behavior
-  that motivated staging DuckDB's native bindings into
-  `packages/extension/native/node_modules/` with a `Module._resolveFilename`
-  runtime patch injected as an esbuild `banner`.
-- `packages/extension/package.json`'s `main` field pointed at
-  `./dist-bundle/extension.js`, plus `bundle`/`package` scripts.
-- `packages/extension/.vscodeignore` updated to exclude the now-unshipped
-  `dist/**` and non-runtime files under `native/`, while explicitly not
-  excluding `native/node_modules/**` itself.
-- `.gitignore` additions for `dist-bundle/`, `packages/extension/native/`
-  (attributed in the checkpoint commit message to the orchestrator, not the
-  interrupted session).
-
-I read this code in full rather than trusting the checkpoint's own
-self-assessment, verified its reasoning against the actual installed
-`@vscode/vsce` and `@duckdb/node-bindings` package sources on disk (see
-Verification evidence below), and found it correct on inspection with one
-defect: `packages/extension/esbuild.config.mjs` used the bare Node global
-`process` without it being declared for ESLint's flat-config `no-undef` rule
-(the repo's `eslint.config.mjs` has no `globals.node` environment configured
-for any file), which failed `npm run lint` outright. This is the one
-substantive code change I made; everything else in this report is my own
-verification work on top of the inherited checkpoint.
+- **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
+- **Objective:** Fix `compareRows`' `indexByKey` helper
+  (`packages/engine/src/comparison-core/row-level/row-level.ts`), which
+  looked up the key column's index via `columns.indexOf(keyName)` using the
+  *source-side* key name (from `keys`) against **both** the source and
+  target column lists, with no `column_mapping` translation applied to the
+  key lookup itself. When the key column is named differently on source vs.
+  target (e.g. `CustomerID` source / `CUSTOMER_ID` target — the real-world
+  scenario `column_mapping` exists to handle, and the exact live smoke-test
+  failure this task was opened from), the target-side lookup silently
+  failed (`columns.indexOf` returns `-1`), producing `keyValues: [undefined]`
+  for every target-side finding.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/esbuild.config.mjs` | Added a `/* global process */` comment (+ explanatory note) above the imports. No other lines changed. | `npm run lint` failed with `'process' is not defined  no-undef` at line 120 (now ~127) before this fix — a real, blocking lint error in inherited code, not a style preference. Flat-config ESLint (this repo's `eslint.config.mjs`) does not honor `/* eslint-env node */` comments (confirmed via the lint tool's own deprecation warning), so `/* global process */` is the correct fix scoped to this one file rather than touching the shared `eslint.config.mjs`, which is outside this task's file ownership. |
-| `IMPLEMENTATION-REPORT.md` | Rewritten for T-27 (previously held T-26's report). | Required handoff artifact. |
+| `packages/engine/src/comparison-core/row-level/row-level.ts` | Added `resolveTargetKeyName(keyName, mapping)`, which resolves a `keys`-declared (source-side) key column name to its target-side name via the same `mapping.find(... mappingSourceColumnName(entry) === keyName)` lookup pattern `compareMatchedRow` already uses for every other mapped column. `compareRows` now computes `targetKeys = keys.map((k) => resolveTargetKeyName(k, mapping))` and passes `targetKeys` (not the raw `keys`) to the target-side `indexByKey` call. `indexByKey` itself, `compareRows`'s broader flow, matching algorithm, and classification logic are all unchanged — the fix is confined to which key-name array is passed into the target-side `indexByKey` call. | Root cause fix per TASK-BRIEF.md's Scope: "narrowly targeted at `indexByKey`'s `keyIndexes` computation ... using the `column_mapping` data it's already given ... matching how `compareMatchedRow` already handles this correctly elsewhere in the same file." |
+| `packages/engine/src/comparison-core/row-level/row-level.test.ts` | Added a new `describe("T-28: key column named differently on source vs target", ...)` block with 3 cases (`sourceColumns = ["CustomerID", "Name"]`, `targetColumns = ["CUSTOMER_ID", "NAME"]`, non-identity `mapping`), asserting `keyValues` for a `missing-from-target` finding (source-side key resolution — was already correct, included for completeness), a `missing-from-source` finding (target-side key resolution — the actual bug), and a `matching` finding (both sides resolved and joined correctly). | Red-state evidence + regression coverage, per TASK-BRIEF.md's Red-state evidence section. |
+| `packages/engine/src/orchestration/planner/planner.test.ts` | Added `ROW_LEVEL_KEY_MAPPING_YAML` (a new definition-YAML fixture using the genuine, non-identity `CustomerID: CUSTOMER_ID` mapping — the real `sqlserver-customer` target column name, unlike the existing `ROW_LEVEL_ONLY_YAML` fixture's identity `CustomerID: CustomerID`, which does not even match the real fixture's target column name) and one new test asserting `rowDifferences[].keyValues` directly for `missing-from-target` (`[4]`), `matched-key-differing-values` (`[2]`), and every `duplicate-in-target` finding (`[5]`) — the fixture's three documented row-level mismatch facts (`packages/engine/fixtures/sqlserver-customer.ts`'s header comment). | End-to-end (planner-level, not just unit-level) coverage of the exact bug scenario, per TASK-BRIEF.md: "add or extend a `planner.test.ts` case using a non-identity `column_mapping` for the key column specifically ... and assert on the resulting `rowDifferences[].keyValues` field directly." |
 
-No other files under this task's ownership (`package.json`, `package-lock.json`,
-`packages/extension/package.json`, `packages/extension/.vscodeignore`) needed
-further changes beyond what the checkpoint already had — verified by
-inspection and by successfully building/packaging/testing against them
-unmodified.
+No other files were touched. `packages/engine/src/orchestration/planner/planner.ts` was **not** modified — the bug is fully confined to `row-level.ts`'s own `indexByKey`/`compareRows`, and does not require any change at the planner call-site (planner.ts already passes `definition.keys` and `definition.columnMapping` through unchanged, which is exactly what the fixed `compareRows` needs).
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** `npm run package` (via `packages/extension`'s
-  `package` script: `npm run bundle && vsce package --no-dependencies`)
-  produces a `.vsix` whose `extension/dist-bundle/extension.js` contains the
-  inlined code of `@paritylens/engine`/`@paritylens/shared` (verified: zero
-  `require("@paritylens/...")` calls remain in the bundle output, while
-  internal engine symbols like `compareSchemas`/`profileColumn` are present),
-  and whose `extension/native/node_modules/` contains the current
-  platform/arch's DuckDB native binding
-  (`@duckdb/node-bindings-win32-x64/duckdb.node` + `duckdb.dll`),
-  `@duckdb/node-bindings`, and `detect-libc`. A Node-level harness that mocks
-  the `vscode` module exactly as the real extension host would provide it
-  (see Verification evidence) confirms `require()` of the packaged bundle
-  succeeds and `activate()` runs to completion, registering both
-  the `paritylens.dataParityView` tree view and the
-  `paritylens.runComparison` command — the two symptoms reported broken
-  (`"no data provider registered"`, `"command not found"`) are both
-  confirmed fixed at this level of testing.
-- **Interfaces consumed:** none (per brief — packaging/build tooling only,
-  no runtime interface).
-- **Interfaces produced:** none (per brief).
+- **Behavior delivered:** `compareRows` now correctly translates each
+  `keys`-declared key column name to its target-side name (via `mapping`)
+  before indexing target-side rows, so every row-level finding's
+  `keyValues` field contains the real key value on both sides, regardless
+  of whether the key column is named identically or differently between
+  source and target.
+- **Interfaces consumed:** `ColumnMappingEntry` (read-only, from
+  `orchestration/definition/definition.ts`) — no changes to its shape.
+  `mappingSourceColumnName` (this file's own existing private helper,
+  reused rather than duplicated) is now also called from
+  `resolveTargetKeyName`.
+- **Interfaces produced:** None new. `RowDifference.keyValues`'s existing
+  shape/contract is unchanged, per TASK-BRIEF.md's Interfaces section —
+  this task fixes what value populates it, not its type.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Red state (lint) | `npm run verify` (before my `/* global process */` fix) | `packages/extension/esbuild.config.mjs 120:52 error 'process' is not defined no-undef` (x2), exit 1 | captured directly in this session's transcript; reproduced by running `npx eslint packages/extension/esbuild.config.mjs` in isolation, same two errors |
-| Focused green state (lint) | `npx eslint packages/extension/esbuild.config.mjs` (after fix) | exit 0, no output | this session's transcript |
-| Red state (packaging defect — reconstructed from `main`, not this branch) | reconstructed `main`'s pre-T-27 package layout in a scratch dir (`extension/dist/**` copied verbatim + `packages/extension/package.json`, no `node_modules/`, matching exactly what `vsce package --no-dependencies` on `main` produces per `git show main:packages/extension/package.json`'s `"package": "vsce package --no-dependencies"` script and `main`'s `.vscodeignore`), then ran a mock-activate Node harness (`mock-activate-test.cjs`, described below) against `extension/dist/index.js` | `REQUIRE_THREW:Error: Cannot find module '@paritylens/engine'` — exact `MODULE_NOT_FOUND`-class failure the brief describes, exit 1 | this session's transcript; `grep -n "require(" packages/extension/dist/activation/activate.js` independently confirms line 41 is `const engine_1 = require("@paritylens/engine");` |
-| Focused green state (packaging fix) | `npm run bundle` then `npm run package` inside `packages/extension`, then unzip the resulting `.vsix` and run the same mock-activate harness against `extension/dist-bundle/extension.js` | bundle: `dist-bundle/extension.js` 757.4kb + sourcemap, exit 0. package: `vsce package --no-dependencies` succeeds, `.vsix` contains `dist-bundle/extension.js`, `native/node_modules/@duckdb/node-bindings/`, `native/node_modules/@duckdb/node-bindings-win32-x64/` (`duckdb.dll` 35.02 MB + `duckdb.node` 1.1 MB), `native/node_modules/detect-libc/`, and **no** `dist/**`. Harness output: `REQUIRE_OK` / `CREATED_TREE_VIEW:paritylens.dataParityView` / `REGISTERED_COMMAND:paritylens.runComparison` / `ACTIVATE_OK`, exit 0 | this session's transcript; unzip listing reproduced from `vsce package`'s own `INFO Files included in the VSIX` output |
-| Full verification | `npm run verify` (typecheck + lint + test) | exit 0. `tsc -b --force` clean. `eslint .` clean. Vitest: **22 test files passed, 2 skipped (24)**; **404 tests passed, 27 skipped (431 total)** | this session's transcript, run twice (once to establish the lint-blocked state, once clean after the fix) |
-
-### The mock-activate harness, and why I built it
-
-`code` CLI 1.131.0 (confirmed via `code --version`) has no `--command` flag or
-equivalent for invoking a registered command against a running instance from
-the CLI (confirmed via `code --help` — only `--wait`, `--status`,
-`--list-extensions` exist in that space, no command-invocation flag). I
-installed the packaged `.vsix` into a genuinely fresh, fully sandboxed
-profile (`--user-data-dir`/`--extensions-dir` both scratch temp folders under
-this session's own scratchpad, never a real profile — confirmed via
-`--list-extensions` showing only `parity-lens-dev.paritylens@0.0.1` installed)
-and launched it. `paritylens`'s only `activationEvents` entry is
-`onView:paritylens.dataParityView` (unchanged by this task, from
-`packages/extension/package.json`) — VS Code only fires that event when the
-view is actually rendered (typically by clicking the activity-bar icon),
-which requires GUI interaction. This sandboxed environment has no
-desktop-automation tool available (checked for `xdotool`/`wmctrl`/`nircmd`;
-none present; the only GUI-automation tool available to me,
-`claude-in-chrome`, drives a Chrome browser, not a native Electron/VS Code
-window). I confirmed this by inspecting the exthost log
-(`user-data/logs/.../window1/exthost/exthost.log`) and `views.log` after a
-30+ second live sandboxed launch: no `paritylens` activation line appears
-anywhere, and `views.log` never shows `paritylens.dataParityView` being
-added to any view container — consistent with the view simply never having
-been opened, not with any error.
-
-Rather than stop at "log shows nothing" (which is genuinely ambiguous — it
-looks identical whether the extension is fixed-but-never-triggered, or
-still-broken-but-never-triggered), I wrote a small Node harness
-(`mock-activate-test.cjs`, kept only in the OS temp scratchpad, not committed
-— deleted with the rest of the sandbox before finishing) that:
-
-1. Patches `Module._load`/`Module._resolveFilename` to return a hand-built
-   mock `vscode` module for the bare specifier `"vscode"` — the same
-   mechanism VS Code's real extension host uses to inject its own `vscode`
-   module at runtime, and the same reason this bundle marks `vscode` as
-   `external` rather than bundling it.
-2. The mock implements exactly the `vscode` API surface the bundle's code
-   actually touches at module-load time and inside `activate()` — I
-   determined this by reading the bundle's own decompiled contents (e.g.
-   `class ParityTreeItem extends vscode.TreeItem`, `vscode.window.createTreeView(...)`,
-   `vscode.commands.registerCommand(...)`) rather than guessing, and expanded
-   the mock twice when it threw on a genuinely missing mock member
-   (`vscode.TreeItem` first, then `vscode.window.createTreeView`/`ViewColumn`/
-   `showOpenDialog`) — each expansion is visible in this session's tool-call
-   history as a real, unscripted failure that had to be diagnosed, not
-   fabricated.
-3. `require()`s the real packaged bundle file exactly as Node's CJS loader
-   (which is what VS Code's extension host actually is) would, then calls
-   the bundle's exported `activate(context)` with a mock `ExtensionContext`.
-
-This is strictly stronger evidence than log inspection alone for the two
-specific defects in scope (`MODULE_NOT_FOUND` at load time; tree
-view/command not registering) because it directly exercises the same
-`require()`/`activate()` code path VS Code's real host would run, using the
-actual packaged bundle bytes unzipped from the real `.vsix` — it is not a
-reimplementation or simulation of the logic, only a substitute for the
-`vscode` module VS Code itself would normally supply. I verified the harness
-actually discriminates red from green (rather than trivially always
-"passing") by running it unmodified against a reconstructed pre-fix package
-layout (`main`'s current `dist/index.js` + `package.json`, no
-`node_modules/`) and confirming it fails with the exact `MODULE_NOT_FOUND`
-error, then against the new bundle and confirming success — see the Red
-state / Focused green state rows above.
-
-### What I could NOT confirm, and why (read honestly, not glossed over)
-
-- **No human-visual or interactive confirmation was performed or is claimed.**
-  I did not click the activity-bar icon or invoke the Command Palette entry
-  in a real, interactively-driven VS Code window — this sandboxed environment
-  has no tool that can do that against a native desktop application (verified
-  absence of `xdotool`/`wmctrl`/`nircmd`; `claude-in-chrome` only drives
-  Chrome). The exthost/views logs from the live sandboxed launch are
-  consistent with "never activated because never opened," not with any
-  failure, but they are not, by themselves, proof of success — that's exactly
-  why I built the mock-activate harness as a substitute. A human (or an agent
-  with desktop GUI automation) actually clicking the icon and running the
-  command in a sandboxed profile would have been strictly better evidence,
-  but that sandbox has now been deleted per the brief's cleanup instruction
-  (see below) — a fresh one would need to be recreated from the same `.vsix`
-  if that confirmation is wanted.
-- **The mock-activate harness's `vscode` mock is hand-built and could be
-  incomplete for code paths not exercised by `activate()` itself** (e.g.
-  deeper webview message-passing behavior inside `runComparisonCommand`,
-  which only runs after the command is actually invoked with a real file
-  picked via `showOpenDialog` — my mock stubs `showOpenDialog` to resolve
-  `undefined`, so `runComparisonCommand`'s actual body was not exercised,
-  only its registration). This is consistent with the brief's own framing —
-  registration (not full end-to-end comparison execution) is the specific
-  regression in scope for T-27; T-22 already covers `runComparisonCommand`'s
-  internal logic under its own Vitest suite
-  (`runComparisonCommand.test.ts`, part of the 404 passing tests above),
-  which does not change in this task.
-- **DuckDB native binary resolution is confirmed working, but only for the
-  build machine's own platform/arch** (`win32-x64`, confirmed via
-  `process.platform`/`process.arch` used in `esbuild.config.mjs`'s staging
-  logic) — this was already a disclosed, deliberate limitation in the
-  inherited checkpoint's own code comments (not something I introduced or am
-  newly disclosing), and I did not attempt to address it, per the brief's
-  explicit instruction not to expand scope into further native-dependency
-  work.
-- I did not independently re-derive whether `@duckdb/node-bindings`'s native
-  `.node` load is *provably* reached by the harness beyond the fact that
-  `require("@duckdb/node-bindings")`'s module body is
-  `module.exports = getNativeNodeBinding(...)` at the top level (confirmed by
-  reading the installed package's own `duckdb.js`) — meaning it necessarily
-  runs during module load, and `ACTIVATE_OK` could not have printed if that
-  load had thrown. I consider this solid evidence but flag it explicitly as
-  inference from reading the dependency's source, not a dedicated assertion
-  inside the harness itself (e.g. no console log line was added at the
-  exact resolution call site).
+| Baseline (pre-change) | `npm run verify` | Exit 0 after removing a stray untracked `packages/extension/dist-bundle/` directory left over from a prior task's packaging run (see Assumptions below); 404 passed, 27 skipped, 431 total | Command output captured directly in this session |
+| Red state — focused unit test | `npx vitest run packages/engine/src/comparison-core/row-level` | 2 of 11 tests failed before the fix: `expected [ undefined ] to deeply equal [ 2 ]` (missing-from-source case) and a length mismatch on the matched-pair case (target-side key resolved to a *different* key text than source, so the pair was misclassified as split missing-from-target/missing-from-source instead of matching) — reproduces the exact reported bug | Command output captured directly in this session |
+| Red state — planner-level test | `npx vitest run packages/engine/src/orchestration/planner -t "genuinely different name"` (run against `row-level.ts` stashed back to its pre-fix state) | Failed: `expected [ 1 ] to deeply equal [ 4 ]` for the `missing-from-target` assertion — confirms the planner-level test is genuine, discriminating coverage, not accidentally passing | Command output captured directly in this session |
+| Focused green state | `npx vitest run packages/engine/src/comparison-core/row-level` | 11/11 passed | Command output captured directly in this session |
+| Focused green state (planner) | `npx vitest run packages/engine/src/orchestration/planner` | 9/9 passed | Command output captured directly in this session |
+| Full verification | `npm run verify` | Exit 0. `408 passed`, `27 skipped` (`435` total) — 4 more passing tests than the 404-test baseline (3 new in `row-level.test.ts`, 1 new in `planner.test.ts`), no regressions | Command output captured directly in this session |
+| End-to-end: packaged `.vsix` rebuild | `npm run package` (inside `packages/extension`) | Succeeded: `Packaged: .../paritylens-0.0.1.vsix (19 files, 13.02 MB)` | Command output captured directly in this session |
+| End-to-end: Node harness against the packaged bundle (post-fix) | Custom Node harness (see below) requiring `packages/extension/dist-bundle/extension.js` with a mocked `vscode` module, calling `activate()`, invoking the registered `paritylens.runComparison` command against a real `.paritylens` file with `column_mapping: {CustomerID: CUSTOMER_ID, CustomerName: CUSTOMER_NAME}` | `Occurrences of the literal text 'undefined' in rendered HTML: 0`; real key values `2` and `4` present in the rendered results-webview HTML; harness printed `PASS` | Command output captured directly in this session |
+| End-to-end: Node harness against the pre-fix bundle (discriminating-red proof) | Same harness, run against a bundle rebuilt with `row-level.ts` `git stash`ed back to its pre-fix state | `Occurrences of the literal text 'undefined' in rendered HTML: 7` — harness printed `FAIL`, with visible `<td>undefined</td>` rows in the captured HTML context | Command output captured directly in this session |
+| Sandbox install | `code --user-data-dir <fresh tmp dir> --extensions-dir <fresh tmp dir> --install-extension paritylens-0.0.1.vsix` | `Extension 'paritylens-0.0.1.vsix' was successfully installed.` | Command output captured directly in this session |
 
 ## Assumptions and risks
 
-- **Assumptions:**
-  - The inherited checkpoint's own documented investigation (vsce's
-    hardcoded `node_modules/**` ignore only matching the top-level
-    directory; Node's `paths` resolution requiring a literally-named
-    `node_modules` directory) is correct — I did not re-derive this from
-    scratch, but did independently confirm its *outcome* (the packaged
-    `.vsix` genuinely contains `native/node_modules/**` intact, and the
-    mock-activate harness genuinely resolves the DuckDB chain through it)
-    rather than trusting the write-up alone.
-  - `mssql`/`pg` genuinely do not appear in the bundle graph, as the
-    checkpoint's comment claims — I did not re-verify this via a fresh
-    esbuild metafile inspection; I re-ran the exact same `npm run bundle`
-    the checkpoint already validated this against, and it is unchanged by
-    my one lint fix.
-- **Risks or limitations:**
-  - The mock-activate harness is a substitute for real VS Code activation,
-    not a replacement — see "What I could NOT confirm" above. This is the
-    single most important thing for the reviewer to independently probe,
-    per the brief's own note ("if you have the same CLI access,
-    independently install and launch the fixed `.vsix` in your own fresh
-    sandbox and check extension-host logs").
-  - DuckDB binary is win32-x64-only in this build's `.vsix`, a
-    pre-existing, disclosed limitation (documented in
-    `esbuild.config.mjs`'s own header comment, inherited from the
-    checkpoint) — cross-platform packaging is out of scope for T-27.
-  - The `.vsix` is 13.02 MB (mostly the 35 MB-uncompressed DuckDB DLL),
-    confirmed via `vsce package`'s own summary output — worth the
-    reviewer's awareness but not a defect; the brief's scope is
-    correctness, not artifact size (T-27 §2 explicitly says minification
-    is optional/"your judgment").
-- **Blockers:** none.
+- **Assumption (judgment call):** `keys` is documented (this file's own
+  header comment, T-14's original design) as being in *source-side*
+  naming, matching the YAML `keys:` example and `planner.ts`'s
+  `definition.keys` pass-through. This fix assumes that documented
+  convention is correct and translates from source-side `keys` to
+  target-side names via `mapping`, never the reverse — consistent with
+  `compareMatchedRow`'s existing direction (`mappingSourceColumnName(entry)`
+  for the source side, `entry.target` for the target side).
+- **Judgment call — key column not present in `mapping`:** if a key
+  column's name is never listed in `column_mapping` at all (the common
+  case where the key column happens to be named identically on both
+  sides, so no mapping entry is needed), `resolveTargetKeyName` falls back
+  to returning the source-side name unchanged. This preserves every
+  existing test's and caller's behavior (all of which omit the key column
+  from `mapping` and rely on identical naming) and does not change
+  behavior for any row-level scenario that isn't the specific bug this
+  task fixes.
+- **Pre-existing, unrelated build/lint hazard encountered (not caused by
+  this task):** at session start, an untracked
+  `packages/extension/dist-bundle/` directory (left over from a prior
+  packaging run) was already present in the working tree. This is
+  `T-27-01` (`PROGRESS-LEDGER.md`, already recorded as an OPEN,
+  accepted-non-blocking Important finding from T-27's review): the
+  generated bundle isn't in `eslint.config.mjs`'s `ignores` list, so `npm
+  run verify` false-fails on 221 lint errors against the *minified build
+  output*, not source. `eslint.config.mjs` is outside this task's file
+  ownership (only `row-level.ts`, `row-level.test.ts`, `planner.test.ts`
+  are owned), so it was not edited. I deleted the stray `dist-bundle/`
+  directory to get a clean baseline read, ran `npm run verify` cleanly
+  throughout implementation, and deleted the newly-rebuilt `dist-bundle/`
+  and `.vsix` again at the end so the final `npm run verify` (reported
+  above, exit 0) reflects the same clean state. Both `dist-bundle/` and
+  `*.vsix` are already `.gitignore`'d and were never staged.
+- **End-to-end verification method, disclosed plainly:** no GUI automation
+  tool is available in this environment to click through a real
+  interactive VS Code window (same limitation T-26/T-27 disclosed). I
+  built a from-scratch Node harness (no reusable harness existed —
+  T-27's was deleted per that task's own cleanup instruction) that mocks
+  the `vscode` module, `require()`s the actual packaged
+  `dist-bundle/extension.js`, calls the real exported `activate()`,
+  captures the real `vscode.commands.registerCommand("paritylens.runComparison", ...)`
+  callback, and invokes it against a real `.paritylens` file on disk
+  (mocking only `showOpenDialog` to point at that file — every other step,
+  including `readFile`, `parseDefinition`, `runComparison`, and
+  `showResultsWebview`'s HTML generation, runs for real). I additionally
+  proved this harness is genuinely discriminating (not merely passing by
+  construction) by rebuilding the bundle from a `git stash`-reverted,
+  pre-fix `row-level.ts` and confirming the same harness fails red (7
+  occurrences of literal `"undefined"` in the rendered HTML) before
+  restoring the fix and rebuilding. I also confirmed the real `code` CLI
+  is available in this environment and used it to install the freshly
+  built `.vsix` into a brand-new sandbox user-data/extensions directory,
+  which succeeded — but I did not (and could not, absent a GUI automation
+  tool) visually confirm the results webview inside an actual running VS
+  Code window with my own eyes. The Node-harness evidence is strong (it
+  exercises the identical compiled bundle that ships in the `.vsix`,
+  through the real command-registration and rendering path, not a proxy),
+  but it is not the same as human visual confirmation — consistent with
+  the gap T-26/T-27 already disclosed and that `PROGRESS-LEDGER.md` notes
+  remains open pending the owner's own look.
+- **Risks or limitations:** None known beyond the disclosed verification-method
+  gap above. The fix is narrowly scoped (one new private helper, one
+  changed line at the `indexByKey` call site) and does not alter
+  `indexByKey`'s own signature, `compareMatchedRow`, or any exported
+  interface.
+- **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Branch:** `task/T-27-extension-bundling`
-- **Commits on this branch:**
-  - `2342e57` — inherited checkpoint (esbuild bundling implementation,
-    pre-existing before this session; see Provenance note above).
-  - New commit from this session (added immediately after this report is
-    written) — the `esbuild.config.mjs` lint fix and this
-    `IMPLEMENTATION-REPORT.md`.
+- **Branch:** `task/T-28-row-level-key-mapping`
+- **Commit:** see the commit immediately following this report's addition
+  to the branch (this report is committed together with the code and test
+  changes it describes, in the same commit, per this project's established
+  pattern for prior single-session task reports).
 
 ## Recommended next step
 
-Independent review by the `reviewer` subagent, per the brief's Handoff
-section — a separate instance from this implementer. The brief's own note to
-the reviewer specifically asks for independent reproduction of both red and
-green state and independent sandboxed install/launch; I recommend the
-reviewer pay particular attention to the one gap I could not close myself:
-real interactive/visual confirmation of the activity-bar icon and Command
-Palette entry actually working in a live-clicked VS Code window, since no
-tool available to me in this environment can drive that GUI interaction. I
-am not recommending self-approval and have not marked this task complete
-beyond my own implementation-and-evidence scope.
+Independent review by a separate `reviewer` subagent instance, per
+TASK-BRIEF.md's Handoff section — including the reviewer's own
+adversarial test case(s) (e.g. a composite key with only one differing
+key-column name, or a `column_mapping` that maps the key column to a
+target name that doesn't exist in the target's actual columns at all) and
+the reviewer's own from-scratch re-verification of the packaged `.vsix`,
+rather than trusting this report's manual re-check alone. This task does
+not self-approve and is not itself a release-readiness or human-approval
+event.
