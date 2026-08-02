@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none">
+  <!-- ParityLens activity-bar icon: two overlapping rounded squares (source vs. target datasets)
+       with a checkmark on the overlap, representing a reconciled/parity match. Monochrome,
+       fill="currentColor" so VS Code applies its own theme-appropriate icon color. -->
+  <rect x="2" y="4" width="13" height="13" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/>
+  <rect x="9" y="7" width="13" height="13" rx="2" stroke="currentColor" stroke-width="1.6" fill="none"/>
+  <path d="M11.2 13.6L13 15.4L16.6 11" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" fill="none"/>
+</svg>

@@ -17,7 +17,8 @@
       "activitybar": [
         {
           "id": "paritylens",
-          "title": "Data Parity"
+          "title": "Data Parity",
+          "icon": "media/icon.svg"
         }
       ]
     },
