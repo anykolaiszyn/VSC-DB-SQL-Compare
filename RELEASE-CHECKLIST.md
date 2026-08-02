@@ -301,10 +301,17 @@
 Complete this record only after all fresh candidate evidence and the independent
 release review above are recorded.
 
-- **Decision:** [PENDING — awaiting independent release review, then owner decision]
-- **Approver:** [PENDING]
-- **Timestamp:** [PENDING]
+- **Decision:** APPROVED
+- **Approver:** alex.nykolaiszyn@gmail.com (project owner)
+- **Timestamp:** 2026-08-02T03:03:24Z
 - **Evidence or hash identity:** `paritylens-0.0.1.vsix`, SHA-256
   `90903419CD4941CBDC6ABBB9F716865ECB646B2DF338687BAD15E60682D539D`, built
   from `main` commit `6480f8c76e08811953b1a93afdd80e7feeba78e8`
-- **Conditions:** [PENDING]
+- **Conditions:** None. Approved as the "engine + fixture-demo command"
+  milestone — full comparison engine functional against real SQL Server/
+  PostgreSQL connectors, one working extension command against
+  fixture-backed data only. Real connection management,
+  comparison-authoring UI, and run-history persistence are explicitly
+  out of scope for this release and are scoped as a deliberate next
+  phase (owner-requested `DESIGN-SPEC.md` review and task scoping to
+  follow, tracked separately in `PROGRESS-LEDGER.md`).
