@@ -5,6 +5,11 @@ design, implementation, validation, and release. It works with Codex, Claude
 Code, Ollama, or another capable agent without making any provider the source
 of truth.
 
+Candidate improvements to the kit itself (not any adopting project's own
+work) are tracked in [BACKLOG.md](BACKLOG.md) — add to it when something
+about the kit's own prompts/protocols/templates causes real friction,
+rather than fixing it ad hoc and losing the lesson.
+
 ## Why this works
 
 Chat is useful for discussion, but it is unreliable as a project record: a

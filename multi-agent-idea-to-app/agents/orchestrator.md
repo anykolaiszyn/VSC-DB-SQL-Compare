@@ -97,6 +97,49 @@ For each task ID in the approved implementation plan, in dependency order:
    finding this task claims to resolve. A reviewer that only re-runs the
    implementer's own tests and agrees isn't doing independent review —
    it should write and run its own adversarial probes and its own
+6a. **After the reviewer finishes, before reconciling: separating a
+    reviewer's ledger edit from its review-report edit is a known,
+    repeated failure point — follow this exact sequence, not an
+    improvised variant.** A reviewer dispatched per step 6 typically ends
+    its run with two uncommitted files on the task branch:
+    `PROGRESS-LEDGER.md` (a new-finding row, belongs on trunk, per step
+    7's "record on trunk not the task branch" rule) and
+    `REVIEW-REPORT.md` (the review itself, belongs on the task branch).
+    **`git checkout <branch> -- <file>` and `git checkout -- <file>` look
+    similar but do different, easily-confused things, and mixing them up
+    silently discards uncommitted work — this has happened multiple
+    times across different task cycles.** The safe sequence:
+    1. While still on the task branch, read the diff on each file first
+       (`git diff PROGRESS-LEDGER.md`, `git diff REVIEW-REPORT.md`) so
+       you know what each one contains before touching anything.
+    2. `git stash` (captures both uncommitted files together), then
+       `git checkout <trunk-branch>`, then `git stash pop` (restores
+       both files' content onto trunk's working tree).
+    3. On trunk: `git checkout -- REVIEW-REPORT.md` to discard *only*
+       that file's working-tree changes (safe here — this file's content
+       either doesn't exist yet on trunk or holds stale content from a
+       prior task, never this review's real work, since it was never
+       committed anywhere but the stash). Commit the remaining
+       `PROGRESS-LEDGER.md` change on trunk.
+    4. `git checkout <task-branch>` to switch back. **Do not run any
+       further `git checkout -- <file>` or `git checkout <branch> --
+       <file>` command here** — the review report's content, if it
+       reverted to stale content during the branch switch in step 4
+       above (a real, observed git behavior when the file wasn't part of
+       the stash restore that made it back), is now only recoverable via
+       `git fsck --no-reflog --unreachable | grep blob`, piping each
+       candidate through `git cat-file -p <hash> | grep -q "<unique
+       marker string from the report>"` to find it, then `git cat-file -p
+       <hash> > REVIEW-REPORT.md` to restore it byte-for-byte before
+       committing. This recovery works because git does not garbage-
+       collect a blob still reachable from a recent working-tree state
+       within the same session — but avoiding the mistake per steps 1-4
+       above is far cheaper than this recovery, so follow them precisely
+       rather than treating recovery as an acceptable fallback.
+    5. Commit `REVIEW-REPORT.md` on the task branch, confirming its
+       content is the reviewer's real output (check for the reviewer's
+       own stated findings/disposition) before committing, not just that
+       *a* file exists at that path.
    from-scratch verification of any nontrivial arithmetic or claim.
 7. **If the reviewer returns CHANGES REQUIRED, follow the round-1/round-2
    procedure exactly — do not improvise a variant per task.** This is a
@@ -164,6 +207,39 @@ For each task ID in the approved implementation plan, in dependency order:
        not just a passing mention — future orchestration benefits from
        knowing this happened and why the checkpoint-and-resume approach
        was chosen over discarding the work.
+
+7b. **If an implementer correctly stops itself mid-task because the fix
+    requires touching a file outside its declared ownership** — this is
+    the scope-discipline mechanism working as intended, not a failure to
+    route around, and should be treated as a positive signal even though
+    it costs a round trip. Do not have the implementer self-authorize the
+    ownership expansion, and do not write a whole new task ID for what is
+    still round one of the same task. Instead:
+    1. **Determine the exact additional field/file needed** from the
+       implementer's own stopping report (it should already have
+       diagnosed precisely what's blocked and why — if it hasn't, that
+       itself is worth sending back before proceeding).
+    2. **If the needed change is a genuine judgment call** (e.g. which of
+       two structurally-valid fixes to prefer), decide it yourself as
+       orchestrator per the standing judgment-call authority below. **If
+       it requires information only the human owner has** (e.g. a name,
+       an identifier, a policy choice with real external consequences),
+       stop and ask them directly — do not guess or default silently.
+    3. **Amend `TASK-BRIEF.md` in place** (same file, same task ID) with
+       an explicit "Amendment" section appended to (not replacing) the
+       original brief, naming exactly the additional file/field now
+       authorized and recording the decision that unblocked it. This is
+       still round one of the task — a new task ID is for genuinely new,
+       separately-scoped work, not a same-task ownership correction.
+    4. **Dispatch a fresh implementer instance to resume** on the
+       existing task branch, pointing it at the amendment specifically
+       (not asking it to re-read and re-derive the whole brief from
+       scratch).
+    5. **Record the block, the decision that resolved it, and the
+       resumption as a single decision-log entry** — this is a case
+       worth keeping visible in the ledger, since a future reader should
+       be able to see that the ownership boundary was respected, not
+       quietly worked around.
 8. **Reconcile.** Once approved: commit the review report on the task
    branch, merge to the trunk branch (`--no-ff`, so the task's history
    stays visible), install any new dependencies and re-run the full

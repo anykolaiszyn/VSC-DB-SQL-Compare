@@ -41,6 +41,40 @@ recorded approvals for the work completed before release.
    approved data. Preserve read-only sources and write only to approved output
    locations. Record startup, primary workflow, failure handling, and clean
    shutdown.
+
+   **For a GUI application with no automated launch/interaction harness
+   available** (e.g. a desktop-app extension where no headless test runner
+   is set up), do not substitute a weaker check — a real, human-driven
+   launch is a distinct evidence class from automated tests passing, and
+   has repeatedly caught defects that hundreds of passing unit tests did
+   not, because none of them ever actually invoked the packaged artifact's
+   real runtime entry point. Two things follow from this:
+   - **Never launch into the operator's own live, personal instance of the
+     host application.** Use an isolated, disposable profile (e.g. a
+     scratch `--extensions-dir`/`--user-data-dir`-equivalent flag, a
+     throwaway container, a fresh temp-profile launch) so the smoke test
+     cannot touch the operator's real environment, settings, or data. Ask
+     the human operator explicitly which isolation mechanism they want
+     before the first launch, rather than assuming.
+   - **When you cannot drive the UI yourself, ask the human operator to
+     drive it and report back precisely what they observe** — do not
+     skip to a weaker, agent-only check and call it equivalent. Prepare
+     the launch (build the artifact, set up the isolated profile, prepare
+     any real-input fixture data needed) and hand the human a specific,
+     bounded sequence of actions to perform (e.g. "click X, then run
+     command Y, then tell me exactly what you see"). Treat their literal,
+     verbatim report as the evidence — investigate any discrepancy
+     directly against source before concluding whether it's a real defect
+     or an artifact of the test setup (e.g. a stale rebuild, a
+     misconfigured fixture) rather than guessing. If a defect is found,
+     return it to a bounded task loop (do not patch it inline mid-release)
+     and repeat this step with a freshly rebuilt artifact once the fix is
+     merged — do not consider step 5 satisfied by a first successful pass
+     if you know a subsequent, deeper interaction (e.g. actually invoking
+     the artifact's primary command, not just confirming it launches
+     without error) has not yet been attempted. "It starts without
+     crashing" and "the primary workflow produces a correct result" are
+     different bars; this step exists to clear the second one.
 6. Reconcile reports, output files, counts, and status values. Record hashes
    with algorithm, value, and file name; document known limitations and user
    recovery guidance.
