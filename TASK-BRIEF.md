@@ -74,6 +74,36 @@ only, do not modify either connector file).
   SecretStore/runComparison wiring)
 - `packages/extension/package.json` (`contributes.commands` array only —
   append three entries, do not touch any other field)
+- `packages/engine/src/index.ts` (Amendment, see below — narrowly widen
+  re-exports only)
+
+## Amendment (added after round-1 correctly stopped at a scope boundary)
+
+Round 1 correctly identified that `SqlServerConnector`/`PostgresConnector`
+and their `*ConnectionOptions` types are not reachable from
+`packages/extension` — `packages/engine/src/index.ts` (the package's sole
+public entry point) re-exports only `orchestration/definition/definition.ts`,
+`orchestration/planner/planner.ts`, and `connector-sdk/fixture/fixture-connector.ts`
+(added by T-22). No file in this monorepo deep-imports across the
+`@paritylens/engine` package boundary; widening this file's re-exports is
+the established, single existing precedent for this exact situation (T-22
+did the same thing for `parseDefinition`/`runComparison`/`FixtureConnector`).
+
+**Resolution (orchestrator decision, not escalated — mechanical,
+additive-only change):** add `packages/engine/src/index.ts` to this task's
+Files owned, scoped narrowly to one additional re-export line:
+
+```ts
+export * from "./connector-sdk/sqlserver/sqlServerConnector.js";
+export * from "./connector-sdk/postgres/postgresConnector.js";
+```
+
+placed alongside the three existing re-exports, following the file's
+existing header-comment convention (extend the comment to document why
+these two lines were added, same style as the existing three). No other
+edit to this file is permitted — do not remove, reorder, or alter the
+three existing re-export lines or their documentation beyond appending the
+new entries.
 
 ## Interfaces consumed
 

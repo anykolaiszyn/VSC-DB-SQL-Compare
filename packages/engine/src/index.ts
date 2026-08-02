@@ -19,6 +19,21 @@
 // - connector-sdk/fixture/fixture-connector.ts -- `FixtureConnector`, the
 //   only connector implementation that exists yet (real SQL Server/
 //   Snowflake/PostgreSQL connectors are T-17/T-18/T-19, still unscheduled).
+//
+// T-29 (amendment): adds two more re-exports, following the exact same
+// precedent this file already set for T-22's three entries above -- no
+// file in this monorepo deep-imports across the @paritylens/engine package
+// boundary, so widening this file is the established way to expose newly
+// needed public surface:
+// - connector-sdk/sqlserver/sqlServerConnector.ts -- `SqlServerConnector`
+//   and `SqlServerConnectionOptions`, needed by T-29's `resolveConnector`
+//   (packages/extension/src/connections/resolveConnector.ts) to construct a
+//   real SQL Server connector from a stored connection profile.
+// - connector-sdk/postgres/postgresConnector.ts -- `PostgresConnector` and
+//   `PostgresConnectionOptions`, needed by the same `resolveConnector` for
+//   the PostgreSQL case.
 export * from "./orchestration/definition/definition.js";
 export * from "./orchestration/planner/planner.js";
 export * from "./connector-sdk/fixture/fixture-connector.js";
+export * from "./connector-sdk/sqlserver/sqlServerConnector.js";
+export * from "./connector-sdk/postgres/postgresConnector.js";
