@@ -77,12 +77,17 @@ checks:
     expect(def.version).toBe(1);
     expect(def.name).toBe("customer-migration-parity");
 
+    // T-35a: ParitySide now carries an explicit `kind: "table"` -- the only
+    // kind that existed before T-35a -- for definitions with no `kind`
+    // field, per parseSide's backward-compatible defaulting.
     expect(def.source).toEqual({
+      kind: "table",
       connection: "legacy-sql",
       object: "dbo.Customer",
       where: "ModifiedDate >= '2026-01-01'",
     });
     expect(def.target).toEqual({
+      kind: "table",
       connection: "analytics-snowflake",
       object: "CURATED.CUSTOMER",
       where: "MODIFIED_DATE >= '2026-01-01'",
@@ -425,5 +430,167 @@ rules:
     expect(def.rules["cancellation_date"]).toEqual({
       nullEquivalents: ["1900-01-01", "9999-12-31"],
     });
+  });
+});
+
+// T-35a: ParitySide extended to a discriminated union mirroring QueryInput's
+// three kinds (table/query/sqlFile), with backward-compatible defaulting --
+// an absent `kind` field on source/target means table-kind, so every
+// pre-T-35a definition and test keeps parsing identically.
+describe("T-35a: ParitySide kind discriminated union", () => {
+  it("defaults to kind: table when no kind field is present (backward compatibility)", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  object: a.b
+  where: "x > 1"
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    const def = parseDefinition(yaml);
+    expect(def.source).toEqual({ kind: "table", connection: "src-conn", object: "a.b", where: "x > 1" });
+    expect(def.target).toEqual({ kind: "table", connection: "tgt-conn", object: "c.d" });
+  });
+
+  it("parses an explicit kind: table the same as an absent kind field", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: table
+  object: a.b
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    const def = parseDefinition(yaml);
+    expect(def.source).toEqual({ kind: "table", connection: "src-conn", object: "a.b" });
+  });
+
+  it("parses kind: query with a sql field", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: query
+  sql: "SELECT * FROM foo WHERE x > 1"
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    const def = parseDefinition(yaml);
+    expect(def.source).toEqual({ kind: "query", connection: "src-conn", sql: "SELECT * FROM foo WHERE x > 1" });
+  });
+
+  it("parses kind: sqlFile with a filePath field", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: sqlFile
+  filePath: "./queries/source.sql"
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    const def = parseDefinition(yaml);
+    expect(def.source).toEqual({ kind: "sqlFile", connection: "src-conn", filePath: "./queries/source.sql" });
+  });
+
+  it("throws InvalidDefinitionError for kind: query missing sql", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: query
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
+  });
+
+  it("throws InvalidDefinitionError for kind: query with an object field present", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: query
+  sql: "SELECT 1"
+  object: a.b
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
+  });
+
+  it("throws InvalidDefinitionError for kind: sqlFile missing filePath", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: sqlFile
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
+  });
+
+  it("throws InvalidDefinitionError for an unknown kind value", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: bogus
+  object: a.b
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
+  });
+
+  it("throws InvalidDefinitionError for kind: table missing object", () => {
+    const yaml = `
+version: 1
+name: minimal
+source:
+  connection: src-conn
+  kind: table
+target:
+  connection: tgt-conn
+  object: c.d
+keys:
+  - id
+`;
+    expect(() => parseDefinition(yaml)).toThrow(InvalidDefinitionError);
   });
 });

@@ -39,6 +39,8 @@
 // T-09's original Phase-1 empty/default values, with no query issued to
 // either connector for that check (see planner.test.ts's "no silent
 // execution" tests).
+import { readFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import type {
   AggregateDifference,
   ColumnDefinition,
@@ -47,12 +49,13 @@ import type {
   ComparisonSummary,
   DataPlatformConnector,
   ProfileDifference,
+  QueryInput,
   RecordBatch,
   RowDifference,
   Severity,
   SchemaDifference,
 } from "@paritylens/shared";
-import type { ParityDefinition } from "../definition/definition.js";
+import type { ParityDefinition, ParitySide } from "../definition/definition.js";
 import { compareSchemas } from "../../comparison-core/schema-diff/schema-diff.js";
 import { compareProfiles, profileColumn, buildProfileQueries } from "../../comparison-core/profiling/profiling.js";
 import { compareVolume, buildRowCountSql } from "../../comparison-core/volume/volume.js";
@@ -79,15 +82,99 @@ export class UnresolvedConnectionError extends Error {
   }
 }
 
+/** Thrown by `resolveSideInput` when a `kind: "sqlFile"` side's `filePath`
+ * resolves outside the supplied `baseDir`, per this module's containment
+ * discipline (mirroring `packages/extension/src/export/writeExport.ts`'s
+ * `path.relative`-based containment check -- same technique, reimplemented
+ * here rather than imported, since `packages/engine` must not depend on
+ * `packages/extension`). */
+export class SqlFilePathEscapesBaseDirError extends Error {
+  constructor(filePath: string, resolvedPath: string, baseDir: string) {
+    super(
+      `Refusing to read sqlFile "${filePath}": resolved path "${resolvedPath}" is not contained under base directory "${baseDir}".`
+    );
+    this.name = "SqlFilePathEscapesBaseDirError";
+  }
+}
+
+/** Default `baseDir` for `resolveSideInput`/`runComparison` when the caller
+ * does not supply one -- the process's current working directory, matching
+ * every existing `runComparison` call site's implicit assumption (none of
+ * them use `kind: "sqlFile"` input today, so this default is never actually
+ * exercised by them; it exists purely so `runComparison`'s signature stays
+ * backward compatible for `table`/`query`-kind callers, per TASK-BRIEF.md's
+ * "optional parameter with a safe default" guidance). */
+function defaultBaseDir(): string {
+  return process.cwd();
+}
+
+/**
+ * T-35a: resolves a `ParitySide` (the parsed-definition shape, which may be
+ * `table`/`query`/`sqlFile`-kind) to the `QueryInput` a `DataPlatformConnector`
+ * actually accepts. Every real connector's `getSchema`/`executeQuery` rejects
+ * `{ kind: "sqlFile" }` input directly (see `SqlServerConnector`/
+ * `PostgresConnector`/`FixtureConnector`'s `case "sqlFile":` branches, each
+ * throwing "<Connector> does not read SQL files from disk") -- so
+ * `sqlFile`-kind resolution (reading the file's contents via `fs/promises`
+ * and converting to `{ kind: "query" }`) must happen once, here, at the
+ * planner boundary, before any connector method is ever called. This
+ * mirrors `profiling.ts`'s private `resolveObjectReference`, which solves
+ * almost exactly this problem one layer down (`table`/`query` handling via
+ * subquery-wrapping) -- `resolveObjectReference` is read-only reference
+ * material for this task, not imported (it is private to that module).
+ *
+ * `table`-kind and `query`-kind resolve synchronously in spirit (no I/O);
+ * `sqlFile`-kind performs the one file read this function exists for.
+ *
+ * `filePath` is resolved relative to `baseDir` and must stay contained
+ * under it -- an absolute path outside `baseDir`, a `../` traversal, or a
+ * sibling-directory-prefix bypass (e.g. `baseDir` is `/a/b` and the
+ * resolved path is `/a/bc/...`) are all rejected via
+ * `SqlFilePathEscapesBaseDirError`, using the same `path.relative`-based
+ * containment check `writeExport.ts` already established (T-16/T-31
+ * precedent) -- reimplemented here (not imported) since `packages/engine`
+ * has no dependency on `packages/extension`.
+ */
+export async function resolveSideInput(side: ParitySide, baseDir: string): Promise<QueryInput> {
+  if (side.kind === "table") {
+    return { kind: "table", object: side.object };
+  }
+  if (side.kind === "query") {
+    return { kind: "query", sql: side.sql };
+  }
+
+  // side.kind === "sqlFile"
+  const resolvedBaseDir = resolve(baseDir);
+  const resolvedPath = resolve(resolvedBaseDir, side.filePath);
+  const rel = relative(resolvedBaseDir, resolvedPath);
+  const escapesBaseDir = rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
+  if (escapesBaseDir) {
+    throw new SqlFilePathEscapesBaseDirError(side.filePath, resolvedPath, resolvedBaseDir);
+  }
+
+  const fileContents = await readFile(resolvedPath, "utf8");
+  return { kind: "query", sql: fileContents };
+}
+
 /** Runs a Phase-1 comparison (connectivity, schema, profile) for the given
  * parsed `ParityDefinition`, resolving its named connections through
  * `connectors`, and returns a `ComparisonResult` matching Idea Prompt.md
  * section 11's shape. Never throws for a connectivity failure -- that is
  * reported as a `"failed"`-status result instead, per Layer 1's contract.
+ *
+ * `baseDir` (T-35a): the base directory `resolveSideInput` resolves a
+ * `kind: "sqlFile"` side's `filePath` against, and rejects escaping. Optional
+ * with a safe default (`process.cwd()`, via `defaultBaseDir()`) so every
+ * pre-T-35a caller -- none of which use `sqlFile`-kind input, where this
+ * value is never actually consulted -- keeps compiling and behaving
+ * identically without passing it. A caller that does use `sqlFile`-kind
+ * input should pass its own safe root explicitly (e.g. the workspace root)
+ * rather than relying on the default.
  */
 export async function runComparison(
   definition: ParityDefinition,
-  connectors: ConnectorRegistry
+  connectors: ConnectorRegistry,
+  baseDir: string = defaultBaseDir()
 ): Promise<ComparisonResult> {
   const runId = new Date().toISOString();
 
@@ -155,8 +242,10 @@ export async function runComparison(
   const profileEnabled = definition.checks.profile?.enabled === true;
 
   if (schemaEnabled || profileEnabled) {
-    const sourceColumns = await source.getSchema({ kind: "table", object: definition.source.object });
-    const targetColumns = await target.getSchema({ kind: "table", object: definition.target.object });
+    const sourceInput = await resolveSideInput(definition.source, baseDir);
+    const targetInput = await resolveSideInput(definition.target, baseDir);
+    const sourceColumns = await source.getSchema(sourceInput);
+    const targetColumns = await target.getSchema(targetInput);
 
     if (schemaEnabled) {
       schemaDifferences = compareSchemas(sourceColumns, targetColumns);
@@ -168,7 +257,9 @@ export async function runComparison(
         target,
         sourceColumns,
         targetColumns,
-        definition
+        definition,
+        sourceInput,
+        targetInput
       );
       profileDifferences = profileResult.findings;
       queriesUsed.push(...profileResult.queriesUsed);
@@ -203,8 +294,8 @@ export async function runComparison(
     // letting it throw (rather than silently downgrading it to an empty
     // result) keeps failures loud, consistent with how this file already
     // treats every other unexpected error.
-    const rowCountSourceInput = { kind: "table" as const, object: definition.source.object };
-    const rowCountTargetInput = { kind: "table" as const, object: definition.target.object };
+    const rowCountSourceInput = await resolveSideInput(definition.source, baseDir);
+    const rowCountTargetInput = await resolveSideInput(definition.target, baseDir);
     queriesUsed.push(buildRowCountSql(source, rowCountSourceInput), buildRowCountSql(target, rowCountTargetInput));
 
     const volumeDifference = await compareVolume(
@@ -237,13 +328,13 @@ export async function runComparison(
 
   if (rowLevelEnabled) {
     queriesUsed.push(
-      buildFetchAllRowsSql(source, definition.source),
-      buildFetchAllRowsSql(target, definition.target)
+      await buildFetchAllRowsSql(source, definition.source, baseDir),
+      await buildFetchAllRowsSql(target, definition.target, baseDir)
     );
 
     const [sourceRows, targetRows] = await Promise.all([
-      fetchAllRows(source, definition.source),
-      fetchAllRows(target, definition.target),
+      fetchAllRows(source, definition.source, baseDir),
+      fetchAllRows(target, definition.target, baseDir),
     ]);
 
     rowDifferences = compareRows(
@@ -287,15 +378,49 @@ export async function runComparison(
 }
 
 /**
- * T-16b: pure, string-returning builder returning exactly the SQL string
- * `fetchAllRows` below builds and executes for `side` -- `fetchAllRows`
- * calls this function directly rather than re-building the string, so the
- * previewed and executed SQL can never drift apart (per TASK-BRIEF.md's
- * central correctness property for this task).
+ * T-16b: pure(-ish -- see T-35a note below), string-returning builder
+ * returning exactly the SQL string `fetchAllRows` below builds and executes
+ * for `side` -- `fetchAllRows` calls this function directly rather than
+ * re-building the string, so the previewed and executed SQL can never drift
+ * apart (per TASK-BRIEF.md's central correctness property for this task).
+ *
+ * T-35a: extended to all 3 `ParitySide` kinds. `table`-kind is byte-for-byte
+ * unchanged from before this task (`SELECT * FROM {quotedObject}` + optional
+ * `WHERE {side.where}`). `query`/`sqlFile`-kind resolve to their actual SQL
+ * via `resolveSideInput` (reading the file for `sqlFile`, which is why this
+ * function is now `async` and takes `baseDir`) and wrap it as a subquery
+ * source (`SELECT * FROM ({resolvedSql}) AS row_level_subquery`) -- there is
+ * no separate `WHERE` for these kinds, since query/sqlFile-mode input has
+ * none (a row filter belongs inside the `sql`/file contents itself, per
+ * `ParitySide`'s own doc comment).
  */
-export function buildFetchAllRowsSql(connector: DataPlatformConnector, side: ParityDefinition["source"]): string {
-  const objectRef = connector.quoteIdentifier(side.object);
-  return side.where ? `SELECT * FROM ${objectRef} WHERE ${side.where}` : `SELECT * FROM ${objectRef}`;
+export async function buildFetchAllRowsSql(
+  connector: DataPlatformConnector,
+  side: ParitySide,
+  baseDir: string = defaultBaseDir()
+): Promise<string> {
+  if (side.kind === "table") {
+    const objectRef = connector.quoteIdentifier(side.object);
+    return side.where ? `SELECT * FROM ${objectRef} WHERE ${side.where}` : `SELECT * FROM ${objectRef}`;
+  }
+
+  const resolved = await resolveSideInput(side, baseDir);
+  // resolveSideInput never returns { kind: "table" } or { kind: "sqlFile" }
+  // for a non-table ParitySide (query stays query, sqlFile becomes query),
+  // so `resolved` is always { kind: "query"; sql } here.
+  const sql = (resolved as Extract<QueryInput, { kind: "query" }>).sql;
+  return `SELECT * FROM (${stripTrailingSemicolon(sql)}) AS row_level_subquery`;
+}
+
+/** Strips a single trailing `;` (and any trailing whitespace around it) from
+ * `sql`, mirroring `FixtureConnector`'s own private `stripTrailingSemicolon`
+ * helper (T-35a: reimplemented here, not imported, since that helper is
+ * private to `fixture-connector.ts`) -- needed because subquery-wrapping a
+ * SQL string that ends in `;` (e.g. from a `.sql` file with a trailing
+ * semicolon) would otherwise produce invalid SQL like `SELECT * FROM
+ * (SELECT ...;) AS row_level_subquery`. */
+function stripTrailingSemicolon(sql: string): string {
+  return sql.trim().replace(/;\s*$/, "");
 }
 
 /** Fetches a `ParitySide`'s full row data (all mapped/key columns are
@@ -304,17 +429,18 @@ export function buildFetchAllRowsSql(connector: DataPlatformConnector, side: Par
  * into a single in-memory `RecordBatch`, per TASK-BRIEF.md's Interfaces
  * table ("fetch full row data for both sides via `executeQuery` ... consume
  * the resulting `AsyncIterable<RecordBatch>` fully into row sets"). Applies
- * `ParitySide.where` when present, matching the exact pattern this file
- * already documents for `ParitySide` fields elsewhere. Row-set size is
- * bounded by `DEFAULT_ROW_LEVEL_MAX_ROWS` -- row-level comparison assumes
- * both sides fit in memory (T-14's own file header comment: "assume both
- * sides fit in memory for now"), and this planner does not add pagination
- * beyond what `compareRows` itself already assumes. */
+ * `ParitySide.where` when present (table-kind only), matching the exact
+ * pattern this file already documents for `ParitySide` fields elsewhere.
+ * Row-set size is bounded by `DEFAULT_ROW_LEVEL_MAX_ROWS` -- row-level
+ * comparison assumes both sides fit in memory (T-14's own file header
+ * comment: "assume both sides fit in memory for now"), and this planner
+ * does not add pagination beyond what `compareRows` itself already assumes. */
 async function fetchAllRows(
   connector: DataPlatformConnector,
-  side: ParityDefinition["source"]
+  side: ParitySide,
+  baseDir: string = defaultBaseDir()
 ): Promise<RecordBatch> {
-  const sql = buildFetchAllRowsSql(connector, side);
+  const sql = await buildFetchAllRowsSql(connector, side, baseDir);
 
   const executionOptions = {
     maxRows: DEFAULT_ROW_LEVEL_MAX_ROWS,
@@ -354,7 +480,9 @@ async function runProfileChecks(
   target: DataPlatformConnector,
   sourceColumns: ColumnDefinition[],
   targetColumns: ColumnDefinition[],
-  definition: ParityDefinition
+  definition: ParityDefinition,
+  sourceInput: QueryInput,
+  targetInput: QueryInput
 ): Promise<{ findings: ProfileDifference[]; queriesUsed: string[] }> {
   const targetByName = new Map(targetColumns.map((c) => [c.name, c]));
   const findings: ProfileDifference[] = [];
@@ -392,8 +520,8 @@ async function runProfileChecks(
     // literal for Date-family columns specifically, undermining this task's
     // core "previewed SQL === executed SQL" guarantee for that one case.
     const now = new Date();
-    const sourceProfileOptions = { input: { kind: "table" as const, object: definition.source.object }, now };
-    const targetProfileOptions = { input: { kind: "table" as const, object: definition.target.object }, now };
+    const sourceProfileOptions = { input: sourceInput, now };
+    const targetProfileOptions = { input: targetInput, now };
 
     queriesUsed.push(
       ...buildProfileQueries(source, sourceColumn, sourceProfileOptions),
