@@ -1,227 +1,214 @@
-# TASK-BRIEF.md — T-34: Results webview + sidebar visual redesign
+# TASK-BRIEF.md — T-35: `buildComparisonYaml` — query/sqlFile kinds + column_mapping
 
 ## Objective
 
-Apply the owner-approved visual design handoff
-(`multi-agent-idea-to-app/design_handoff_paritylens_results_webview/README.md`
-+ `ParityLens Results.dc.html`) to the two currently-unstyled UI surfaces:
+Extend the existing, pure `buildComparisonYaml` builder
+(`packages/extension/src/authoring/buildComparisonYaml.ts`, from T-32) so
+it can serialize the full range of data this project's engine layer
+already supports, but that the builder currently cannot express:
 
-- `packages/extension/src/webview/resultsWebview.ts` — today renders a bare,
-  unstyled HTML document (`renderResultsHtml`). This task gives it a real
-  visual language mapped onto **VS Code theme CSS variables**
-  (`--vscode-editor-background`, `--vscode-foreground`,
-  `--vscode-testing-iconFailed`-style semantic tokens, etc.) — not the
-  prototype's raw Nocturne hex/token values, which are reference only.
-- `packages/extension/src/views/parityTreeDataProvider.ts` — T-33 populated
-  this with real `Comparisons`/`Recent Runs` children, but every node uses
-  default VS Code `TreeItem` rendering (no icons, no status color). This
-  task adds `iconPath`/`ThemeIcon` (codicons), `description` text, and
-  `contextValue`-driven affordances per the handoff.
+1. **All three `QueryInput` kinds per side**, not just `table`/`object`.
+   `QueryInput` (`packages/shared/src/types.ts`) is a discriminated union:
+   `{ kind: "table"; object: string }` | `{ kind: "query"; sql: string }` |
+   `{ kind: "sqlFile"; filePath: string }`. Today `buildComparisonYaml`
+   only ever emits the `table` shape (`connection`/`object`/optional
+   `where`) — it has no way to emit `query` or `sqlFile` sides at all.
+2. **`column_mapping`** (`ColumnMappingEntry[]`, defined in
+   `packages/engine/src/orchestration/definition/definition.ts`, already
+   parsed by `parseDefinition` since T-08/T-28) — today
+   `buildComparisonYaml` never emits this field at all (relies entirely on
+   `parseDefinition`'s existing "absent → `[]`" default).
 
-**Read the handoff's own "Fidelity" section before starting**: the results
-webview is high-fidelity (colors/spacing/table structure/tabs/copy are
-final-intent); the sidebar is **conceptual/structural reference only** —
-VS Code tree views cannot render custom HTML, custom left borders, or
-arbitrary icon colors the way the HTML mockup shows. Native `TreeItem`
-affordances (`ThemeIcon` with a `color` `ThemeColor` argument, `description`,
-`contextValue`, selection state) are the only implementation vocabulary
-available for the sidebar half — do not attempt to turn the sidebar into a
-webview or inject HTML into it.
+This is foundation work: Phase 5's custom comparison editor (T-36) and its
+Column Mapping tab (T-37) both need to write through an extended
+`buildComparisonYaml` that can express these shapes — this task delivers
+that extension in isolation, fully tested via round-trips through
+`parseDefinition`, before either UI consumer exists.
+
+See `docs/superpowers/specs/2026-08-02-comparison-authoring-ui-design.md`
+for the full Phase 5 design this task is the first step of.
 
 ## Scope
 
-1. **Results webview restyling** (`resultsWebview.ts`):
-   - Add a `<style>` block inside the existing `<head>` using VS Code webview
-     theme variables for background/foreground/borders/accent, per the
-     handoff's Design Tokens section (mapped to `--vscode-*` equivalents, not
-     Nocturne raw values).
-   - Header: small uppercase eyebrow, `<h1>` with comparison name, meta line
-     (`Run <runId>` · source→target · duration), status tag colored by
-     `result.status`.
-   - Summary stat band: 4 stat tiles (Passed / Warnings / Failed / Row count
-     delta) plus a source/target/difference row-count line.
-   - Tab strip: Schema / Profile / Volume / Row-Level / SQL Preview, each
-     (except SQL Preview) with a count-badge pill. **Keep `enableScripts:
-     false`** (per `showResultsWebview`'s existing call and this file's own
-     doc-comment purity contract) — implement tab switching with CSS-only
-     radio/anchor-based technique (the handoff's own suggested
-     scripts-disabled-compatible option), not JS. If after investigation
-     CSS-only tab switching genuinely cannot work within this constraint,
-     stop and flag it in the implementation report rather than silently
-     flipping `enableScripts` to `true` — that is a prohibited change (see
-     below).
-   - Restyle the existing Schema/Profile/Volume/Row-Level tables with colored
-     severity tags (map `DifferenceItem.severity` to a CSS class, using
-     VS Code semantic-color variables per the handoff's Design Tokens note).
-   - Row-Level panel: add the expand/collapse interaction for
-     `matched-key-differing-values` rows showing `columnDifferences` — again
-     CSS-only (e.g. a hidden checkbox/`:target` or `<details>`/`<summary>`
-     element), since scripts stay disabled. `<details>`/`<summary>` is the
-     simplest native-HTML way to do this without JS and should be preferred
-     unless it conflicts with the visual spec.
-   - SQL Preview panel: keep `renderQueryPreviewSection`'s existing escaping
-     and one-`<pre>`-per-query structure; restyle only (card wrapper, header
-     with query index).
-   - `renderResultsHtml` **must remain a pure function** — same signature,
-     same input (`ComparisonResult` only), deterministic output, no new
-     `vscode` API usage beyond the pre-existing type-only import. This is
-     the single most important constraint in this task (see Prohibited
-     Changes).
-   - If you add a stable row id for the row-level expand/collapse markup,
-     prefer **keying by index within the render function** (e.g. an
-     `id="row-differences-N"` anchor/checkbox pair) over adding a field to
-     `RowDifference` — only touch `packages/shared/src/result.ts` if you
-     conclude after implementation that an index-based key is genuinely
-     insufficient (e.g. because row order isn't stable across renders of the
-     same result, which it is, since `renderResultsHtml` is pure and
-     `rowDifferences` is a plain array). If you do add a field, it must be
-     optional and additive (matching every other difference-shape extension
-     precedent in this codebase — see `CLAUDE.md`'s note that
-     `RowDifference` is owned by T-14 but additive extensions by a later,
-     disclosed task are the established pattern, same as T-16's
-     `aggregateDifferences`/`rowDifferences` additions). Disclose this
-     decision either way in the implementation report.
+1. **Extend `NewComparisonAnswers`** (or introduce a clearly-named
+   successor type — your call, but keep backward field-name compatibility
+   for `comparisonName`/`keys`/`sourceConnection`/`targetConnection` where
+   they still apply) so each side can independently specify:
+   - `kind: "table"` (existing behavior: `object` + optional `where`)
+   - `kind: "query"` (`sql: string`, no `where`/`object` — `QueryInput`'s
+     `query` variant has no `where` field of its own; a WHERE clause for
+     query-mode input belongs inside the `sql` string itself)
+   - `kind: "sqlFile"` (`filePath: string`, same no-`where` reasoning)
 
-2. **Sidebar tree restyling** (`parityTreeDataProvider.ts`):
-   - `ParityTreeItem` (section headers): no icon change needed (VS Code
-     renders collapsible section chevrons natively) — leave as-is unless the
-     handoff implies otherwise; do not over-engineer this node.
-   - `ParityComparisonTreeItem`: add a file-type codicon (e.g.
-     `new vscode.ThemeIcon("file")` or similar per the handoff's "file icon"
-     description) via `iconPath`.
-   - `ParityRecentRunTreeItem`: add a status-colored codicon dot reflecting
-     the run's outcome (pass/warning/fail), via
-     `new vscode.ThemeIcon("circle-filled", new vscode.ThemeColor(...))`
-     using a VS Code semantic color id (e.g.
-     `testing.iconPassed`/`testing.iconFailed`/`editorWarning.foreground` —
-     confirm exact valid `ThemeColor` ids before use). Requires
-     `RunSummary` to expose an outcome/status field usable for this — check
-     `packages/extension/src/runHistory/runHistory.ts`'s existing
-     `RunSummary` shape first; if it already carries a status you can key
-     off of, use it as-is (read-only consumption, this task doesn't own that
-     file). If it doesn't carry anything sufficient, that's a scope
-     boundary to flag and stop at, not silently work around.
-   - No literal "Connections" row icons are needed since Connections stays
-     empty-state (out of scope — T-33 explicitly left it empty and this task
-     doesn't populate it either, only styles what T-33 already renders).
-   - No custom left-border/active-state CSS — that's not available in
-     `TreeItem`. If you want an "active comparison" affordance, a
-     `description` suffix (e.g. "● active") or relying on VS Code's native
-     selection highlight is the only available vocabulary; this is optional
-     polish, not required scope, since the current single-result model
-     doesn't yet track an "active" comparison concept at all (per the
-     handoff's own Interactions note: "the current single-result
-     `ComparisonResult` model doesn't need this yet").
+   Design the type so a caller cannot accidentally supply `object` for a
+   `query`-kind side or `sql` for a `table`-kind side — a discriminated
+   union mirroring `QueryInput`'s own shape is the natural fit; do not
+   invent a looser "all fields optional" bag type.
+
+2. **Extend the YAML-rendering logic** (`renderSide` today, or its
+   replacement) to emit the correct YAML shape for each kind, matching
+   exactly what `parseDefinition`'s existing (already-implemented,
+   already-tested, out of this task's ownership) parsing logic for
+   `source`/`target` expects. Read `parseDefinition`'s parsing of
+   `source`/`target` in
+   `packages/engine/src/orchestration/definition/definition.ts` to confirm
+   the exact expected YAML keys for each kind before writing the
+   generator — do not guess the shape.
+
+3. **Add `column_mapping` serialization.** Accept an optional
+   `columnMapping?: ColumnMappingEntry[]` (or equivalent) on the answers
+   type. When present and non-empty, emit a `column_mapping` block; when
+   absent or empty, omit the field entirely (matching the file's existing
+   convention for other optional fields, e.g. `where`). Support both
+   `ColumnMappingEntry` variants (`{ source, target }` plain mapping, and
+   `{ name, target, sourceExpression?, targetExpression? }` derived
+   mapping) — read `ColumnMappingEntry`'s definition and
+   `parseColumnMapping`/`parseColumnMappingListEntry`'s parsing logic in
+   `definition.ts` first to confirm the exact expected list-entry YAML
+   shape `parseDefinition` accepts (it accepts a list-of-objects form;
+   confirm whether the flat string-map form is also worth emitting or
+   whether the list form alone is sufficient — the list form is
+   unambiguously correct for both `ColumnMappingEntry` variants, so prefer
+   it unless you find a concrete reason the flat map form is needed).
+
+4. **Preserve every existing safety property** unchanged:
+   - Every user-supplied string value (`sql`, `filePath`, `columnMapping`
+     entries' `source`/`target`/`name`/`sourceExpression`/
+     `targetExpression`, same as `comparisonName`/`sourceConnection`/
+     `sourceObject`/`sourceWhere` today) must go through the existing
+     `yamlQuotedString` escaping helper — never emit any of these as bare/
+     unquoted YAML scalars.
+   - `connection` fields remain bare double-quoted string scalars only,
+     never structured objects — same rule as today, now also verified
+     against `query`/`sqlFile`-kind sides (a `query`-kind side still names
+     a `connection`, just no `object`).
+   - No new call sites or logic may write `password`/other
+     credential-shaped field names anywhere in the emitted document (same
+     class of guarantee T-32's original review adversarially probed with
+     an 11-case YAML-injection test — this task's tests should include at
+     least a few equivalently adversarial cases for the *new* fields
+     specifically: `sql` containing YAML-significant characters, `filePath`
+     containing YAML-significant characters, `column_mapping` entries
+     containing YAML-significant characters or credential-shaped-looking
+     strings).
+
+5. **Do not touch `newComparisonWizard.ts`** (the interactive
+   `paritylens.newComparison` command flow) — this task extends the pure
+   builder function only. Wiring the wizard (or any other UI) to actually
+   collect query/sqlFile/column-mapping answers and call the extended
+   builder is out of scope here; T-36/T-37 are where that UI-level wiring
+   happens. The existing `newComparisonWizard.ts` may keep calling the
+   builder with only `table`-kind answers exactly as it does today — your
+   extended type must keep that call site compiling unchanged (i.e. the
+   `table` kind's fields must remain exactly as they are today, just now
+   as one arm of a discriminated union rather than the type's only shape).
 
 ## Dependencies
 
-- T-33 (tree view populated with real `Comparisons`/`Recent Runs` data) —
-  **complete**, merged to `main` at `43363bc`.
-- T-11/T-16/T-16b (`resultsWebview.ts`'s existing structure and purity
-  contract) — complete, this task extends them.
+- T-08 (`parseDefinition`, `ColumnMappingEntry`, `QueryInput` parsing) —
+  complete, this task extends against it read-only.
+- T-32 (`buildComparisonYaml`, `NewComparisonAnswers`, `yamlQuotedString`)
+  — complete, this task extends it directly.
 
 ## Files owned
 
-- `packages/extension/src/webview/resultsWebview.ts` (visual/structural
-  only — preserve the pure-function contract)
-- `packages/extension/src/views/parityTreeDataProvider.ts` (`TreeItem`
-  presentation only — no data-fetching/dependency-shape changes beyond what
-  T-33 already established)
-- `packages/shared/src/result.ts` — **only** if, after investigation, an
-  index-based row key genuinely proves insufficient for the row-level
-  expand/collapse markup (see Scope item 1's last bullet); narrow, additive
-  only (an optional field), never a breaking change to the existing shape
+- `packages/extension/src/authoring/buildComparisonYaml.ts`
+- `packages/extension/src/authoring/buildComparisonYaml.test.ts`
 
 ## Prohibited changes
 
-- Do not touch `packages/extension/src/runHistory/`,
-  `packages/extension/src/connections/`, `packages/extension/src/statusbar/
-  parityStatusBar.ts`, `packages/extension/src/activation/activate.ts`, or
-  any engine/`comparison-core`/`connector-sdk` code — this is a pure
-  presentation-layer task.
-- Do not flip `enableScripts` to `true` on the results webview panel. If
-  CSS-only tab switching is genuinely infeasible for some required
-  interaction, stop and disclose it in the implementation report — do not
-  unilaterally decide to enable scripts.
-- Do not widen `SchemaDifference`, `ProfileDifference`, or
-  `AggregateDifference` — those are owned by their respective completed
-  tasks and out of scope here regardless of any visual convenience it might
-  offer.
-- Do not add a "Connections" section data-populate — it stays empty-state
-  (T-33's explicit scope boundary, unchanged by this task).
-- Do not ship the Nocturne stylesheet (`_ds/styles.css`) or copy the
-  prototype HTML file verbatim — the design handoff is explicit that this is
-  a reference/spec, not code to reuse directly.
+- Do not touch `packages/extension/src/authoring/newComparisonWizard.ts`
+  or `newComparisonWizard.test.ts` — UI wiring is out of scope for this
+  task (see Scope item 5). If `newComparisonWizard.ts`'s existing call
+  site to `buildComparisonYaml`/`NewComparisonAnswers` no longer compiles
+  after your type change, that is a signal your type change was not
+  backward-compatible — fix the type, not the wizard.
+- Do not touch `packages/engine/src/orchestration/definition/definition.ts`
+  or any other file under `packages/engine/**` — `parseDefinition`,
+  `QueryInput`, and `ColumnMappingEntry` are all pre-existing, already-
+  approved shapes this task consumes read-only. If you find what looks
+  like a genuine parsing gap or bug while reading `definition.ts`, stop
+  and disclose it in the implementation report rather than patching it —
+  it is out of this task's file ownership regardless of how small the fix
+  would be.
+- Do not touch `packages/extension/src/activation/activate.ts` or any
+  other command-registration file — no new command, no new UI, pure
+  builder-function work only.
+- Do not add a `build`-time or `dev`-time schema/live column fetch of any
+  kind (that is explicitly T-37's scope, gated on a real connector round
+  trip) — this task is offline, pure, `vscode`-free string generation
+  only, exactly like the existing `buildComparisonYaml.ts` is today.
 
 ## Interfaces consumed / produced
 
-- Consumed (read-only): `ComparisonResult` and all sub-shapes from
-  `@paritylens/shared`; `RunSummary` from `runHistory.ts` (read-only, only
-  if it already exposes what's needed per Scope item 2).
-- Produced: restyled `renderResultsHtml` output (same exported function
-  signature); restyled `ParityComparisonTreeItem`/`ParityRecentRunTreeItem`
-  construction (same exported class signatures — only their internal
-  `iconPath`/`description`/style construction changes). No new public
-  interfaces.
+- Consumed (read-only): `QueryInput`, `ColumnMappingEntry` from
+  `@paritylens/shared`/`@paritylens/engine`; `parseDefinition` (for
+  round-trip test verification only, not called from the builder itself
+  — `buildComparisonYaml` produces YAML *text*, it does not parse its own
+  output at runtime, same as today).
+- Produced: an extended `buildComparisonYaml(answers): string` accepting
+  the new discriminated-union answers shape; the exact new type name(s)
+  and field layout are your call within this task's scope, but must be
+  exported from `buildComparisonYaml.ts` so T-36/T-37 can consume them
+  later. Document the final shape clearly in the implementation report
+  so a future task's brief can reference it precisely.
 
 ## Red/Green/Full verification evidence required
 
-- **Red**: a test asserting the *new* required markup (e.g. a specific CSS
-  class name for the tab strip, or a summary-stat-tile element, or a
-  severity-tag class) is **absent** from today's `renderResultsHtml` output
-  — this is the meaningful red-state signal for a visual task (a "the old
-  plain HTML doesn't match" assertion would be too weak/trivial, per the
-  plan row's own note).
-- **Green**: the same test passes after implementation. Additionally:
-  - A test confirming `renderResultsHtml` remains pure: same input twice
-    produces identical output (no hidden state/randomness/timestamps), and
-    it still takes only a `ComparisonResult` argument.
-  - A test confirming `showResultsWebview`'s `createWebviewPanel` call still
-    passes `{ enableScripts: false }` (guards against silently flipping this
-    — the exact regression Prohibited Changes calls out).
-  - A test confirming every newly-rendered field that comes from
-    `ComparisonResult` data (not a static label) goes through `escapeHtml`
-    — at minimum, extend/re-run any existing XSS-probe-style test this file
-    already has, and add one for any new field surfaced (e.g. if a tab badge
-    count or stat tile pulls a message/column-name string anywhere, though
-    most of these are `.length` numbers, not raw strings — verify which is
-    which and escape whichever needs it).
-  - A `parityTreeDataProvider.test.ts` assertion that
-    `ParityComparisonTreeItem`/`ParityRecentRunTreeItem` construct an
-    `iconPath` (or `ThemeIcon`) and that the run item's icon color reflects
-    at least two distinct outcomes (e.g. pass vs. fail produce different
-    `ThemeColor` ids) — not just that *an* icon exists.
+- **Red**: a test constructing `query`-kind or `sqlFile`-kind answers (or
+  answers including a non-empty `columnMapping`) and calling
+  `buildComparisonYaml`, expecting it to compile and round-trip correctly
+  through `parseDefinition`, fails today — either a type error (the
+  current `NewComparisonAnswers` shape has no way to express this input)
+  or, if you stub around the type gap to get a red run at all, a runtime
+  assertion failure showing the emitted YAML lacks the expected
+  `query`/`sqlFile`/`column_mapping` structure. Document clearly in the
+  implementation report which red-state form you used, since a pure type
+  gap can't literally "fail a test run" the way a runtime gap can — a type
+  error in a dedicated scratch/red-state file, deleted once green, is
+  acceptable evidence if that's what the type-gap case requires.
+- **Green**: round-trip tests through `parseDefinition` for:
+  - Both `query`-kind and `sqlFile`-kind sides (each side independently,
+    and a mixed source-is-table/target-is-query case).
+  - `column_mapping` with both `ColumnMappingEntry` variants (plain
+    `source`/`target`, and derived `name`/`target` with/without
+    `sourceExpression`/`targetExpression`).
+  - The existing 5 tests in `buildComparisonYaml.test.ts` (table-kind
+    round-trip, optional `where`, composite keys, YAML-significant-
+    character escaping, connection-field-never-structured) continue to
+    pass unmodified in behavior (adjust call sites for the new type shape
+    only if required, but do not weaken or remove any existing assertion).
+  - At least 2 new adversarial escaping tests for the new fields (`sql`/
+    `filePath`/`column_mapping` entries containing YAML-significant
+    characters or credential-shaped-looking strings), per Scope item 4.
 - **Full**: `npm run verify` (typecheck + lint + test) green.
 
 ## Handoff note for the reviewer
 
 Please adversarially confirm, independent of the implementation report:
 
-1. **`renderResultsHtml` purity**: diff the function against `main` and
-   confirm no new `vscode` runtime API usage crept in (only the pre-existing
-   type-only import), no closures over external mutable state, no
-   `Date.now()`/`Math.random()`/similar non-determinism, and that
-   `showResultsWebview`'s `{ enableScripts: false }` call site is genuinely
-   unchanged (or, if scripts were enabled, that this was explicitly
-   disclosed and justified against the Prohibited Changes constraint — flag
-   it as a finding if it wasn't disclosed).
-2. **Escaping coverage**: walk every new piece of `ComparisonResult`-derived
-   data surfaced in the restyled markup (stat tile numbers, tab badge
-   counts, status tag text, meta line fields) and confirm each passes
-   through `escapeHtml` if it's a string that could contain user-influenced
-   content (e.g. `result.comparison`, `message` fields, column names) —
-   numbers alone (counts, durations) are lower risk but should still be
-   checked for how they're interpolated.
-3. **Sidebar native-only compliance**: confirm no custom HTML/webview
-   sneaks into `parityTreeDataProvider.ts` — only `vscode.ThemeIcon`,
-   `vscode.ThemeColor`, `description`, `contextValue`, label text. Confirm
-   any `ThemeColor` id used is a real, valid VS Code theme color id (spot
-   check against VS Code's theme color reference, since an invalid id
-   silently fails rather than erroring).
-4. Confirm scope stayed within the two owned files (plus `result.ts` only
-   if disclosed and justified per Scope item 1's last bullet) via a diff
-   against `main`.
+1. **Shape fidelity against `parseDefinition`**: for each of the 3
+   `QueryInput` kinds and both `ColumnMappingEntry` variants, confirm the
+   emitted YAML, when parsed, produces an object deep-equal to what you'd
+   expect from reading `definition.ts`'s parsing logic directly — not
+   merely "no error was thrown."
+2. **Escaping coverage**: construct your own adversarial strings (YAML
+   anchors/aliases, flow-mapping injection, quote-escape-and-reopen
+   attempts, control characters) for `sql`, `filePath`, and
+   `column_mapping` entry fields, going beyond whatever cases the
+   implementation report discloses — mirroring T-32's original 11-case
+   independent probe.
+3. **Backward compatibility**: confirm `newComparisonWizard.ts`'s existing
+   call site to `buildComparisonYaml` still compiles and its existing
+   tests (`newComparisonWizard.test.ts`) still pass, completely
+   unmodified, via a diff against `main` showing zero changes to either
+   file.
+4. **File-ownership diff**: confirm via `git diff --stat main..<branch>`
+   that only `buildComparisonYaml.ts` and `buildComparisonYaml.test.ts`
+   changed.
+5. Confirm no credential-shaped field name appears anywhere reachable
+   from the new code paths (same class of check T-32's review applied).
 
 ## Branch
 
-`task/T-34-results-sidebar-visual-redesign`
+`task/T-35-buildyaml-query-mapping`
