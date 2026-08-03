@@ -163,8 +163,8 @@ baseline, confirming no regression.
 
 ## Patch or commit identity
 
-- **Patch or commit:** see commit created immediately after this report on
-  this branch (staged together: `eslint.config.mjs` and this report).
+- **Patch or commit:** `729910a` — "T-46: add dist-bundle to eslint ignores
+  (resolves T-27-01)"
 - **Branch or workspace:** `task/T-46-eslint-dist-bundle-ignore`
 
 ## Recommended next step
