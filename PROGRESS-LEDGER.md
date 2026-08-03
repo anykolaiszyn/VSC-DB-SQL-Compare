@@ -12,8 +12,8 @@
   redesign of the results webview and sidebar tree, from an approved
   design handoff) added 2026-08-02 as a new task depending on T-33. T-29,
   T-30, and T-31 are COMPLETE and merged; T-32 (comparison-authoring
-  scaffold) is next.
-- **Exactly one task may be active:** NONE
+  scaffold) is now active.
+- **Exactly one task may be active:** T-32
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
