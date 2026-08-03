@@ -189,8 +189,9 @@ describe("planQueries", () => {
     const result = await runComparison(definition, buildRegistry());
 
     expect(result.queriesUsed).toBeDefined();
-    expect(normalizeTimestamps(planned)).toEqual(normalizeTimestamps(result.queriesUsed!));
-    expect(planned.length).toBeGreaterThan(0);
+    expect(normalizeTimestamps(planned.queries)).toEqual(normalizeTimestamps(result.queriesUsed!));
+    expect(planned.queries.length).toBeGreaterThan(0);
+    expect(planned.connectionUnreachable).toBe(false);
   });
 
   it("matches runComparison's own queriesUsed exactly for a definition with schema+profile+rowCount+rowLevel all enabled", async () => {
@@ -200,19 +201,21 @@ describe("planQueries", () => {
     const result = await runComparison(definition, buildRegistry());
 
     expect(result.queriesUsed).toBeDefined();
-    expect(normalizeTimestamps(planned)).toEqual(normalizeTimestamps(result.queriesUsed!));
+    expect(normalizeTimestamps(planned.queries)).toEqual(normalizeTimestamps(result.queriesUsed!));
     // Sanity: row-count (2) + row-level (2) + at least one profiled column
     // pair's queries should all be present.
-    expect(planned.length).toBeGreaterThanOrEqual(4);
+    expect(planned.queries.length).toBeGreaterThanOrEqual(4);
+    expect(planned.connectionUnreachable).toBe(false);
   });
 
-  it("returns an empty list for a schema-only definition, matching runComparison's queriesUsed being absent (schema comparison issues no SQL)", async () => {
+  it("returns an empty list for a schema-only definition, matching runComparison's queriesUsed being absent (schema comparison issues no SQL) -- and connectionUnreachable is false, since both connections are reachable and the definition legitimately produces zero queries", async () => {
     const definition = parseDefinition(SCHEMA_ONLY_YAML);
 
     const planned = await planQueries(definition, buildRegistry());
     const result = await runComparison(definition, buildRegistry());
 
-    expect(planned).toEqual([]);
+    expect(planned.queries).toEqual([]);
+    expect(planned.connectionUnreachable).toBe(false);
     expect(result.queriesUsed).toBeUndefined();
   });
 
@@ -231,7 +234,8 @@ describe("planQueries", () => {
     expect(targetSpy.executeQueryCalls).toBe(0);
     expect(sourceSpy.getSchemaCalls).toBeGreaterThan(0);
     expect(targetSpy.getSchemaCalls).toBeGreaterThan(0);
-    expect(planned.length).toBeGreaterThan(0);
+    expect(planned.queries.length).toBeGreaterThan(0);
+    expect(planned.connectionUnreachable).toBe(false);
   });
 
   it("never calls executeQuery for a rowCount+rowLevel-only definition (no schema/profile) either", async () => {
@@ -265,7 +269,8 @@ checks:
     expect(targetSpy.executeQueryCalls).toBe(0);
     expect(sourceSpy.getSchemaCalls).toBe(0);
     expect(targetSpy.getSchemaCalls).toBe(0);
-    expect(planned).toHaveLength(4);
+    expect(planned.queries).toHaveLength(4);
+    expect(planned.connectionUnreachable).toBe(false);
   });
 
   it("throws UnresolvedConnectionError for an unregistered target connection, mirroring runComparison's own error contract for genuine wiring errors", async () => {
@@ -276,4 +281,86 @@ checks:
 
     await expect(planQueries(definition, registry)).rejects.toThrow(UnresolvedConnectionError);
   });
+
+  // T-49: resolves finding T-38-01 -- planQueries's Layer-1 testConnection()
+  // gate must distinguish "connection unreachable" from "definition
+  // legitimately produces zero queries" so the confirmation panel can show
+  // a distinguishing message instead of an ambiguous empty-queries state.
+  it("returns connectionUnreachable: true and an empty queries list when the source connector's testConnection() fails (T-38-01)", async () => {
+    const definition = parseDefinition(SCHEMA_ONLY_YAML);
+    const unreachableSource = new UnreachableConnector(new FixtureConnector("sqlserver-customer", "source"));
+    const registry: ConnectorRegistry = new Map<string, DataPlatformConnector>([
+      ["legacy-sql-prod", unreachableSource],
+      ["snowflake-analytics", new FixtureConnector("sqlserver-customer", "target")]
+    ]);
+
+    const planned = await planQueries(definition, registry);
+
+    expect(planned.connectionUnreachable).toBe(true);
+    expect(planned.queries).toEqual([]);
+  });
+
+  it("returns connectionUnreachable: true when the target connector's testConnection() fails (T-38-01)", async () => {
+    const definition = parseDefinition(SCHEMA_ONLY_YAML);
+    const unreachableTarget = new UnreachableConnector(new FixtureConnector("sqlserver-customer", "target"));
+    const registry: ConnectorRegistry = new Map<string, DataPlatformConnector>([
+      ["legacy-sql-prod", new FixtureConnector("sqlserver-customer", "source")],
+      ["snowflake-analytics", unreachableTarget]
+    ]);
+
+    const planned = await planQueries(definition, registry);
+
+    expect(planned.connectionUnreachable).toBe(true);
+    expect(planned.queries).toEqual([]);
+  });
 });
+
+/** Wraps a real connector, overriding `testConnection()` to always report
+ * failure -- used to distinguish the T-38-01 "connection unreachable" case
+ * from the "definition legitimately produces zero queries" case, which the
+ * unmodified `SCHEMA_ONLY_YAML` fixture registry already covers above.
+ * Delegates every other `DataPlatformConnector` method straight through to
+ * `inner` unchanged, matching `SpyConnector`'s own delegation pattern. */
+class UnreachableConnector implements DataPlatformConnector {
+  constructor(private readonly inner: DataPlatformConnector) {}
+
+  testConnection() {
+    return Promise.resolve({ success: false, message: "simulated unreachable connection" });
+  }
+
+  getCatalogs() {
+    return this.inner.getCatalogs();
+  }
+
+  getSchemas(catalog?: string) {
+    return this.inner.getSchemas(catalog);
+  }
+
+  getObjects(scope: Parameters<DataPlatformConnector["getObjects"]>[0]) {
+    return this.inner.getObjects(scope);
+  }
+
+  getSchema(input: QueryInput): Promise<ColumnDefinition[]> {
+    return this.inner.getSchema(input);
+  }
+
+  executeQuery(input: QueryInput, options: ExecutionOptions): AsyncIterable<RecordBatch> {
+    return this.inner.executeQuery(input, options);
+  }
+
+  getCapabilities() {
+    return this.inner.getCapabilities();
+  }
+
+  quoteIdentifier(identifier: string): string {
+    return this.inner.quoteIdentifier(identifier);
+  }
+
+  buildProfileQuery(
+    input: QueryInput,
+    columns: ColumnDefinition[],
+    profileOptions: Parameters<DataPlatformConnector["buildProfileQuery"]>[2]
+  ) {
+    return this.inner.buildProfileQuery(input, columns, profileOptions);
+  }
+}

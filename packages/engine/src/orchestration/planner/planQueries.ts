@@ -102,6 +102,28 @@ import { resolveSideInput, buildFetchAllRowsSql, type ConnectorRegistry } from "
 import { UnresolvedConnectionError } from "./planner.js";
 
 /**
+ * T-49 (resolves finding T-38-01): `planQueries`'s return shape, distinguishing
+ * the two genuinely different reasons an empty `queries` list can occur --
+ * a definition that legitimately has no checks enabled (or only
+ * schema-only, which issues no SQL -- see this file's header comment's
+ * judgment-call note) vs. the Layer-1 `testConnection()` gate below
+ * short-circuiting because either side is unreachable. Before this task,
+ * both cases returned a bare `[]`, which the confirmation panel
+ * (`runConfirmationWebview.ts`) rendered identically -- see
+ * `PROGRESS-LEDGER.md`'s T-38-01 finding for the full history. `queries` is
+ * always `[]` when `connectionUnreachable` is `true` (the Layer-1 gate
+ * returns before any query is built), but the reverse is not implied --
+ * `queries` can also legitimately be `[]` with `connectionUnreachable:
+ * false`.
+ */
+export interface PlanQueriesResult {
+  queries: string[];
+  /** True when either side's testConnection() failed -- Layer 1
+   * short-circuited before any query was built. */
+  connectionUnreachable: boolean;
+}
+
+/**
  * Builds the exact list of SQL strings `runComparison(definition,
  * connectors, baseDir)` would issue via `executeQuery` for the same
  * arguments, without ever calling `executeQuery` itself. See this file's
@@ -118,12 +140,18 @@ import { UnresolvedConnectionError } from "./planner.js";
  * existing default rather than duplicating it here keeps this function's
  * behavior byte-for-byte aligned with `runComparison`'s for every
  * `baseDir`-omitted call site.
+ *
+ * Return shape widened under T-49 from `Promise<string[]>` to
+ * `Promise<PlanQueriesResult>` -- see that interface's own doc comment.
+ * Every other control-flow/error-propagation decision documented in this
+ * file's header comment is unchanged; only the two `return` sites' shape
+ * changed.
  */
 export async function planQueries(
   definition: ParityDefinition,
   connectors: ConnectorRegistry,
   baseDir?: string
-): Promise<string[]> {
+): Promise<PlanQueriesResult> {
   const source = connectors.get(definition.source.connection);
   const target = connectors.get(definition.target.connection);
 
@@ -156,7 +184,7 @@ export async function planQueries(
   // as an unstated behavioral gap.
   const [sourceConnectResult, targetConnectResult] = await Promise.all([source.testConnection(), target.testConnection()]);
   if (!sourceConnectResult.success || !targetConnectResult.success) {
-    return [];
+    return { queries: [], connectionUnreachable: true };
   }
 
   const queriesUsed: string[] = [];
@@ -197,7 +225,7 @@ export async function planQueries(
     );
   }
 
-  return queriesUsed;
+  return { queries: queriesUsed, connectionUnreachable: false };
 }
 
 /** Same default as `planner.ts`'s own private `defaultBaseDir` (not

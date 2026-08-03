@@ -10,7 +10,8 @@ import {
   InvalidDefinitionError,
   UnresolvedConnectionError,
   type ConnectorRegistry,
-  type ParityChecks
+  type ParityChecks,
+  type PlanQueriesResult
 } from "@paritylens/engine";
 import { ParityTreeDataProvider } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
@@ -285,16 +286,24 @@ export async function runComparisonCommand(
      */
     statusBarItem?: ParityStatusBarItem;
     /**
-     * T-38: called with `planQueries`'s output (the exact SQL list a real
-     * run would issue) after the connector registry is resolved and before
-     * `runComparison` is ever invoked — resolving `true` proceeds with the
-     * existing, unmodified `runComparison(...)` call; resolving `false`
-     * (or the promise's default when this dep is unsupplied) cancels the
-     * run cleanly, with `runComparison` never called and no error shown.
-     * The live `registerRunComparisonCommand` wiring below always supplies
-     * a real implementation backed by `renderRunConfirmationHtml` +
-     * `createWebviewPanel` + `onDidReceiveMessage` (see
-     * `createWebviewConfirmRun` below).
+     * T-38: called with `planQueries`'s output after the connector registry
+     * is resolved and before `runComparison` is ever invoked — resolving
+     * `true` proceeds with the existing, unmodified `runComparison(...)`
+     * call; resolving `false` (or the promise's default when this dep is
+     * unsupplied) cancels the run cleanly, with `runComparison` never
+     * called and no error shown. The live `registerRunComparisonCommand`
+     * wiring below always supplies a real implementation backed by
+     * `renderRunConfirmationHtml` + `createWebviewPanel` +
+     * `onDidReceiveMessage` (see `createWebviewConfirmRun` below).
+     *
+     * T-49 (resolves finding T-38-01): the callback's parameter is
+     * `planQueries`'s full `PlanQueriesResult` (`{ queries: string[],
+     * connectionUnreachable: boolean }`), not a bare `string[]` as before
+     * this task — `plannedQueries` below is now `planQueries`'s direct
+     * return value, passed straight through unchanged, so
+     * `connectionUnreachable` reaches the confirmation panel's rendering
+     * logic (`createWebviewConfirmRun`/`renderRunConfirmationHtml`) instead
+     * of being discarded as it was before.
      *
      * Typed optional, defaulting to "proceed" (`true`) when absent — the
      * same documented pattern `resolveRunHistoryRoot`/`statusBarItem`
@@ -311,7 +320,7 @@ export async function runComparisonCommand(
      * confirmation callback, so "every run goes through confirmation"
      * holds for every actual caller this task controls.
      */
-    confirmRun?: (queries: string[]) => Promise<boolean>;
+    confirmRun?: (result: PlanQueriesResult) => Promise<boolean>;
     /**
      * T-39: an optional check-subset override for this single invocation
      * only. When supplied (from a CodeLens "Run Profile"/"Run Schema
@@ -530,9 +539,15 @@ function registerRunComparisonCommand(
  * decision is reached (whichever happens first: a message or a manual
  * close), so a stray disposal after a message never double-resolves the
  * promise (`resolved` guards against exactly that).
+ *
+ * T-49: the callback parameter is `planQueries`'s full `PlanQueriesResult`
+ * now (not a bare `string[]`) — both fields are passed straight through to
+ * `renderRunConfirmationHtml(result.queries, result.connectionUnreachable)`
+ * unchanged, so the panel can render the distinguishing
+ * connectivity-failure notice this task adds.
  */
-function createWebviewConfirmRun(): (queries: string[]) => Promise<boolean> {
-  return (queries: string[]) =>
+function createWebviewConfirmRun(): (result: PlanQueriesResult) => Promise<boolean> {
+  return (result: PlanQueriesResult) =>
     new Promise<boolean>((resolvePromise) => {
       let resolved = false;
       const resolveOnce = (value: boolean) => {
@@ -549,7 +564,7 @@ function createWebviewConfirmRun(): (queries: string[]) => Promise<boolean> {
         vscode.ViewColumn.Active,
         { enableScripts: true }
       );
-      panel.webview.html = renderRunConfirmationHtml(queries);
+      panel.webview.html = renderRunConfirmationHtml(result.queries, result.connectionUnreachable);
 
       const messageSubscription = panel.webview.onDidReceiveMessage((message: unknown) => {
         if (typeof message !== "object" || message === null) {

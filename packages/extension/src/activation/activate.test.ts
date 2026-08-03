@@ -192,6 +192,7 @@ import { SecretStore } from "../secrets/secretStore";
 import { ConnectionProfileStore } from "../connections/connectionProfileStore";
 import type { ConnectionProfile } from "../connections/connectionProfile";
 import type { ComparisonResult } from "@paritylens/shared";
+import type { PlanQueriesResult } from "@paritylens/engine";
 
 const VALID_YAML_FOR_CONFIRMATION = `
 version: 1
@@ -560,7 +561,7 @@ describe("reopenRunCommand (T-33-01: recent-run click behavior)", () => {
  * function) is ever called.
  */
 describe("runComparisonCommand (T-38 pre-execution confirmation)", () => {
-  function createDeps(confirmRun: (queries: string[]) => Promise<boolean>) {
+  function createDeps(confirmRun: (result: PlanQueriesResult) => Promise<boolean>) {
     return {
       createWebviewPanel: vscode.window.createWebviewPanel as unknown as (
         ...args: unknown[]
@@ -577,7 +578,7 @@ describe("runComparisonCommand (T-38 pre-execution confirmation)", () => {
   });
 
   it("blocks on confirmRun and never calls runComparison (or shows the results webview) when the user cancels", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => false);
     const deps = createDeps(confirmRun);
 
     const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
@@ -588,14 +589,14 @@ describe("runComparisonCommand (T-38 pre-execution confirmation)", () => {
     // own "schema comparison issues no SQL" case), so an empty list here is
     // correct and still proves confirmRun was invoked with planQueries's
     // actual output, not a placeholder.
-    expect(confirmRun.mock.calls[0]?.[0]).toEqual([]);
+    expect(confirmRun.mock.calls[0]?.[0]).toEqual({ queries: [], connectionUnreachable: false });
     expect(result).toBeUndefined();
     expect(deps.createWebviewPanel).not.toHaveBeenCalled();
     expect(deps.showErrorMessage).not.toHaveBeenCalled();
   });
 
   it("proceeds to call runComparison and show the results webview when the user confirms Run", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
     const deps = createDeps(confirmRun);
 
     const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
@@ -608,7 +609,7 @@ describe("runComparisonCommand (T-38 pre-execution confirmation)", () => {
   });
 
   it("surfaces a planQueries failure via showErrorMessage without ever calling confirmRun or runComparison", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
     const deps = createDeps(confirmRun);
     // A definition whose object doesn't exist in the sqlserver-customer
     // fixture -- planQueries's own getSchema call (needed because
@@ -640,7 +641,7 @@ checks:
   });
 
   it("passes the exact planQueries output (not a re-derived list) to confirmRun for a check combination that does produce SQL", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => false);
     const deps = createDeps(confirmRun);
     const rowCountYaml = `
 version: 1
@@ -660,7 +661,9 @@ checks:
 
     await runComparisonCommand(rowCountYaml, deps as never);
 
-    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    const passedResult = confirmRun.mock.calls[0]?.[0];
+    expect(passedResult?.connectionUnreachable).toBe(false);
+    const passedQueries = passedResult?.queries ?? [];
     expect(passedQueries).toHaveLength(2);
     expect(passedQueries[0]).toContain("SELECT COUNT(*)");
     expect(passedQueries[1]).toContain("SELECT COUNT(*)");
@@ -680,7 +683,7 @@ checks:
  * argument itself, so this suite also proves that string is never mutated.
  */
 describe("runComparisonCommand (T-39 check-subset override)", () => {
-  function createDeps(confirmRun: (queries: string[]) => Promise<boolean>) {
+  function createDeps(confirmRun: (result: PlanQueriesResult) => Promise<boolean>) {
     return {
       createWebviewPanel: vscode.window.createWebviewPanel as unknown as (
         ...args: unknown[]
@@ -720,7 +723,7 @@ checks:
   });
 
   it("with no checksOverride supplied, behaves exactly as before this parameter existed (backward compatible)", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
     const deps = createDeps(confirmRun);
 
     const result = await runComparisonCommand(SCHEMA_ONLY_YAML, deps as never);
@@ -741,19 +744,19 @@ checks:
     // SELECT COUNT(*) queries a row_count-enabled definition produces --
     // proving the in-memory override, not the definition's own parsed
     // checks, drove query planning.
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => false);
     const deps = { ...createDeps(confirmRun), checksOverride: { rowCount: { enabled: true } } };
 
     await runComparisonCommand(SCHEMA_ONLY_YAML, deps as never);
 
     expect(confirmRun).toHaveBeenCalledTimes(1);
-    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    const passedQueries = confirmRun.mock.calls[0]?.[0]?.queries ?? [];
     expect(passedQueries).toHaveLength(2);
     expect(passedQueries[0]).toContain("SELECT COUNT(*)");
   });
 
   it("checksOverride disabling everything the definition itself enabled results in no SQL reaching confirmRun", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => false);
     const deps = {
       ...createDeps(confirmRun),
       checksOverride: { schema: { enabled: false }, profile: { enabled: true } }
@@ -767,12 +770,12 @@ checks:
     // profile is enabled instead, which for this schema-less object still
     // issues profile SQL, not the row-count SELECT COUNT(*) queries the
     // definition's own (overridden-away) checks would have produced.
-    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    const passedQueries = confirmRun.mock.calls[0]?.[0]?.queries ?? [];
     expect(passedQueries.some((q) => q.includes("SELECT COUNT(*)"))).toBe(false);
   });
 
   it("never mutates the yamlText string passed in, regardless of whether checksOverride is supplied", async () => {
-    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
     const deps = { ...createDeps(confirmRun), checksOverride: { profile: { enabled: true } } };
     const originalText = SCHEMA_ONLY_YAML;
 
