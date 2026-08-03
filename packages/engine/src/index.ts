@@ -32,8 +32,19 @@
 // - connector-sdk/postgres/postgresConnector.ts -- `PostgresConnector` and
 //   `PostgresConnectionOptions`, needed by the same `resolveConnector` for
 //   the PostgreSQL case.
+//
+// T-38 (amendment): adds one more re-export, following this file's own
+// established precedent (T-29's amendment note above) -- no file in this
+// monorepo deep-imports across the @paritylens/engine package boundary, so
+// widening this file is the established way to expose newly needed public
+// surface:
+// - orchestration/planner/planQueries.ts -- `planQueries`, the new
+//   pure, preview-only "dry run" query-builder `runComparisonCommand`
+//   (packages/extension/src/activation/activate.ts) calls before showing
+//   the pre-execution SQL preview + confirmation panel.
 export * from "./orchestration/definition/definition.js";
 export * from "./orchestration/planner/planner.js";
+export * from "./orchestration/planner/planQueries.js";
 export * from "./connector-sdk/fixture/fixture-connector.js";
 export * from "./connector-sdk/sqlserver/sqlServerConnector.js";
 export * from "./connector-sdk/postgres/postgresConnector.js";

@@ -584,7 +584,7 @@ function renderRowDifferencesTable(differences: RowDifference[]): string {
  * message, matching every other difference-array section's empty-state
  * pattern in this file.
  */
-function renderQueryPreviewSection(queriesUsed: string[] | undefined): string {
+export function renderQueryPreviewSection(queriesUsed: string[] | undefined): string {
   if (!queriesUsed || queriesUsed.length === 0) {
     return '<p class="empty-state">No queries recorded for this run.</p>';
   }
