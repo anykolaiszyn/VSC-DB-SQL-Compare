@@ -1,5 +1,5 @@
 import { describe, expect, it, afterEach } from "vitest";
-import { mkdtempSync, rmSync } from "node:fs";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { ComparisonResult } from "@paritylens/shared";
@@ -88,5 +88,56 @@ describe("runHistory", () => {
     const runs = await listRecentRuns(tempRoot);
     expect(runs.map((r) => r.id)).toEqual([idTwo, idOne]);
     expect(runs[0]?.name).toBe("second-run");
+  });
+
+  // T-47: resolves finding T-34-01 -- RunRecord/RunSummary gained an
+  // optional `status` field so the "Recent Runs" tree view can key an
+  // outcome-colored icon off it.
+  describe("T-47: status field", () => {
+    it("persistRun populates RunRecord.status from result.status, and listRecentRuns surfaces it", async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "paritylens-runhistory-"));
+
+      const id = await persistRun(SAMPLE_RESULT, tempRoot);
+
+      const runs = await listRecentRuns(tempRoot);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.id).toBe(id);
+      expect(runs[0]?.status).toBe("failed");
+
+      // loadRun's full ComparisonResult also still round-trips status
+      // (it was always part of `result`, unaffected by this change).
+      const loaded = await loadRun(id, tempRoot);
+      expect(loaded.status).toBe("failed");
+    });
+
+    it("persistRun populates a different status value correctly (not a hardcoded pass-through of one literal)", async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "paritylens-runhistory-"));
+
+      const passedResult: ComparisonResult = { ...SAMPLE_RESULT, status: "passed" };
+      await persistRun(passedResult, tempRoot);
+
+      const runs = await listRecentRuns(tempRoot);
+      expect(runs[0]?.status).toBe("passed");
+    });
+
+    it("listRecentRuns backward-compat: a pre-existing on-disk record with no status key still lists successfully with status undefined", async () => {
+      tempRoot = mkdtempSync(join(tmpdir(), "paritylens-runhistory-"));
+
+      // Simulate a RunRecord written before T-47: no `status` key at all
+      // (not `status: undefined` -- a genuinely absent key, matching what
+      // JSON.stringify on a pre-T-47 RunRecord object would have produced).
+      const legacyRecord = {
+        id: "legacy-run-001",
+        name: "legacy-run",
+        timestamp: "2025-01-01T00:00:00.000Z",
+        result: { ...SAMPLE_RESULT, comparison: "legacy-run" }
+      };
+      writeFileSync(join(tempRoot, "legacy-run-001.json"), JSON.stringify(legacyRecord));
+
+      const runs = await listRecentRuns(tempRoot);
+      expect(runs).toHaveLength(1);
+      expect(runs[0]?.id).toBe("legacy-run-001");
+      expect(runs[0]?.status).toBeUndefined();
+    });
   });
 });

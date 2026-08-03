@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import type { ComparisonStatus } from "@paritylens/shared";
 import type { RunSummary } from "../runHistory/runHistory";
 
 /**
@@ -82,6 +83,45 @@ export class ParityComparisonTreeItem extends vscode.TreeItem {
 }
 
 /**
+ * Maps a run's `ComparisonStatus` (T-47, resolving finding T-34-01) to the
+ * `ThemeIcon` `ParityRecentRunTreeItem` displays for it, using only real,
+ * published VS Code codicon ids and `ThemeColor` ids (never invented ones):
+ *
+ * - `"passed"` -> codicon `pass` (a checkmark, matching the outcome) with
+ *   `testing.iconPassed` (the standard green "test passed" theme color,
+ *   from the built-in Testing color contributions -- reused here since
+ *   this is exactly a pass/fail/warn outcome indicator, the same shape as
+ *   a test result).
+ * - `"warning"` -> codicon `warning` with `testing.iconQueued` (VS Code's
+ *   published theme color reference defines `testing.iconQueued` as a
+ *   yellow/orange tone -- there is no `testing.iconWarning` id, and
+ *   `testing.iconQueued` is the closest real, existing yellow-family id in
+ *   that same Testing color family used for the other two states).
+ * - `"failed"` and `"error"` -> codicon `error` (a single visual treatment
+ *   for both, since a data-comparison "error" -- e.g. a connectivity
+ *   failure -- is not meaningfully distinguishable from "failed" at a
+ *   glance in a tree row, and the brief explicitly allows sharing one
+ *   treatment) with `testing.iconFailed` (the standard red "test failed"
+ *   theme color).
+ * - `undefined` (pre-existing on-disk records with no recorded status) ->
+ *   the original neutral, uncolored `circle-outline` codicon, no color --
+ *   we do not guess an outcome for data that doesn't carry one.
+ */
+function iconForRunStatus(status: ComparisonStatus | undefined): vscode.ThemeIcon {
+  switch (status) {
+    case "passed":
+      return new vscode.ThemeIcon("pass", new vscode.ThemeColor("testing.iconPassed"));
+    case "warning":
+      return new vscode.ThemeIcon("warning", new vscode.ThemeColor("testing.iconQueued"));
+    case "failed":
+    case "error":
+      return new vscode.ThemeIcon("error", new vscode.ThemeColor("testing.iconFailed"));
+    default:
+      return new vscode.ThemeIcon("circle-outline");
+  }
+}
+
+/**
  * A child node under the "Recent Runs" section: one per `RunSummary` from
  * T-31's `listRecentRuns` (Scope item 2), most-recent first (already sorted
  * that way by `listRecentRuns`, so this class does no sorting of its own).
@@ -99,24 +139,17 @@ export class ParityRecentRunTreeItem extends vscode.TreeItem {
   ) {
     super(`${run.name} — ${run.timestamp}`, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "paritylens.recentRun";
-    // T-34: the design handoff calls for a status-colored dot (pass/warn/
-    // fail) per run, driven by the run's outcome. `RunSummary`
-    // (packages/extension/src/runHistory/runHistory.ts) is intentionally
-    // minimal -- `{ id, name, timestamp }` only, per that file's own doc
-    // comment -- and carries no outcome/status field to key an outcome
-    // color off of. Per TASK-BRIEF.md Scope item 2 ("if it doesn't carry
-    // anything sufficient, that's a scope boundary to flag and stop at,
-    // not silently work around"), this task does not invent a status
-    // (e.g. by re-reading the full ComparisonResult body, which
-    // `listRecentRuns`'s own doc comment says is deliberately avoided for
-    // a listing operation, or by widening RunSummary, which is out of this
-    // task's file ownership and belongs to whichever future task extends
-    // runHistory.ts). A neutral, uncolored codicon is used instead so
-    // every run still gets an icon (satisfying "add iconPath/ThemeIcon"),
-    // without fabricating an outcome-based color this task cannot
-    // correctly compute. See IMPLEMENTATION-REPORT.md for the full
-    // disclosure of this decision.
-    this.iconPath = new vscode.ThemeIcon("circle-outline");
+    // T-34 originally left this a fixed, uncolored `ThemeIcon` because
+    // `RunSummary` carried no outcome/status field to key a color off of
+    // -- see the (now resolved) finding T-34-01 in PROGRESS-LEDGER.md.
+    // T-47 resolves it: `RunSummary.status` (an optional `ComparisonStatus`
+    // populated by `persistRun`, see runHistory.ts) is now available, so
+    // the icon is keyed off the run's actual outcome via
+    // `iconForRunStatus`. `status === undefined` (pre-existing on-disk
+    // records written before T-47, with no recorded status) intentionally
+    // keeps the original neutral, uncolored `circle-outline` icon -- we do
+    // not guess an outcome for data that doesn't carry one.
+    this.iconPath = iconForRunStatus(run.status);
     this.command = {
       command: reopenRunCommandId,
       title: "Reopen Run",

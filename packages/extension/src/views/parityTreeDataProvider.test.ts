@@ -245,4 +245,80 @@ describe("ParityTreeDataProvider", () => {
       expect(item.iconPath).toBeInstanceOf(vscode.ThemeIcon);
     });
   });
+
+  // T-47: resolves finding T-34-01 -- ParityRecentRunTreeItem's ThemeIcon
+  // must be colored per the run's actual ComparisonStatus, not a fixed
+  // neutral icon regardless of outcome. These assertions fail against
+  // pre-T-47 code because run.status did not exist on RunSummary and the
+  // constructor always built ThemeIcon("circle-outline") with no color,
+  // for every status value alike -- i.e. there was no outcome-based color
+  // differentiation at all.
+  describe("T-47: run-history status-colored icons", () => {
+    it("'passed' status produces a green-toned ThemeIcon", () => {
+      const run: RunSummary = {
+        id: "run-a",
+        name: "first-run",
+        timestamp: "2026-08-01T09:00:00.000Z",
+        status: "passed"
+      };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      const icon = item.iconPath as InstanceType<typeof vscode.ThemeIcon>;
+      expect(icon).toBeInstanceOf(vscode.ThemeIcon);
+      expect(icon.id).toBe("pass");
+      expect(icon.color).toBeInstanceOf(vscode.ThemeColor);
+      expect((icon.color as { id: string }).id).toBe("testing.iconPassed");
+    });
+
+    it("'warning' status produces a yellow/orange-toned ThemeIcon", () => {
+      const run: RunSummary = {
+        id: "run-b",
+        name: "second-run",
+        timestamp: "2026-08-01T09:00:00.000Z",
+        status: "warning"
+      };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      const icon = item.iconPath as InstanceType<typeof vscode.ThemeIcon>;
+      expect(icon.id).toBe("warning");
+      expect((icon.color as { id: string }).id).toBe("testing.iconQueued");
+    });
+
+    it("'failed' status produces a red-toned ThemeIcon", () => {
+      const run: RunSummary = {
+        id: "run-c",
+        name: "third-run",
+        timestamp: "2026-08-01T09:00:00.000Z",
+        status: "failed"
+      };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      const icon = item.iconPath as InstanceType<typeof vscode.ThemeIcon>;
+      expect(icon.id).toBe("error");
+      expect((icon.color as { id: string }).id).toBe("testing.iconFailed");
+    });
+
+    it("'error' status produces the same red-toned ThemeIcon treatment as 'failed'", () => {
+      const run: RunSummary = {
+        id: "run-d",
+        name: "fourth-run",
+        timestamp: "2026-08-01T09:00:00.000Z",
+        status: "error"
+      };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      const icon = item.iconPath as InstanceType<typeof vscode.ThemeIcon>;
+      expect(icon.id).toBe("error");
+      expect((icon.color as { id: string }).id).toBe("testing.iconFailed");
+    });
+
+    it("undefined status (pre-existing record with no recorded status) keeps the neutral uncolored circle-outline icon", () => {
+      const run: RunSummary = { id: "run-e", name: "legacy-run", timestamp: "2026-08-01T09:00:00.000Z" };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      const icon = item.iconPath as InstanceType<typeof vscode.ThemeIcon>;
+      expect(icon.id).toBe("circle-outline");
+      expect(icon.color).toBeUndefined();
+    });
+  });
 });
