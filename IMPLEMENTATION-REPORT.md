@@ -63,7 +63,7 @@ Each of the brief's Green-state requirements is covered by a specific test in `n
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit below)
+- **Patch or commit:** `f3388cc`
 - **Branch or workspace:** `task/T-32-comparison-authoring-scaffold`
 
 ## Recommended next step
