@@ -144,23 +144,122 @@ or `packages/extension/src/statusbar/parityStatusBar.ts` (confirmed via
     for completeness.
 - **Blockers:** None.
 
+## T-33-01 fix (post-review, REVIEW-REPORT.md CHANGES REQUIRED)
+
+Independent review returned one Important finding, T-33-01: the brief's
+Green-state Verification section requires "a test confirms clicking a
+listed 'Recent Runs' item invokes `loadRun` for the correct `id` and
+passes its result to `showResultsWebview`," and no test actually did
+this. `registerReopenRunCommand` inlined its handler directly inside the
+`vscode.commands.registerCommand` callback, and every test touching
+`activate()` mocks `registerCommand` as `() => ({ dispose: () =>
+undefined })`, discarding the callback without invoking it — so the
+`loadRun` → `showResultsWebview` chain, and the `loadRun`-rejection →
+`showErrorMessage` catch, were never exercised by any test. The reviewer
+confirmed by manual inspection that the underlying implementation logic
+was already correct; this was a missing-test gap, not a functional
+defect.
+
+**Fix applied**, following the reviewer's suggested resolution and the
+codebase's own precedent (`runComparisonCommand`'s existing
+registration-vs-logic extraction split):
+
+- `packages/extension/src/activation/activate.ts`: extracted a new,
+  exported, directly-testable function `reopenRunCommand(id,
+  safeOutputRoot, deps)` — where `deps` injects `loadRun`,
+  `createWebviewPanel`, `viewColumn`, `showErrorMessage`, and
+  `showResultsWebview` — containing exactly the logic that previously
+  lived inline in `registerReopenRunCommand`'s `registerCommand`
+  callback (no behavioral change: same `safeOutputRoot === undefined` →
+  `showErrorMessage` early return; same `try { loadRun → showResultsWebview
+  } catch { showErrorMessage }` shape). `registerReopenRunCommand` now
+  just resolves `safeOutputRoot` from the live `vscode.workspace.
+  workspaceFolders` and delegates to `reopenRunCommand`, binding the live
+  `vscode` API into `deps` — mirroring exactly how
+  `registerRunComparisonCommand` delegates to `runComparisonCommand`.
+- `packages/extension/src/activation/activate.test.ts`: added a new
+  `describe("reopenRunCommand (T-33-01: recent-run click behavior)")`
+  block with four tests, calling the extracted function directly (no
+  `registerCommand` mock involved): (1) `loadRun` is called with the
+  clicked run's `id` and the resolved `safeOutputRoot`; (2)
+  `showResultsWebview` receives `loadRun`'s resolved `ComparisonResult`
+  (via `deps.createWebviewPanel`/`deps.viewColumn`) and `showErrorMessage`
+  is not called; (3) a `loadRun` rejection is caught and surfaced via
+  `showErrorMessage` (`'ParityLens: could not reopen run "run-missing" —
+  record not found'`) rather than propagating as an unhandled rejection,
+  and `showResultsWebview` is not called; (4) an `undefined`
+  `safeOutputRoot` (no workspace open) surfaces the existing
+  "no workspace folder is open" message without ever calling `loadRun`.
+
+No other file was touched — this fix stays entirely within
+`activate.ts`/`activate.test.ts`, both already within T-33's declared
+"Files owned."
+
+### Red-state evidence for the fix
+
+`git stash push -- packages/extension/src/activation/activate.ts && npx
+vitest run packages/extension/src/activation/activate.test.ts` (i.e. the
+new tests against the pre-fix `activate.ts`, which had no `reopenRunCommand`
+export):
+
+```
+FAIL packages/extension/src/activation/activate.test.ts (4 tests failed, 8 passed)
+ × reopenRunCommand (T-33-01...) > invokes loadRun with the clicked run's id...
+ × reopenRunCommand (T-33-01...) > passes loadRun's resolved ComparisonResult...
+ × reopenRunCommand (T-33-01...) > catches a loadRun rejection...
+ × reopenRunCommand (T-33-01...) > surfaces a clear error via showErrorMessage...
+Unhandled Rejection: Error: record not found
+ Test Files  1 failed (1)
+      Tests  4 failed | 8 passed (12)
+```
+
+(The 3 non-rejection failures are `reopenRunCommand is not a function` /
+`TypeError` from calling an undefined import — expected, since the
+extraction didn't exist yet. The 4th surfaces as an unhandled promise
+rejection rather than a clean assertion failure, which is itself exactly
+the defect class this fix closes: without the extraction, a `loadRun`
+rejection has no injectable catch path for a test to observe.)
+`git stash pop` restored the fix immediately after.
+
+### Green-state evidence for the fix
+
+`npx vitest run packages/extension/src/activation/activate.test.ts`:
+
+```
+✓ packages/extension/src/activation/activate.test.ts (12 tests) 101ms
+ Test Files  1 passed (1)
+      Tests  12 passed (12)
+```
+
+### Full verification after the fix
+
+`npm run verify` (`tsc -b --force` → `eslint .` → `vitest run`): **exit
+0**. `tsc -b --force` clean, `eslint .` clean, `vitest run` →
+**466 passed, 27 skipped** (30 files, 28 run — up from the pre-fix
+462/27; the +4 are exactly the new `reopenRunCommand` tests, no other
+count changed). The 27 skips remain the pre-existing SQL Server/PostgreSQL
+docker-container integration tests, unrelated to this task.
+
 ## Patch or commit identity
 
-- **Commit:** `7cb46a312d9cd202076c28f6673ccdd54ac68df0` —
-  "T-33: wire tree view Comparisons/Recent Runs sections and status bar"
+- **Original implementation commit:** `7cb46a3` — "T-33: wire tree view
+  Comparisons/Recent Runs sections and status bar"
+- **Report commit:** `107e060` — "T-33: add implementation report"
+- **T-33-01 fix commit:** see the commit created immediately after this
+  report update on this same branch (`git log -1` on
+  `task/T-33-tree-status-bar-wiring` at handoff time).
 - **Branch:** `task/T-33-tree-status-bar-wiring`
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent, per this project's
+Independent re-review by a separate reviewer agent, per this project's
 operating contract (`AGENTS.md`: "Every implementation task receives an
 independent review by a reviewer who did not author the task's change").
-Per the brief's own Handoff note, the reviewer should adversarially
-confirm (1) clicking a listed comparison/recent-run item genuinely
-invokes the correct command and loads the correct result — not just that
-tree items render with plausible labels, and (2) the Scope-item-5
-amendment to `runComparisonCommand` is genuinely narrow (the diff above
-shows only the persist/status-bar block was inserted; no existing
-parse/registry/error-handling logic changed). This report does not
-constitute review or approval — no task in this codebase may be marked
-complete/approved by the agent that implemented it.
+The reviewer should confirm the T-33-01 fix above actually closes the
+finding (the extracted `reopenRunCommand` is exercised directly, the four
+new assertions are non-vacuous, and no existing behavior changed —
+`registerReopenRunCommand`'s externally observable behavior is identical
+before and after, only its internals were split for testability) before
+re-considering the original Handoff-note adversarial checks. This report
+does not constitute review or approval — no task in this codebase may be
+marked complete/approved by the agent that implemented it.

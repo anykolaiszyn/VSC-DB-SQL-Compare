@@ -88,11 +88,12 @@ vi.mock("vscode", () => {
 });
 
 import * as vscode from "vscode";
-import { activate, PARITY_TREE_VIEW_ID, runComparisonCommand } from "./activate";
+import { activate, PARITY_TREE_VIEW_ID, runComparisonCommand, reopenRunCommand } from "./activate";
 import { ParityTreeDataProvider, type ParityTreeItem } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
 import { ConnectionProfileStore } from "../connections/connectionProfileStore";
 import type { ConnectionProfile } from "../connections/connectionProfile";
+import type { ComparisonResult } from "@paritylens/shared";
 
 function createMockExtensionContext() {
   const secretsStore = new Map<string, string>();
@@ -327,4 +328,87 @@ checks:
     expect(deps.showErrorMessage).not.toHaveBeenCalled();
     expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
   }, 15000);
+});
+
+/**
+ * T-33-01 fix (REVIEW-REPORT.md): the brief's Green-state Verification
+ * section requires "a test confirms clicking a listed 'Recent Runs' item
+ * invokes `loadRun` for the correct `id` and passes its result to
+ * `showResultsWebview`." Previously, `registerReopenRunCommand`'s callback
+ * body was inlined directly in the `vscode.commands.registerCommand`
+ * callback, so no test could invoke it (the mocked `registerCommand` in
+ * this file's own `vi.mock("vscode", ...)` factory discards the callback:
+ * `() => ({ dispose: () => undefined })`) — only the command's
+ * *registration* (existing "registers the paritylens.reopenRun command"
+ * test above) and the tree item's *command binding*
+ * (`parityTreeDataProvider.test.ts`) were ever tested, never the handler's
+ * actual behavior once invoked. `reopenRunCommand` is now extracted as a
+ * directly callable function (mirroring `runComparisonCommand`'s existing
+ * extraction pattern above), so these tests call it directly with mocked
+ * deps instead of trying to capture-and-invoke a callback handed to a
+ * mocked `registerCommand`.
+ */
+describe("reopenRunCommand (T-33-01: recent-run click behavior)", () => {
+  const SAMPLE_RESULT: ComparisonResult = {
+    comparison: "orders-migration-parity",
+    runId: "run-042",
+    status: "failed",
+    summary: { passed: 10, warnings: 1, failed: 2 },
+    rowCounts: { source: 500, target: 480, difference: -20 },
+    schemaDifferences: [],
+    profileDifferences: [],
+    aggregateDifferences: [],
+    rowDifferences: [],
+    execution: { sourceDurationMs: 100, targetDurationMs: 110, comparisonDurationMs: 15 }
+  };
+
+  function createDeps(loadRunResult: Promise<ComparisonResult>) {
+    return {
+      loadRun: vi.fn(() => loadRunResult),
+      createWebviewPanel: vi.fn(() => ({ webview: { html: "" } })) as never,
+      viewColumn: vscode.ViewColumn.Active as unknown as number,
+      showErrorMessage: vi.fn(),
+      showResultsWebview: vi.fn()
+    };
+  }
+
+  it("invokes loadRun with the clicked run's id and the resolved safeOutputRoot", async () => {
+    const deps = createDeps(Promise.resolve(SAMPLE_RESULT));
+
+    await reopenRunCommand("run-b", "/workspace/.paritylens/runs", deps as never);
+
+    expect(deps.loadRun).toHaveBeenCalledWith("run-b", "/workspace/.paritylens/runs");
+  });
+
+  it("passes loadRun's resolved ComparisonResult to showResultsWebview", async () => {
+    const deps = createDeps(Promise.resolve(SAMPLE_RESULT));
+
+    await reopenRunCommand("run-b", "/workspace/.paritylens/runs", deps as never);
+
+    expect(deps.showResultsWebview).toHaveBeenCalledWith(deps.createWebviewPanel, deps.viewColumn, SAMPLE_RESULT);
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("catches a loadRun rejection and surfaces it via showErrorMessage instead of propagating as an unhandled rejection", async () => {
+    const deps = createDeps(Promise.reject(new Error("record not found")));
+
+    await expect(reopenRunCommand("run-missing", "/workspace/.paritylens/runs", deps as never)).resolves.toBeUndefined();
+
+    expect(deps.showErrorMessage).toHaveBeenCalledWith(
+      'ParityLens: could not reopen run "run-missing" — record not found'
+    );
+    expect(deps.showResultsWebview).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a clear error via showErrorMessage, without calling loadRun, when no workspace folder is open", async () => {
+    const deps = createDeps(Promise.resolve(SAMPLE_RESULT));
+
+    await reopenRunCommand("run-b", undefined, deps as never);
+
+    expect(deps.loadRun).not.toHaveBeenCalled();
+    expect(deps.showErrorMessage).toHaveBeenCalledWith(
+      "ParityLens: could not reopen this run — no workspace folder is open."
+    );
+    expect(deps.showResultsWebview).not.toHaveBeenCalled();
+  });
 });

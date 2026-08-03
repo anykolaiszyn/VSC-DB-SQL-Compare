@@ -485,31 +485,86 @@ function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileS
 }
 
 /**
+ * The `paritylens.reopenRun` command handler (T-33), extracted as a
+ * directly testable function separate from the raw
+ * `vscode.commands.registerCommand` callback — same extraction pattern
+ * `runComparisonCommand` above already uses for the same reason (see its
+ * own header comment): every dependency that touches the `vscode` API or
+ * the filesystem is injected, so this function can be exercised in a plain
+ * Vitest run without going through a mocked `registerCommand` that would
+ * otherwise discard the callback and never invoke it (the exact gap
+ * REVIEW-REPORT.md's T-33-01 finding identified — `registerReopenRunCommand`
+ * previously inlined this logic directly in the `registerCommand` callback,
+ * so no test could invoke it).
+ *
+ * Loads the persisted `ComparisonResult` via T-31's `loadRun` (given the
+ * caller-resolved `safeOutputRoot`, following the same
+ * `resolveRunHistoryRoot` convention `runComparisonCommand` uses for
+ * `persistRun`) and reopens it via `showResultsWebview` — mirroring the
+ * brief's Scope item 2 ("its `command` should invoke `loadRun` for that
+ * `id` and pass the result to `showResultsWebview`"). Never throws: a
+ * `loadRun` rejection (bad id, unreadable record, etc.) is caught and
+ * surfaced via `showErrorMessage` rather than left as an unhandled
+ * rejection.
+ */
+export async function reopenRunCommand(
+  id: string,
+  safeOutputRoot: string | undefined,
+  deps: {
+    loadRun: (id: string, safeOutputRoot: string) => Promise<ComparisonResult>;
+    createWebviewPanel: (
+      viewType: string,
+      title: string,
+      showOptions: vscode.ViewColumn,
+      options?: vscode.WebviewPanelOptions & vscode.WebviewOptions
+    ) => vscode.WebviewPanel;
+    viewColumn: vscode.ViewColumn;
+    showErrorMessage: (message: string) => unknown;
+    showResultsWebview: (
+      createWebviewPanel: (
+        viewType: string,
+        title: string,
+        showOptions: vscode.ViewColumn,
+        options?: vscode.WebviewPanelOptions & vscode.WebviewOptions
+      ) => vscode.WebviewPanel,
+      viewColumn: vscode.ViewColumn,
+      result: ComparisonResult
+    ) => vscode.WebviewPanel;
+  }
+): Promise<void> {
+  if (safeOutputRoot === undefined) {
+    deps.showErrorMessage("ParityLens: could not reopen this run — no workspace folder is open.");
+    return;
+  }
+
+  try {
+    const result = await deps.loadRun(id, safeOutputRoot);
+    deps.showResultsWebview(deps.createWebviewPanel, deps.viewColumn, result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.showErrorMessage(`ParityLens: could not reopen run "${id}" — ${message}`);
+  }
+}
+
+/**
  * Registers `paritylens.reopenRun` (T-33) against the live `vscode` API:
  * invoked by a "Recent Runs" tree node
  * (`ParityRecentRunTreeItem.command`, `parityTreeDataProvider.ts`) with the
- * run's `id` as its sole argument. Loads the persisted `ComparisonResult`
- * via T-31's `loadRun` (same `resolveRunHistoryRoot` convention
- * `registerRunComparisonCommand` uses for `persistRun`) and reopens it via
- * `showResultsWebview` — mirroring the brief's Scope item 2 ("its `command`
- * should invoke `loadRun` for that `id` and pass the result to
- * `showResultsWebview`").
+ * run's `id` as its sole argument. Delegates to `reopenRunCommand` above
+ * for the actual load/reopen logic, binding it against the live `vscode`
+ * API the same way `registerRunComparisonCommand` binds
+ * `runComparisonCommand`.
  */
 function registerReopenRunCommand(): vscode.Disposable {
   return vscode.commands.registerCommand(REOPEN_RUN_COMMAND_ID, async (id: string) => {
     const safeOutputRoot = resolveRunHistoryRoot(vscode.workspace.workspaceFolders);
-    if (safeOutputRoot === undefined) {
-      vscode.window.showErrorMessage("ParityLens: could not reopen this run — no workspace folder is open.");
-      return;
-    }
-
-    try {
-      const result = await loadRun(id, safeOutputRoot);
-      showResultsWebview(vscode.window.createWebviewPanel.bind(vscode.window), vscode.ViewColumn.Active, result);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      vscode.window.showErrorMessage(`ParityLens: could not reopen run "${id}" — ${message}`);
-    }
+    await reopenRunCommand(id, safeOutputRoot, {
+      loadRun,
+      createWebviewPanel: vscode.window.createWebviewPanel.bind(vscode.window),
+      viewColumn: vscode.ViewColumn.Active,
+      showErrorMessage: vscode.window.showErrorMessage,
+      showResultsWebview
+    });
   });
 }
 
