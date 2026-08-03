@@ -1,34 +1,36 @@
-# REVIEW-REPORT.md — T-36: Custom comparison editor (Source/Target/Keys/Checks)
+# REVIEW-REPORT.md — T-37: Column Mapping tab (SSIS-style)
 
 ## Review independence statement
 
-I am a separate reviewer agent instance from whoever implemented this task.
-I have no memory of writing this code. All findings below are based on my
-own reading of the actual diff/source on `task/T-36-comparison-custom-editor`,
-my own execution of `npm run verify`, and adversarial probes I constructed
-and ran myself (not the implementer's own test suite, though I also read
-and cross-checked that suite). `IMPLEMENTATION-REPORT.md`'s claims were
-treated as hypotheses to verify, not facts to accept.
+This review was performed by a separate agent instance from whoever
+implemented T-37, with no memory of writing the code under review. All
+findings below are based on direct reading of the actual diff and source
+files on `task/T-37-column-mapping-tab`, my own fresh run of
+`npm run verify`, and adversarial probes I constructed independently (a
+standalone throwaway test file, deleted before finishing — confirmed via
+`git status` that the working tree is clean and no residue remains).
+`IMPLEMENTATION-REPORT.md`'s claims were treated as things to verify, not
+trust; every claim below was re-derived from source rather than copied
+from the report. (Note: this file previously held the T-36 review report
+from an earlier task on this same control-file path; it has been fully
+replaced with this T-37 review, which was read before being overwritten
+per this process's requirements.)
 
 ## Scope reviewed
 
-- `packages/extension/src/authoring/comparisonEditorProvider.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorProvider.test.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorHtml.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorHtml.test.ts` (new)
-- `packages/extension/src/authoring/buildComparisonYaml.ts` (extended)
-- `packages/extension/src/authoring/buildComparisonYaml.test.ts` (extended)
-- `packages/extension/src/activation/activate.ts` (extended)
-- `packages/extension/package.json` (`contributes.customEditors` added)
-- `packages/extension/src/activation/activate.test.ts` (disclosed
-  out-of-brief mock-scaffold deviation)
-
-Verified via `git diff --stat main..task/T-36-comparison-custom-editor`
-that no other file changed — 10 files total, exactly the declared "Files
-owned" list plus the disclosed `activate.test.ts` deviation.
-`packages/engine/**` diff is empty (0 lines). `resultsWebview.ts` and
-`newComparisonWizard.ts`/`newComparisonWizard.test.ts` have zero diff
-against `main`.
+- `TASK-BRIEF.md` (T-37, current checkout) read in full as scope authority.
+- `IMPLEMENTATION-REPORT.md` read as the implementer's self-report, cross-
+  checked against source.
+- Full diff `main..task/T-37-column-mapping-tab` (`git diff --stat`).
+- Full read of `packages/extension/src/authoring/comparisonEditorProvider.ts`,
+  `columnMapping.ts`, relevant sections of `comparisonEditorHtml.ts`
+  (render functions, escaping, client script wiring), and
+  `packages/extension/src/activation/activate.ts` (`buildConnectorRegistry`,
+  `buildResolveConnectorByName`, `registerComparisonEditorProvider`,
+  `activate()`).
+- Existing test files `comparisonEditorProvider.test.ts` and
+  `comparisonEditorHtml.test.ts` read for coverage shape (not trusted as
+  proof — independently re-probed, see below).
 
 ## Findings
 
@@ -44,230 +46,213 @@ NONE.
 
 | ID | Finding | Evidence | Resolution |
 | --- | --- | --- | --- |
-| T-36-01 | The implementer's own "adversarial bypass" test (`comparisonEditorProvider.test.ts` lines 181–217, titled "REJECTS an internal validation bypass ... must still be blocked by the round-trip guard, not just by client-side validation") does not actually exercise the round-trip guard (`parseDefinition` re-parse) as its name claims. The constructed input (`object: { nested: "not-a-string" }`) is coerced to `""` by `buildAnswersFromApplyMessage`'s own `typeof x === "string" ? x : ""` field parser and is rejected by the **required-field precheck**, never reaching `buildComparisonYaml`/`parseDefinition` at all — the test's own inline comment even says so ("which correctly fails required-field validation and is rejected BEFORE ever reaching buildComparisonYaml/parseDefinition"), which contradicts the test's title/description. This is a mislabeled test, not a missing control: the round-trip guard itself remains sound (see my independent adversarial probes below, which found no way to get invalid YAML past it), but the disclosed evidence overstates what that specific test proves. | `packages/extension/src/authoring/comparisonEditorProvider.test.ts:181-217`; confirmed by reading `buildAnswersFromApplyMessage`'s field parsers in `comparisonEditorProvider.ts:73-101` | Suggested (not required): rename/refocus the test to accurately describe what it verifies (required-field rejection), and optionally add a case that truly reaches `buildComparisonYaml` successfully but fails `parseDefinition` on re-parse, if such a case can be constructed, to genuinely exercise the round-trip-guard code path in `handleApplyMessage` lines 288-293. Does not block approval — the guard's actual behavior was independently confirmed sound (see Verification below). |
-| T-36-02 | `checks` Apply payload always reports all four toggle states on every Apply (not just user-touched ones), collapsing "untouched" and "explicitly set to initial state" — disclosed candidly in `IMPLEMENTATION-REPORT.md`'s Assumptions section and confirmed accurate by reading `comparisonEditorHtml.ts`'s `currentChecks()` (`CLIENT_SCRIPT`, lines 394-401), which unconditionally reads all four checkbox `.checked` states. | `packages/extension/src/authoring/comparisonEditorHtml.ts:394-401`; `comparisonEditorProvider.ts`'s `buildAnswersFromApplyMessage` always builds all 4 `checks.*` sub-objects from the Apply message (lines 172-177) | Acceptable for this task's scope per TASK-BRIEF.md Scope item 3 ("four independent booleans is sufficient... do not build UI for tolerance/strategy/..."), and the implementer disclosed it rather than hiding it. No action required now; worth a future task if strict never-write-untouched-fields semantics become a requirement. |
+| T-37-01 | No debounce on `requestColumnFetch()` — every `input`/`change` event on any of the six listened Source/Target fields fires a `fetch-columns` message, which (once the Table-mode gate passes) triggers a real `getSchema` round trip and a `SecretStorage` read per side on every qualifying keystroke. | `packages/extension/src/authoring/comparisonEditorHtml.ts:695-705` (`requestColumnFetch` wired to `input`/`change` with no debounce/throttle); disclosed by the implementer in IMPLEMENTATION-REPORT.md's Risks section. | Not blocking — no correctness or security impact, only redundant round trips during fast typing. Track as a follow-up (client-side debounce) if the orchestrator wants it tracked; no brief requirement was violated (TASK-BRIEF.md did not specify a performance/debounce requirement). |
+
+This item was disclosed candidly in the implementation report rather than
+discovered independently as an omission — the report describes it
+accurately.
 
 ## Disposition of prior findings
 
-No prior open finding in `PROGRESS-LEDGER.md` names T-36 as its required
-resolution target — this is fresh implementation work, not a re-review of
-a previously blocked task. No re-verification of an earlier failing case
-was needed.
+No prior open finding in `PROGRESS-LEDGER.md` names T-37 as its required
+resolution target — this is fresh implementation work extending T-36, not
+a re-review of a previously blocked task. No re-verification of an
+earlier failing case was needed.
 
-## Verification performed (independent)
+## Verification performed (my own, independent of the report)
 
-### 1. Fresh full verification
+### 1. Table-mode-only gating is genuine, gate checked before resolution
 
-Ran `npm run verify` myself on the checked-out branch:
+Traced `fetchColumnMappingDraft` (`comparisonEditorProvider.ts:438-469`):
+`bothSidesReadyForLiveFetch(source, target)` is evaluated as the
+function's first statement and returns `defaultColumnMappingDraft()`
+immediately if either side fails the check — `resolveConnectorByName` is
+not referenced anywhere before that early return.
 
-```
-tsc -b --force        -> clean
-eslint .               -> clean
-vitest run             -> 30 passed | 2 skipped (32 files); 543 passed | 27 skipped (570 tests)
-```
-
-This matches `IMPLEMENTATION-REPORT.md`'s claimed `543 passed / 27 skipped
-/ 32 test files` exactly. No discrepancy.
-
-### 2. Apply-blocking validation is real (adversarial, independent of the implementer's test suite)
-
-I wrote my own temporary probe test file
-(`packages/extension/src/authoring/__reviewer_probe.test.ts`, deleted
-before finishing — confirmed via `git status --short` showing a clean
-tree at the end of this review) that called `handleApplyMessage` and
-`ComparisonEditorProvider.resolveCustomTextEditor` directly, bypassing
-any client-side script entirely:
-
-- **YAML-injection-shaped `comparisonName`** (containing embedded
-  newlines, `{nested: true}`, and a YAML-mapping-looking
-  `source:\n  connection: hacked` payload designed to break out of its
-  scalar position if quoting were broken): `handleApplyMessage` returned
-  `ok: true` with YAML that, when re-parsed through the real
-  `parseDefinition`, preserved the entire string as a single scalar value
-  (`parsed.name` equaled the exact original string; `parsed.source.connection`
-  stayed `"sqlserver-customer"`, unaffected) — confirms `yamlQuotedString`'s
-  escaping genuinely prevents structural injection, not just that no error
-  was thrown.
-- **Whitespace-only `object` field** (`"   "`, which a naive
-  `!== ""` check would accept): went through a full simulated
-  `resolveCustomTextEditor` message-handler call with a mocked `applyEdit`
-  spy. Result: `applyEdit` was never called. Confirms the `.trim() !== ""`
-  check in `buildAnswersFromApplyMessage` (`comparisonEditorProvider.ts:139`)
-  is real and the document is genuinely left untouched, not just that the
-  webview's own script would have disabled the Apply button.
-- **host/port/user/password-shaped fields injected directly into the
-  Apply message's `source` object** (bypassing the client script and the
-  connection-picker UI entirely, simulating a compromised/malicious
-  webview): `handleApplyMessage` returned `ok: true`, and I asserted the
-  emitted YAML text did not contain any of `"evil.example.com"`,
-  `"hunter2"`, `"sa"`, or `"1433"` — confirmed. `parseSideMessage` (lines
-  78-101) only ever reads `connection`/`sql`/`filePath`/`object`/`where`
-  off the incoming object; extra fields are silently dropped, never
-  passed through to `buildComparisonYaml`.
-
-All 3 probes passed (`npx vitest run
-packages/extension/src/authoring/__reviewer_probe.test.ts` — 3 passed).
-The probe file was deleted immediately after; `git status --short` at the
-end of this review shows a clean tree.
-
-Separately, I confirmed T-36-01 above (the implementer's own labeled
-"bypass" test does not exercise the actual round-trip-guard code path) —
-downgraded to Minor because my own independent probes found the guard's
-actual runtime behavior sound; the finding is about test-description
-accuracy, not a functional gap.
-
-### 3. `enableScripts: true` scoping
+I constructed my own standalone adversarial test (not reusing the
+implementer's `comparisonEditorProvider.test.ts`) asserting
+`resolveConnectorByName` — the mock function itself, not just `getSchema`
+— is **never called** for a Query-mode source, and for a mixed
+table/query pairing. Both passed:
 
 ```
-git diff main..task/T-36-comparison-custom-editor -- packages/extension/src/webview/resultsWebview.ts packages/extension/src/authoring/newComparisonWizard.ts
+✓ Query-mode source: resolveConnectorByName is NEVER called at all (gate before resolution, not just before getSchema)
+✓ mixed: table-mode source but query-mode target -- resolveConnectorByName not called for either side
 ```
-Output: empty. Both files are byte-for-byte unchanged from `main`.
-`resultsWebview.ts`'s `enableScripts: false` contract is untouched.
-`enableScripts: true` appears only in
-`comparisonEditorProvider.ts:335` (`resolveCustomTextEditor`), scoped
-to this new file, matching the brief's pre-approved deviation exactly.
 
-### 4. No credential-shaped field reachable
+This confirms the gate is checked before any connector resolution attempt
+(and therefore before any `SecretStorage` read), not merely before the
+`getSchema` call — exactly what the brief's Handoff item 1 asked me to
+verify independently, not just by trusting a passing test.
 
-- `ComparisonEditorConnectionOption` (`comparisonEditorHtml.ts:68-70`)
-  only has a `name: string` field — structurally cannot carry
-  host/port/user/password.
-- `comparisonEditorProvider.ts`'s `resolveCustomTextEditor` builds
-  `connectionOptions` via
-  `this.deps.listConnectionNames().map((name) => ({ name }))` —
-  `listConnectionNames` returns `string[]` (bound in `activate.ts` to
-  `connectionProfileStore.list().map((profile) => profile.name)`), so
-  only `.name` is ever read off a `ConnectionProfile` at any point in the
-  chain.
-- `parseSideMessage` (provider) only reads `connection`/`sql`/`filePath`/
-  `object`/`where` off an incoming Apply message; verified via my own
-  probe (above) that extra host/port/user/password-shaped fields are
-  silently dropped, never reaching the emitted YAML.
-- `buildComparisonYaml.ts`'s `renderSide` always writes `connection` as
-  `yamlQuotedString(connection)` — a bare scalar string, never a nested
-  object, regardless of the string's content.
+### 2. `resolveConnectorByName` composition mirrors `buildConnectorRegistry`
 
-### 5. Purity and XSS coverage of `renderComparisonEditorHtml`
+Read `activate.ts:141-195` (`findProfileByName`, `buildConnectorRegistry`)
+and `activate.ts:566-578` (`buildResolveConnectorByName`) side by side.
+Both use the identical resolution chain:
+`findProfileByName(store, name)` → `secretStore.get(secretKeyFor(profile.id))`
+→ `resolveConnector(profile, password)`. The only behavioral difference is
+the terminal fallback: `buildConnectorRegistry` falls back to
+`new FixtureConnector(...)` for an unmatched name (existing, pre-T-37
+behavior for `runComparisonCommand`), while `buildResolveConnectorByName`
+returns `undefined` — a deliberate, documented, and reasonable divergence
+for an editing UI (no silent fixture substitution). No credential
+resolution logic is reimplemented differently; it is the same three
+pieces (`ConnectionProfileStore`, `SecretStore`, `resolveConnector`)
+composed the same way, in the same file, with a single shared
+`findProfileByName`/`secretKeyFor` helper reused by both functions.
 
-Ran `comparisonEditorHtml.test.ts` directly (13 tests, all passed) and
-independently read every interpolation site in
-`comparisonEditorHtml.ts`:
-
-- `renderTabStrip`, `renderSideModeOptions`, `renderConnectionOptions`,
-  `renderSideTab`, `renderKeysTab`, `renderChecksTab`, and the top-level
-  `renderComparisonEditorHtml` all route every draft-derived string
-  through `escapeHtml` before placing it in an HTML attribute or text
-  position. I walked each one; found no bare interpolation of
-  user-controlled data.
-- The one dynamic value near a `<script>` tag —
-  `window.__PARITYLENS_DRAFT__ = ${draftJson}` — goes through
-  `escapeForScriptJson`, which escapes `<`/`>` to Unicode escapes,
-  preventing a `</script`-containing value from prematurely closing the
-  tag. Confirmed by the implementer's own test (`comparisonEditorHtml.test.ts:97-108`)
-  and consistent with my own reading of the function.
-- `CLIENT_SCRIPT` is a single fixed template-literal constant, never
-  interpolated with any `draft` field — confirmed by reading the full
-  ~150-line script body (lines 356-509): every reference to dynamic data
-  inside it reads from `window.__PARITYLENS_DRAFT__` or live DOM state at
-  runtime, never from a string substitution at render time.
-- Purity: `renderComparisonEditorHtml(BASE_DRAFT) === renderComparisonEditorHtml(BASE_DRAFT)`
-  and `renderComparisonEditorHtml(BASE_DRAFT) === renderComparisonEditorHtml(deepCopy)`
-  both hold per the implementer's own tests; I did not find any
-  non-deterministic construct (`Date.now()`, `Math.random()`, object-key
-  iteration order dependent on non-plain-object input, etc.) anywhere in
-  the file.
-
-### 6. `checks` round-trip fidelity
-
-Independently re-read `parseChecks` in
-`packages/engine/src/orchestration/definition/definition.ts` (lines
-502-558) and confirmed the YAML keys `renderChecks`
-(`buildComparisonYaml.ts:250-274`) emits — `schema`, `row_count`,
-`profile`, `row_level` — match exactly what `parseChecks` reads
-(`obj["schema"]`, `obj["row_count"]`, `obj["profile"]`,
-`obj["row_level"]`). Ran `buildComparisonYaml.test.ts` (22 tests,
-including the 5 new `checks` tests) and independently traced two of
-them:
-- schema+rowCount enabled → `parsed.checks` equals
-  `{ schema: { enabled: true }, rowCount: { enabled: true } }` exactly
-  (not just "no error thrown").
-- profile enabled + rowLevel explicitly disabled → `parsed.checks` equals
-  `{ profile: { enabled: true }, rowLevel: { enabled: false } }` exactly.
-
-Both match the brief's required "at least 2 of the 4 toggles" round-trip
-evidence and my own reading of `parseChecks` confirms no key-name
-mismatch exists.
-
-### 7. File-ownership diff
+Confirmed `comparisonEditorProvider.ts` does not import `SecretStore` or
+`ConnectionProfileStore`:
 
 ```
-git diff --stat main..task/T-36-comparison-custom-editor
+grep -n "import" comparisonEditorProvider.ts
 ```
-10 files changed: the 8 declared "Files owned" files plus
-`IMPLEMENTATION-REPORT.md` and the disclosed `activate.test.ts`
-deviation. `packages/engine/**` diff: 0 lines.
-`resultsWebview.ts`/`newComparisonWizard.ts`(`.test.ts`): 0 lines.
+only shows imports of `vscode`, `@paritylens/engine`, `@paritylens/shared`
+(type-only), `./buildComparisonYaml`, `./columnMapping`. No store imports
+anywhere in the file.
 
-### 8. `activate.test.ts` deviation characterization
+### 3. No credential ever reaches the webview
+
+Read every place `ComparisonEditorColumnMappingDraft`/`ColumnMappingRow`
+data is produced (`columnMapping.ts`'s `buildMappingRowsFromColumns` only
+extracts `.name` off `ColumnDefinition[]`) and rendered
+(`renderMappingTab`/`renderMappingTargetSelect` in `comparisonEditorHtml.ts`
+only interpolate `row.source`, `row.target`, `row.targetOptions` entries,
+and `mapping.fetchError`). No connector object, profile, or password value
+is ever passed into the render path.
+
+I independently wrote a test asserting the rendered HTML contains none of
+a broader set of credential-shaped substrings than the implementer's own
+single `"password"` check (`password`, `secret`, `connectionstring`,
+`connection_string`, `apikey`, `api_key`, `token=`, `pwd=`) after a
+successful two-sided fetch. Passed.
+
+### 4. Failure isolation — constructed my own scenarios, not the implementer's
+
+Two independent scenarios beyond what `comparisonEditorProvider.test.ts`
+covers:
+- A connector whose `getSchema` throws a **raw string** (not an `Error`
+  instance) rather than a rejected `Error` — confirms the
+  `err instanceof Error ? err.message : String(err)` fallback in
+  `fetchColumnMappingDraft`'s catch block genuinely handles a non-Error
+  rejection value, not just the happy-path `Error` case the implementer's
+  own test used.
+- One side resolves to a real connector, the other side's
+  `resolveConnectorByName` returns `undefined` (unresolvable name) —
+  distinct failure mode from a `getSchema` rejection.
+
+Both scenarios: the Mapping tab shows the inline "could not fetch
+columns" banner, and a subsequent, independently-constructed Apply message
+(different `comparisonName`/values than any fixture in the implementer's
+tests) still calls `applyEdit` exactly once and posts `ok: true`. All
+passed.
+
+### 5. Purity and escaping — adversarial inputs beyond the implementer's tests
+
+- `renderComparisonEditorHtml` called twice with the identical
+  `ComparisonEditorDraft` reference (populated `columnMapping.mode:
+  "fetched"` with two rows) produces byte-identical output. Additionally
+  called a third time with a **freshly-constructed, deep-cloned** (not the
+  same object reference) structurally-equal draft — also byte-identical.
+  This is a stronger purity check than reference reuse alone.
+- Adversarial source column name `<script>alert(1)</script>` in
+  fetched-mode: rendered output does not contain the raw tag; contains
+  `&lt;script&gt;` instead.
+- Adversarial manual-mode column name `"><img src=x onerror=alert(1)>`:
+  rendered output contains neither the raw payload nor the bare
+  `<img src=x onerror=alert(1)>` fragment (i.e. it doesn't break out of
+  the `value="..."` attribute).
+- Adversarial `fetchError` message containing
+  `<img src=x onerror=alert('pwned')>`: escaped in the inline banner, not
+  present raw.
+
+All four passed. Every fetched/manual column-name and error-message
+interpolation site in `renderMappingTab`/`renderMappingTargetSelect` goes
+through `escapeHtml`, consistent with every other value this file renders
+(verified by grep: all six interpolation points in the mapping-tab render
+functions call `escapeHtml`, no exceptions).
+
+Also verified the `columnMapping` draft sub-state is **not** embedded into
+the client script's `window.__PARITYLENS_DRAFT__` JSON blob (which uses a
+separate `escapeForScriptJson` mechanism for `</script>`-breakout safety)
+— `renderMappingTab` renders it directly server-side as already-escaped
+HTML, avoiding a second, differently-escaped injection surface for the
+same data. This is a sound design choice, not a gap.
+
+### 6. File-ownership diff
 
 ```
-git diff main..task/T-36-comparison-custom-editor -- packages/extension/src/activation/activate.test.ts
+git diff --stat main..task/T-37-column-mapping-tab
 ```
-Confirmed: the diff is exactly 2 new mock properties
-(`registerCustomEditorProvider` — a no-op disposable factory,
-`applyEdit` — a `vi.fn(async () => true)`) added to the file's existing
-hoisted `vi.mock("vscode", ...)` factory's `window`/`workspace` return
-objects, plus one added inline comment explaining why. No existing
-assertion, `it(...)` title, or test body was touched. Also independently
-ran `npx vitest run packages/extension/src/activation` — 20 passed (12
-`activate.test.ts` + 8 `runComparisonCommand.test.ts`), matching the
-report's claim and confirming the mock-only edit changed no existing
-test's outcome. The characterization in `IMPLEMENTATION-REPORT.md` is
-accurate.
+Changed files: `IMPLEMENTATION-REPORT.md`,
+`packages/extension/src/activation/activate.ts`,
+`packages/extension/src/authoring/columnMapping.ts` (new),
+`columnMapping.test.ts` (new), `comparisonEditorHtml.ts`,
+`comparisonEditorHtml.test.ts`, `comparisonEditorProvider.ts`,
+`comparisonEditorProvider.test.ts`. Exactly the declared "Files owned"
+list plus the implementation report itself (expected, not an
+implementation file). Independently confirmed via a scoped diff that
+`buildComparisonYaml.ts`, `resultsWebview.ts`, `newComparisonWizard.ts`,
+and `packages/engine/**` show zero changes (`git diff --stat` restricted
+to those paths returned empty).
 
-Also independently verified `activate.ts`'s actual diff (not just the
-report's description): the new `registerComparisonEditorProvider`
-function binds `listConnectionNames` to
-`connectionProfileStore.list().map((profile) => profile.name)` (name
-only) and `applyEdit` to the live `vscode.workspace.applyEdit` — exactly
-matching the `ComparisonEditorProviderDeps` contract read in item 4
-above.
+### 7. No UI for the derived `ColumnMappingEntry` variant
+
+Grepped the entire extension source tree for `sourceExpression`/
+`targetExpression`: the only hits are `buildComparisonYaml.ts` (untouched,
+out of scope, T-35b's pre-existing emission logic) and its own test file,
+plus a single explanatory doc comment in `columnMapping.ts` describing why
+that variant is *not* built here. `columnMapping.ts`'s exported functions
+(`buildMappingRowsFromColumns`, `buildManualMappingRows`,
+`mappingRowsToColumnMappingEntries`) and `comparisonEditorHtml.ts`'s
+`renderMappingTab`/`renderMappingTargetSelect` only ever produce/render
+the plain `{source, target}` shape. Confirmed no UI path for the derived
+variant exists.
+
+### Fresh full verification
+
+Ran `npm run verify` myself (not trusting the report's numbers):
+
+```
+typecheck: tsc -b --force -> clean, no errors
+lint: eslint . -> clean
+test: vitest run -> Test Files 31 passed | 2 skipped (33), Tests 565 passed | 27 skipped (592)
+```
+
+This matches IMPLEMENTATION-REPORT.md's claimed numbers exactly (565
+passed, 27 skipped, 33 test files; the 2 skipped files are the pre-existing
+Docker-gated SQL Server/PostgreSQL integration suites, unrelated to this
+task). No discrepancy between claimed and observed results.
 
 ## Summary judgment
 
-The implementation matches its brief closely and matches its own report
-accurately, including the one disclosed out-of-ownership deviation
-(`activate.test.ts`), which I independently confirmed to be exactly what
-it claims: 2 mechanical mock additions, zero assertion changes. The
-single most important correctness property — Apply must never write a
-document that would fail `parseDefinition` — held up under my own
-adversarial probing, including cases the implementer's disclosed test
-suite did not construct (YAML-structural-injection attempt via
-`comparisonName`, whitespace-only required fields, and a simulated
-compromised-webview payload carrying credential-shaped field names). The
-one Minor finding (T-36-01) is about a mismatch between a test's title
-and what it actually exercises, not a functional gap in the guard itself
-— the guard's real behavior was independently confirmed sound via my own
-probes that did reach `buildComparisonYaml` successfully before
-re-parsing.
+The implementation matches TASK-BRIEF.md's scope precisely. The Table-
+mode-only gate is genuinely checked before any connector resolution
+(confirmed via a spy that would catch a resolve-then-skip-fetch version of
+the bug, not just a getSchema-not-called check); `resolveConnectorByName`
+is composed in `activate.ts` from the exact same
+`ConnectionProfileStore`/`SecretStore`/`resolveConnector` pieces
+`buildConnectorRegistry` already uses, with `comparisonEditorProvider.ts`
+never importing either store directly; no credential-shaped value crosses
+into the webview under any of the failure/success paths I probed; a
+`getSchema` failure (including non-Error rejection values and
+unresolvable-connector cases the implementer's own tests didn't cover) is
+fully isolated from the other four tabs' Apply behavior; `escapeHtml`
+coverage is complete for every fetched/manual column name and error
+message, verified against XSS-shaped adversarial inputs; purity holds
+under both reference-reuse and deep-clone reconstruction; the file-
+ownership diff matches the declared list exactly with no prohibited files
+touched; and no UI exists for the out-of-scope derived
+`ColumnMappingEntry` variant. My own fresh `npm run verify` run matches
+the implementation report's claimed numbers exactly.
 
-No credential-shaped data is reachable through the connection picker or
-Apply pipeline. `enableScripts: true` is correctly scoped to the new file
-only; `resultsWebview.ts` is byte-for-byte unchanged.
-`renderComparisonEditorHtml` is pure and every interpolation is
-`escapeHtml`-covered; the embedded `<script>` is static text, and the one
-dynamic JSON payload near it is safely escaped against `</script>`
-breakout. `checks` round-trips through the real `parseDefinition` with
-exact key-name fidelity (verified against `parseChecks`'s actual
-snake_case reads, not assumed). File ownership is clean:
-`packages/engine/**`, `resultsWebview.ts`, and `newComparisonWizard.ts`
-are all confirmed untouched.
+The only finding (T-37-01, no debounce on the fetch trigger) is Minor,
+was already disclosed by the implementer, and has no correctness or
+security impact — it does not block approval.
 
 ## Final disposition
 
 **APPROVED**
 
-0 Critical, 0 Important, 2 Minor (neither blocks approval — one is a
-test-description accuracy issue with no functional consequence given
-independently-confirmed guard behavior; the other is a disclosed,
-brief-scoped, accepted limitation).
+0 Critical, 0 Important, 1 Minor (disclosed, does not block approval).

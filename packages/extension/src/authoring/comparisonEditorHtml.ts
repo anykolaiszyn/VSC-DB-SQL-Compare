@@ -19,11 +19,25 @@
 // placed only in HTML attribute/text positions, never spliced into the
 // `<script>` body.
 //
-// Four tabs per TASK-BRIEF.md Scope item 3: Source, Target, Keys, Checks.
-// The Column Mapping tab (T-37's scope) is deliberately NOT built here --
-// this file's tab-strip/CSS leaves a 5th tab slot available (see
-// `TAB_ORDER`/`renderTabStrip` below) for T-37 to extend without needing
-// to restructure the strip.
+// Four tabs were built by T-36: Source, Target, Keys, Checks.
+//
+// T-37 adds the 5th tab, Column Mapping (SSIS-style visual mapper): source
+// columns on the left, a target-column dropdown per row on the right,
+// writing `ColumnMappingEntry[]` (`column_mapping`) on Apply. Two render
+// modes per `ComparisonEditorColumnMappingDraft.mode`:
+//  - "fetched" (both Source/Target sides in Table mode, live `getSchema`
+//    fetch succeeded): one row per source column, a populated `<select>`
+//    of every target column name plus a "no mapping / same name" default
+//    option (`column_mapping` is optional per-column -- an unmapped column
+//    falls back to identical-name matching at comparison time, per T-28's
+//    existing engine-level precedent).
+//  - "manual" (a non-Table-mode side, or a fetch failure): plain text
+//    inputs for source/target column name pairs, with Add row/Remove row
+//    affordances, since the row set isn't determined by a fetched list.
+// The live-fetch round trip itself happens in `comparisonEditorProvider.ts`
+// *before* rendering -- the fetch result becomes part of the draft state
+// passed in here, not a side effect of `renderComparisonEditorHtml` itself,
+// preserving this file's purity contract (TASK-BRIEF.md Scope item 5).
 
 /** One source/target side's editable state, mirroring
  * `NewComparisonAnswerSide`'s (`buildComparisonYaml.ts`, T-35b) 3-kind
@@ -69,6 +83,31 @@ export interface ComparisonEditorConnectionOption {
   name: string;
 }
 
+/** One row of the Column Mapping tab's draft state -- re-exported from
+ * `columnMapping.ts`'s pure shape (T-37) so this module's own type doesn't
+ * drift from the helpers that build/consume it. See that file's doc
+ * comment for the full field-by-field rationale. */
+export type { ColumnMappingRow } from "./columnMapping";
+import type { ColumnMappingRow } from "./columnMapping";
+
+/**
+ * The Column Mapping tab's full draft state (T-37). `mode` distinguishes
+ * the live-fetch dropdown rendering ("fetched") from the manual
+ * free-text-entry fallback ("manual") -- see this file's header comment.
+ * `fetchError` is set when a `getSchema` call rejected (network/auth
+ * failure, object not found): the tab shows an inline error banner
+ * specific to this tab (TASK-BRIEF.md Scope item 1) while `rows` still
+ * holds a manual-mode fallback row set, so the tab remains usable rather
+ * than blocked. `fetchError` is independent of `mode` in principle, but in
+ * practice `comparisonEditorProvider.ts` only ever sets it alongside
+ * `mode: "manual"` (a failed fetch has no fetched rows to show).
+ */
+export interface ComparisonEditorColumnMappingDraft {
+  mode: "fetched" | "manual";
+  rows: ColumnMappingRow[];
+  fetchError?: string;
+}
+
 /**
  * The full draft state `renderComparisonEditorHtml` renders, and the shape
  * `comparisonEditorProvider.ts` parses a `.paritylens` document's current
@@ -81,8 +120,9 @@ export interface ComparisonEditorConnectionOption {
  * type only ever holds already-parsed-or-user-edited field values in
  * transit between the document and the webview form).
  *
- * T-37 will extend this type with column-mapping state (per TASK-BRIEF.md's
- * "Interfaces produced" section) -- keep new fields additive when doing so.
+ * T-37 extends this type with `columnMapping` (see
+ * `ComparisonEditorColumnMappingDraft`) -- an additive field, per this
+ * type's own established convention.
  */
 export interface ComparisonEditorDraft {
   /** `ParityDefinition.name`, or `""` for a not-yet-named document. */
@@ -100,6 +140,12 @@ export interface ComparisonEditorDraft {
    * list -- per TASK-BRIEF.md Scope item 3's "route everything through the
    * provider" instruction. */
   connectionOptions: ComparisonEditorConnectionOption[];
+  /** Column Mapping tab's draft state (T-37) -- see
+   * `ComparisonEditorColumnMappingDraft`'s doc comment. Always present
+   * (never `undefined`): `comparisonEditorProvider.ts` always resolves a
+   * mode (manual, at minimum) before rendering, so this render function
+   * never needs an "unset" case of its own. */
+  columnMapping: ComparisonEditorColumnMappingDraft;
   /** Set when the document's current text failed to parse (invalid YAML,
    * or YAML that fails `parseDefinition`'s validation) -- per
    * TASK-BRIEF.md Scope item 2: "show the raw text with a clear ... banner
@@ -135,14 +181,15 @@ function escapeForScriptJson(json: string): string {
   return json.replace(/</g, "\\u003C").replace(/>/g, "\\u003E");
 }
 
-const TAB_ORDER = ["source", "target", "keys", "checks"] as const;
+const TAB_ORDER = ["source", "target", "keys", "checks", "columnMapping"] as const;
 type TabId = (typeof TAB_ORDER)[number];
 
 const TAB_LABELS: Record<TabId, string> = {
   source: "Source",
   target: "Target",
   keys: "Keys",
-  checks: "Checks"
+  checks: "Checks",
+  columnMapping: "Column Mapping"
 };
 
 function renderStyles(): string {
@@ -235,6 +282,12 @@ function renderStyles(): string {
     button.primary:disabled { opacity: 0.5; cursor: not-allowed; }
     .apply-status { font-size: 12px; color: var(--vscode-descriptionForeground); }
     .apply-status.error { color: var(--vscode-errorForeground, #f14c4c); }
+    .mapping-table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+    .mapping-table th { text-align: left; font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--vscode-descriptionForeground); padding: 4px 6px; }
+    .mapping-table td { padding: 4px 6px; }
+    .mapping-table select, .mapping-table input[type="text"] { width: 100%; }
+    .mapping-remove-cell { width: 32px; }
+    .mapping-add-row { margin-top: 10px; }
   </style>`;
 }
 
@@ -243,12 +296,8 @@ function renderTabStrip(): string {
     (tab, index) =>
       `<button type="button" class="tab-button${index === 0 ? " active" : ""}" data-tab="${tab}">${escapeHtml(TAB_LABELS[tab])}</button>`
   ).join("\n      ");
-  // Deliberate visible placeholder slot for T-37's Column Mapping tab (not
-  // built by this task -- see this file's header comment and
-  // TASK-BRIEF.md's Prohibited changes).
   return `<div class="tab-strip">
       ${buttons}
-      <span class="tab-placeholder">Column Mapping (coming soon)</span>
     </div>`;
 }
 
@@ -339,6 +388,82 @@ function renderChecksTab(checks: ComparisonEditorChecksDraft): string {
     </div>`;
 }
 
+/** Renders a target-column `<select>` for one fetched-mode mapping row: the
+ * "no mapping / same name" default option (per `column_mapping`'s optional
+ * per-column semantics -- an unmapped column falls back to identical-name
+ * matching at comparison time, T-28 precedent) plus every fetched target
+ * column name, with `row.target` pre-selected if it matches one. Every
+ * option value is `escapeHtml`-covered -- fetched column names are
+ * untrusted, database-originated data, same standard as every other value
+ * this file renders. */
+function renderMappingTargetSelect(row: ColumnMappingRow, index: number): string {
+  const options = [
+    `<option value=""${row.target === "" ? " selected" : ""}>&mdash; no mapping / same name &mdash;</option>`,
+    ...row.targetOptions.map(
+      (name) => `<option value="${escapeHtml(name)}"${name === row.target ? " selected" : ""}>${escapeHtml(name)}</option>`
+    )
+  ].join("\n");
+  return `<select data-mapping-target="${index}">${options}</select>`;
+}
+
+/** Renders the Column Mapping tab's content (T-37), replacing T-36's
+ * reserved-but-empty tab-strip slot. Two render modes, matching this
+ * file's header comment and `ComparisonEditorColumnMappingDraft.mode`:
+ * "fetched" -- a table with one row per fetched source column and a
+ * populated target `<select>` per row (the row set itself is fixed, driven
+ * by the fetch result, so no Add/Remove affordance is needed); "manual" --
+ * plain text inputs for both source and target column names per row, with
+ * Add row/Remove row buttons, since the row set isn't determined by a
+ * fetched list (TASK-BRIEF.md Scope item 3). `fetchError`, when set,
+ * renders as an inline banner specific to this tab -- it does not replace
+ * the row table (a manual-mode fallback row set is still shown alongside
+ * it) and has no effect on the other four tabs. */
+function renderMappingTab(mapping: ComparisonEditorColumnMappingDraft): string {
+  const errorBanner =
+    mapping.fetchError !== undefined
+      ? `<div class="banner"><strong>Could not fetch columns:</strong> ${escapeHtml(mapping.fetchError)}</div>`
+      : "";
+
+  if (mapping.mode === "fetched") {
+    const rows = mapping.rows
+      .map(
+        (row, index) =>
+          `<tr data-mapping-row="${index}">
+            <td>${escapeHtml(row.source)}</td>
+            <td>${renderMappingTargetSelect(row, index)}</td>
+          </tr>`
+      )
+      .join("\n");
+    return `<div class="tab-panel" data-panel="columnMapping">
+      ${errorBanner}
+      <table class="mapping-table">
+        <thead><tr><th>Source column</th><th>Target column</th></tr></thead>
+        <tbody data-mapping-rows>${rows}</tbody>
+      </table>
+    </div>`;
+  }
+
+  // mode === "manual"
+  const rows = mapping.rows
+    .map(
+      (row, index) =>
+        `<tr data-mapping-row="${index}">
+          <td><input type="text" data-mapping-source="${index}" value="${escapeHtml(row.source)}" /></td>
+          <td><input type="text" data-mapping-target="${index}" value="${escapeHtml(row.target)}" /></td>
+          <td class="mapping-remove-cell"><button type="button" data-mapping-remove-row="${index}">Remove</button></td>
+        </tr>`
+    )
+    .join("\n");
+  return `<div class="tab-panel" data-panel="columnMapping">
+      ${errorBanner}
+      <table class="mapping-table">
+        <thead><tr><th>Source column</th><th>Target column</th><th></th></tr></thead>
+        <tbody data-mapping-rows>${rows}</tbody>
+      </table>
+      <div class="mapping-add-row"><button type="button" data-mapping-add-row>Add row</button></div>
+    </div>`;
+}
+
 /**
  * The static, deterministic embedded script: reads the initial draft from
  * `window.__PARITYLENS_DRAFT__` (a JSON blob interpolated once, outside
@@ -398,6 +523,26 @@ const CLIENT_SCRIPT = `
       profile: $('#check-profile').checked,
       rowLevel: $('#check-rowLevel').checked
     };
+  }
+
+  // Column Mapping tab (T-37): in fetched mode, one <select> per row
+  // (row set/source names are fixed by the fetch result). In manual mode,
+  // both source and target are free-text inputs, and the row set is
+  // whatever rows currently exist in the DOM (Add row/Remove row mutate it).
+  function currentColumnMapping() {
+    if (draft.columnMapping && draft.columnMapping.mode === 'fetched') {
+      return $all('[data-mapping-row]').map(function (row) {
+        var index = row.getAttribute('data-mapping-row');
+        var select = $('[data-mapping-target="' + index + '"]');
+        return { source: row.children[0].textContent, target: select ? select.value : '' };
+      });
+    }
+    return $all('[data-mapping-row]').map(function (row) {
+      var index = row.getAttribute('data-mapping-row');
+      var sourceInput = $('[data-mapping-source="' + index + '"]');
+      var targetInput = $('[data-mapping-target="' + index + '"]');
+      return { source: sourceInput ? sourceInput.value : '', target: targetInput ? targetInput.value : '' };
+    });
   }
 
   function clearErrors() {
@@ -464,6 +609,43 @@ const CLIENT_SCRIPT = `
     });
   });
 
+  // Column Mapping tab (T-37) manual-mode Add row/Remove row.
+  var addMappingRowBtn = $('[data-mapping-add-row]');
+  if (addMappingRowBtn) {
+    addMappingRowBtn.addEventListener('click', function () {
+      var body = $('[data-mapping-rows]');
+      var index = $all('[data-mapping-row]').length;
+      var row = document.createElement('tr');
+      row.setAttribute('data-mapping-row', String(index));
+      var sourceCell = document.createElement('td');
+      var sourceInput = document.createElement('input');
+      sourceInput.type = 'text';
+      sourceInput.setAttribute('data-mapping-source', String(index));
+      sourceCell.appendChild(sourceInput);
+      var targetCell = document.createElement('td');
+      var targetInput = document.createElement('input');
+      targetInput.type = 'text';
+      targetInput.setAttribute('data-mapping-target', String(index));
+      targetCell.appendChild(targetInput);
+      var removeCell = document.createElement('td');
+      var removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.textContent = 'Remove';
+      removeBtn.setAttribute('data-mapping-remove-row', String(index));
+      removeBtn.addEventListener('click', function () { row.remove(); });
+      removeCell.appendChild(removeBtn);
+      row.appendChild(sourceCell);
+      row.appendChild(targetCell);
+      row.appendChild(removeCell);
+      body.appendChild(row);
+    });
+  }
+  $all('[data-mapping-remove-row]').forEach(function (btn) {
+    btn.addEventListener('click', function () {
+      btn.closest('[data-mapping-row]').remove();
+    });
+  });
+
   var applyButton = $('#apply-button');
   var statusEl = $('#apply-status');
   if (applyButton) {
@@ -481,7 +663,8 @@ const CLIENT_SCRIPT = `
           source: source,
           target: target,
           keys: keys,
-          checks: currentChecks()
+          checks: currentChecks(),
+          columnMapping: currentColumnMapping()
         }
       });
       if (statusEl) { statusEl.textContent = 'Applying...'; statusEl.className = 'apply-status'; }
@@ -503,6 +686,23 @@ const CLIENT_SCRIPT = `
       }
     }
   });
+
+  // Column Mapping tab (T-37): request a live fetch on load, and again
+  // whenever Source/Target mode/connection/object changes -- the provider
+  // decides (Table-mode-only gating) whether a real getSchema call happens
+  // or a manual-fallback response comes back immediately; this webview
+  // only ever asks and re-renders, it never calls getSchema itself.
+  function requestColumnFetch() {
+    vscode.postMessage({ type: 'fetch-columns', source: currentSide('source'), target: currentSide('target') });
+  }
+  ['source-connection', 'source-kind', 'source-object', 'target-connection', 'target-kind', 'target-object'].forEach(function (id) {
+    var el = document.getElementById(id);
+    if (el) {
+      el.addEventListener('change', requestColumnFetch);
+      el.addEventListener('input', requestColumnFetch);
+    }
+  });
+  requestColumnFetch();
 
   updateApplyState();
 })();
@@ -554,6 +754,7 @@ export function renderComparisonEditorHtml(draft: ComparisonEditorDraft): string
     ${renderSideTab("target", draft.target, draft.connectionOptions)}
     ${renderKeysTab(draft.keys)}
     ${renderChecksTab(draft.checks)}
+    ${renderMappingTab(draft.columnMapping)}
 
     <div class="actions">
       <button type="button" class="primary" id="apply-button">Apply</button>
