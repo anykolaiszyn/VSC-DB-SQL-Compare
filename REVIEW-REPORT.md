@@ -1,36 +1,29 @@
-# REVIEW-REPORT.md — T-37: Column Mapping tab (SSIS-style)
+# REVIEW-REPORT.md — T-38: Pre-execution SQL preview + confirmation
 
 ## Review independence statement
 
-This review was performed by a separate agent instance from whoever
-implemented T-37, with no memory of writing the code under review. All
-findings below are based on direct reading of the actual diff and source
-files on `task/T-37-column-mapping-tab`, my own fresh run of
-`npm run verify`, and adversarial probes I constructed independently (a
-standalone throwaway test file, deleted before finishing — confirmed via
-`git status` that the working tree is clean and no residue remains).
-`IMPLEMENTATION-REPORT.md`'s claims were treated as things to verify, not
-trust; every claim below was re-derived from source rather than copied
-from the report. (Note: this file previously held the T-36 review report
-from an earlier task on this same control-file path; it has been fully
-replaced with this T-37 review, which was read before being overwritten
-per this process's requirements.)
+This review was performed by a separate agent instance from the implementer,
+with no memory of authoring this code. All findings below are based on
+direct inspection of the actual diff/source on
+`task/T-38-plan-queries-preview` (commit `91ee19d779715ecafb75e53804e46c06b1db0302`,
+base `main`), my own independently re-run verification commands, and my own
+constructed adversarial test probes (written to temporary files, run, and
+deleted before finishing — confirmed via `git status --porcelain` producing
+no output). `IMPLEMENTATION-REPORT.md`'s claims were treated as things to
+verify, not trust.
 
 ## Scope reviewed
 
-- `TASK-BRIEF.md` (T-37, current checkout) read in full as scope authority.
-- `IMPLEMENTATION-REPORT.md` read as the implementer's self-report, cross-
-  checked against source.
-- Full diff `main..task/T-37-column-mapping-tab` (`git diff --stat`).
-- Full read of `packages/extension/src/authoring/comparisonEditorProvider.ts`,
-  `columnMapping.ts`, relevant sections of `comparisonEditorHtml.ts`
-  (render functions, escaping, client script wiring), and
-  `packages/extension/src/activation/activate.ts` (`buildConnectorRegistry`,
-  `buildResolveConnectorByName`, `registerComparisonEditorProvider`,
-  `activate()`).
-- Existing test files `comparisonEditorProvider.test.ts` and
-  `comparisonEditorHtml.test.ts` read for coverage shape (not trusted as
-  proof — independently re-probed, see below).
+- `packages/engine/src/orchestration/planner/planQueries.ts` (new)
+- `packages/engine/src/orchestration/planner/planQueries.test.ts` (new)
+- `packages/extension/src/webview/runConfirmationWebview.ts` (new)
+- `packages/extension/src/webview/runConfirmationWebview.test.ts` (new)
+- `packages/extension/src/webview/resultsWebview.ts` (one-line change)
+- `packages/extension/src/activation/activate.ts` (extended)
+- `packages/extension/src/activation/activate.test.ts` (extended)
+- `packages/engine/src/index.ts` (disclosed, undeclared, mechanically
+  required re-export)
+- `IMPLEMENTATION-REPORT.md` (self-report, cross-checked, not trusted)
 
 ## Findings
 
@@ -44,215 +37,115 @@ NONE.
 
 ### Minor
 
-| ID | Finding | Evidence | Resolution |
+| ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-37-01 | No debounce on `requestColumnFetch()` — every `input`/`change` event on any of the six listened Source/Target fields fires a `fetch-columns` message, which (once the Table-mode gate passes) triggers a real `getSchema` round trip and a `SecretStorage` read per side on every qualifying keystroke. | `packages/extension/src/authoring/comparisonEditorHtml.ts:695-705` (`requestColumnFetch` wired to `input`/`change` with no debounce/throttle); disclosed by the implementer in IMPLEMENTATION-REPORT.md's Risks section. | Not blocking — no correctness or security impact, only redundant round trips during fast typing. Track as a follow-up (client-side debounce) if the orchestrator wants it tracked; no brief requirement was violated (TASK-BRIEF.md did not specify a performance/debounce requirement). |
+| T-38-01 | `planQueries`'s Layer-1 `testConnection()` gate (a genuine, disclosed mid-implementation addition) causes the confirmation panel to show an empty query list for an unreachable connection, with no distinguishing message from "this definition genuinely issues zero queries" (e.g. a schema-only definition). A user cannot tell these two states apart from the panel alone. | `planQueries.ts` lines 137–160 (returns `[]` on either side's `testConnection()` failing); confirmed via my own adversarial probe (temporary test file, deleted) that a definition with `checks.schema.enabled: true` and one connector always returning `{success:false}` produces `planned === []`, indistinguishable in shape from `SCHEMA_ONLY_YAML`'s legitimately-empty `[]` result in `planQueries.test.ts`. | Already disclosed by the implementer as a known, deliberate UX gap ("Risks/limitations not fixed" in `IMPLEMENTATION-REPORT.md`) rather than left silent. Does not block this task — the correctness property that matters (no silent "success" masking a real failure) holds, see Verification item 3 below. Worth a small follow-up task (e.g. distinguishing "no queries — nothing to preview" from "no queries — connection unreachable, see the Run button for the real error" in the panel copy), but is a UX polish item, not a correctness defect. |
 
-This item was disclosed candidly in the implementation report rather than
-discovered independently as an omission — the report describes it
-accurately.
+## Disposition of the three flagged-for-scrutiny items
 
-## Disposition of prior findings
+**1. Layer-1 `testConnection()` gate in `planQueries` — correctness of the fix.**
+Confirmed correct. `planQueries` mirrors `runComparison`'s own Layer-1 step
+(`planner.ts` lines 200–226) by calling `testConnection()` on both sides
+before touching `getSchema`, and returns `[]` (not a throw) on failure. I
+constructed my own adversarial test (a `DataPlatformConnector` whose
+`testConnection()` always resolves `{success:false}` and whose `getSchema`
+throws if ever called) and confirmed:
+- `planQueries` returns `[]` without ever calling the failing connector's
+  `getSchema` (the throw-if-called guard never fired).
+- `runComparison`, called afterward against the same registry (simulating
+  the user clicking Run despite the empty-looking preview), correctly
+  returns `status: "failed"` / `summary.failed: 1` via its own,
+  byte-for-byte-unmodified Layer-1 check.
 
-No prior open finding in `PROGRESS-LEDGER.md` names T-37 as its required
-resolution target — this is fresh implementation work extending T-36, not
-a re-review of a previously blocked task. No re-verification of an
-earlier failing case was needed.
+This directly satisfies the dispatch's central correctness question: a
+down connection does **not** silently masquerade as "everything's fine" —
+the user sees an empty preview (Minor UX gap, T-38-01 above) but the
+authoritative failure is still correctly reported by the real
+`runComparison` call after Run, exactly as it was before this task existed.
+The fix is squarely within the brief's own stated allowance ("Must not
+throw for a connectivity failure the way `runComparison` doesn't either")
+and does not touch `planner.ts`.
 
-## Verification performed (my own, independent of the report)
+**2. `packages/engine/src/index.ts` — scope of the undeclared touch.**
+Confirmed via `git diff main..task/T-38-plan-queries-preview --
+packages/engine/src/index.ts`: exactly one new export line
+(`export * from "./orchestration/planner/planQueries.js";`) plus a comment
+block following the file's own pre-existing "amendment" precedent (the T-29
+comment immediately above it, same style). No existing export line was
+touched, reordered, or removed. This is a minimal, mechanically-forced
+consequence of `activate.ts` needing to import `planQueries` across the
+`@paritylens/engine` package boundary (confirmed: every other
+engine-consuming file in this codebase imports from the package root, not
+a deep relative path) — acceptable scope, correctly disclosed rather than
+silently folded in.
 
-### 1. Table-mode-only gating is genuine, gate checked before resolution
+**3. `resultsWebview.ts` — narrowness of the permitted change.**
+Confirmed via diff: exactly one line changed, adding the `export` keyword
+to the previously-private `renderQueryPreviewSection` function signature.
+No other line in the file was touched. This is exactly the one narrow
+exception `TASK-BRIEF.md`'s "Prohibited changes" section explicitly
+permitted.
 
-Traced `fetchColumnMappingDraft` (`comparisonEditorProvider.ts:438-469`):
-`bothSidesReadyForLiveFetch(source, target)` is evaluated as the
-function's first statement and returns `defaultColumnMappingDraft()`
-immediately if either side fails the check — `resolveConnectorByName` is
-not referenced anywhere before that early return.
+## Verification performed (my own, independent of the implementer's report)
 
-I constructed my own standalone adversarial test (not reusing the
-implementer's `comparisonEditorProvider.test.ts`) asserting
-`resolveConnectorByName` — the mock function itself, not just `getSchema`
-— is **never called** for a Query-mode source, and for a mixed
-table/query pairing. Both passed:
+| # | Check | Method | Result |
+| --- | --- | --- | --- |
+| 1 | Fresh full verification | `npm run verify` (typecheck + lint + test), run by me from a clean working tree on this branch | Exit 0. `tsc -b --force` clean, `eslint .` clean, vitest: **33 test files passed, 2 skipped (35), 581 tests passed, 27 skipped (608 total)** — matches `IMPLEMENTATION-REPORT.md`'s claimed numbers exactly. |
+| 2 | No drift, byte-for-byte, 2 definitions the implementer's own tests do **not** use | My own test file (`planQueries`/`runComparison` imported directly), comparing `planQueries` output against `runComparison`'s `queriesUsed` for a **rowCount-only** definition (direct `toEqual`, no normalization needed — no TIMESTAMP literal in rowCount SQL) and a **rowLevel-only** definition (normalized only for the TIMESTAMP substring, per the same, independently-verified rationale the implementer's own tests use) | Both passed: exact string equality, same order, in both cases. |
+| 3 | Zero `executeQuery` calls, my own mock construction, and the Layer-1 gate's real-world effect | A hand-rolled `Proxy`-wrapped `vi.fn()` spy around `executeQuery` on both source and target connectors (not the implementer's `SpyConnector` class), run against a definition with all four checks enabled; separately, an unreachable-connector probe (see item 1 above) | `executeQuerySpy`/`executeQuerySpyTarget` both `not.toHaveBeenCalled()`; `planned.length > 0` (confirming the function did real work, not a no-op). Also confirmed by direct grep: no literal `executeQuery` call site exists in `planQueries.ts`, and the two builder functions it calls transitively (`buildProfileQueries` in `profiling.ts`, `buildFetchAllRowsSql`/`buildRowCountSql` in `planner.ts`/`volume.ts`) are pure string builders with no `executeQuery` call anywhere in their bodies (read in full). Unreachable-connector probe: `planQueries` returns `[]` without throwing and without calling the poisoned `getSchema`; the subsequent real `runComparison` call correctly reports `status: "failed"`. |
+| 4 | `runComparison`/`planner.ts` genuinely untouched | `git diff main..task/T-38-plan-queries-preview -- packages/engine/src/orchestration/planner/planner.ts` | Empty diff — zero changes, confirmed. |
+| 5 | Cancellation genuinely blocks execution, my own test | A standalone probe (mirroring `runComparisonCommand.test.ts`'s minimal `vscode` mock, not reusing `activate.test.ts`'s own T-38 assertions) calling `runComparisonCommand` with a `confirmRun` mock resolving `false`, against a rowLevel-enabled definition | `confirmRun` called exactly once, received the real (length-2, non-empty) planned query list; `result` is `undefined`; `createWebviewPanel` and `showErrorMessage` both never called — `runComparison`'s real effects genuinely never happen on Cancel. |
+| 6 | Confirmation panel purity/escaping, my own adversarial payloads | Three payloads distinct from the implementer's own test: a `</pre><script>alert(document.cookie)</script>` breakout, a `">` attribute-breakout `<img onerror=...>` payload, and a `-- ' onmouseover="alert(1)"` comment/attribute injection, plus a purity check (same input twice) | All escaped correctly — exactly one literal `<script>` tag survives in the output (the file's own static embedded client script), the adversarial payloads' raw HTML never appears unescaped, and identical input produces identical output on repeated calls. |
+| 7 | File-ownership diff | `git diff --stat main..task/T-38-plan-queries-preview` | Only declared files (+ the disclosed `index.ts` re-export) changed: `planQueries.ts`/`.test.ts` (new), `runConfirmationWebview.ts`/`.test.ts` (new), `resultsWebview.ts` (1-line `export` addition, confirmed via diff), `activate.ts`/`.test.ts` (extended), `packages/engine/src/index.ts` (1 export line + comment), `IMPLEMENTATION-REPORT.md`. `runComparisonCommand.test.ts` (outside declared ownership) confirmed unmodified via diff — consistent with the implementer's disclosed judgment call about `confirmRun`'s optional typing preserving that file's existing behavior. |
 
-```
-✓ Query-mode source: resolveConnectorByName is NEVER called at all (gate before resolution, not just before getSchema)
-✓ mixed: table-mode source but query-mode target -- resolveConnectorByName not called for either side
-```
+No residue was left from my adversarial probes: three temporary test files
+were created under `packages/engine/src/orchestration/planner/`,
+`packages/extension/src/activation/`, and `packages/extension/src/webview/`,
+each run individually via `npx vitest run <path>`, then deleted. `git
+status --porcelain` after cleanup produced no output, confirming a clean
+tree.
 
-This confirms the gate is checked before any connector resolution attempt
-(and therefore before any `SecretStorage` read), not merely before the
-`getSchema` call — exactly what the brief's Handoff item 1 asked me to
-verify independently, not just by trusting a passing test.
+## Prior findings this task was meant to resolve
 
-### 2. `resolveConnectorByName` composition mirrors `buildConnectorRegistry`
+None cited in `TASK-BRIEF.md` — this is a new feature task, not a
+remediation of a prior open finding.
 
-Read `activate.ts:141-195` (`findProfileByName`, `buildConnectorRegistry`)
-and `activate.ts:566-578` (`buildResolveConnectorByName`) side by side.
-Both use the identical resolution chain:
-`findProfileByName(store, name)` → `secretStore.get(secretKeyFor(profile.id))`
-→ `resolveConnector(profile, password)`. The only behavioral difference is
-the terminal fallback: `buildConnectorRegistry` falls back to
-`new FixtureConnector(...)` for an unmatched name (existing, pre-T-37
-behavior for `runComparisonCommand`), while `buildResolveConnectorByName`
-returns `undefined` — a deliberate, documented, and reasonable divergence
-for an editing UI (no silent fixture substitution). No credential
-resolution logic is reimplemented differently; it is the same three
-pieces (`ConnectionProfileStore`, `SecretStore`, `resolveConnector`)
-composed the same way, in the same file, with a single shared
-`findProfileByName`/`secretKeyFor` helper reused by both functions.
+## Overall assessment
 
-Confirmed `comparisonEditorProvider.ts` does not import `SecretStore` or
-`ConnectionProfileStore`:
+- Query-building logic in `planQueries.ts` genuinely mirrors
+  `runComparison`'s own checks-gating, resolution, and builder-function
+  calls, verified via my own byte-for-byte comparisons on definitions the
+  implementer's own tests did not exercise.
+- Zero `executeQuery` calls confirmed both by static reading of every
+  transitively-called function and by my own dynamic mock-based
+  assertion.
+- `planner.ts` (the one file under an absolute non-modification
+  requirement) has a genuinely empty diff against `main`.
+- The disclosed Layer-1 `testConnection()` gate — the one real design
+  decision made mid-implementation rather than pre-specified — is correct:
+  it prevents a spurious hard failure of the preview step while preserving
+  the property that a real connectivity failure is still correctly and
+  authoritatively reported by `runComparison`'s own unmodified Layer-1
+  check if the user proceeds past an (admittedly uninformative, Minor,
+  disclosed) empty preview.
+- Cancellation genuinely blocks all of `runComparison`'s real effects,
+  confirmed by my own independently-constructed test.
+- The confirmation webview's render function is pure and correctly escapes
+  every adversarial payload I constructed, including payloads distinct
+  from the implementer's own test cases.
+- Scope discipline is intact: the two undeclared touches
+  (`packages/engine/src/index.ts`, one export line; `resultsWebview.ts`,
+  one `export` keyword) are both exactly as narrow as disclosed and both
+  fall within the brief's own explicit allowances.
+- My fresh `npm run verify` run matches the implementation report's
+  claimed numbers exactly (33 files / 581 passed / 27 skipped / 608
+  total), with no discrepancy.
 
-```
-grep -n "import" comparisonEditorProvider.ts
-```
-only shows imports of `vscode`, `@paritylens/engine`, `@paritylens/shared`
-(type-only), `./buildComparisonYaml`, `./columnMapping`. No store imports
-anywhere in the file.
-
-### 3. No credential ever reaches the webview
-
-Read every place `ComparisonEditorColumnMappingDraft`/`ColumnMappingRow`
-data is produced (`columnMapping.ts`'s `buildMappingRowsFromColumns` only
-extracts `.name` off `ColumnDefinition[]`) and rendered
-(`renderMappingTab`/`renderMappingTargetSelect` in `comparisonEditorHtml.ts`
-only interpolate `row.source`, `row.target`, `row.targetOptions` entries,
-and `mapping.fetchError`). No connector object, profile, or password value
-is ever passed into the render path.
-
-I independently wrote a test asserting the rendered HTML contains none of
-a broader set of credential-shaped substrings than the implementer's own
-single `"password"` check (`password`, `secret`, `connectionstring`,
-`connection_string`, `apikey`, `api_key`, `token=`, `pwd=`) after a
-successful two-sided fetch. Passed.
-
-### 4. Failure isolation — constructed my own scenarios, not the implementer's
-
-Two independent scenarios beyond what `comparisonEditorProvider.test.ts`
-covers:
-- A connector whose `getSchema` throws a **raw string** (not an `Error`
-  instance) rather than a rejected `Error` — confirms the
-  `err instanceof Error ? err.message : String(err)` fallback in
-  `fetchColumnMappingDraft`'s catch block genuinely handles a non-Error
-  rejection value, not just the happy-path `Error` case the implementer's
-  own test used.
-- One side resolves to a real connector, the other side's
-  `resolveConnectorByName` returns `undefined` (unresolvable name) —
-  distinct failure mode from a `getSchema` rejection.
-
-Both scenarios: the Mapping tab shows the inline "could not fetch
-columns" banner, and a subsequent, independently-constructed Apply message
-(different `comparisonName`/values than any fixture in the implementer's
-tests) still calls `applyEdit` exactly once and posts `ok: true`. All
-passed.
-
-### 5. Purity and escaping — adversarial inputs beyond the implementer's tests
-
-- `renderComparisonEditorHtml` called twice with the identical
-  `ComparisonEditorDraft` reference (populated `columnMapping.mode:
-  "fetched"` with two rows) produces byte-identical output. Additionally
-  called a third time with a **freshly-constructed, deep-cloned** (not the
-  same object reference) structurally-equal draft — also byte-identical.
-  This is a stronger purity check than reference reuse alone.
-- Adversarial source column name `<script>alert(1)</script>` in
-  fetched-mode: rendered output does not contain the raw tag; contains
-  `&lt;script&gt;` instead.
-- Adversarial manual-mode column name `"><img src=x onerror=alert(1)>`:
-  rendered output contains neither the raw payload nor the bare
-  `<img src=x onerror=alert(1)>` fragment (i.e. it doesn't break out of
-  the `value="..."` attribute).
-- Adversarial `fetchError` message containing
-  `<img src=x onerror=alert('pwned')>`: escaped in the inline banner, not
-  present raw.
-
-All four passed. Every fetched/manual column-name and error-message
-interpolation site in `renderMappingTab`/`renderMappingTargetSelect` goes
-through `escapeHtml`, consistent with every other value this file renders
-(verified by grep: all six interpolation points in the mapping-tab render
-functions call `escapeHtml`, no exceptions).
-
-Also verified the `columnMapping` draft sub-state is **not** embedded into
-the client script's `window.__PARITYLENS_DRAFT__` JSON blob (which uses a
-separate `escapeForScriptJson` mechanism for `</script>`-breakout safety)
-— `renderMappingTab` renders it directly server-side as already-escaped
-HTML, avoiding a second, differently-escaped injection surface for the
-same data. This is a sound design choice, not a gap.
-
-### 6. File-ownership diff
-
-```
-git diff --stat main..task/T-37-column-mapping-tab
-```
-Changed files: `IMPLEMENTATION-REPORT.md`,
-`packages/extension/src/activation/activate.ts`,
-`packages/extension/src/authoring/columnMapping.ts` (new),
-`columnMapping.test.ts` (new), `comparisonEditorHtml.ts`,
-`comparisonEditorHtml.test.ts`, `comparisonEditorProvider.ts`,
-`comparisonEditorProvider.test.ts`. Exactly the declared "Files owned"
-list plus the implementation report itself (expected, not an
-implementation file). Independently confirmed via a scoped diff that
-`buildComparisonYaml.ts`, `resultsWebview.ts`, `newComparisonWizard.ts`,
-and `packages/engine/**` show zero changes (`git diff --stat` restricted
-to those paths returned empty).
-
-### 7. No UI for the derived `ColumnMappingEntry` variant
-
-Grepped the entire extension source tree for `sourceExpression`/
-`targetExpression`: the only hits are `buildComparisonYaml.ts` (untouched,
-out of scope, T-35b's pre-existing emission logic) and its own test file,
-plus a single explanatory doc comment in `columnMapping.ts` describing why
-that variant is *not* built here. `columnMapping.ts`'s exported functions
-(`buildMappingRowsFromColumns`, `buildManualMappingRows`,
-`mappingRowsToColumnMappingEntries`) and `comparisonEditorHtml.ts`'s
-`renderMappingTab`/`renderMappingTargetSelect` only ever produce/render
-the plain `{source, target}` shape. Confirmed no UI path for the derived
-variant exists.
-
-### Fresh full verification
-
-Ran `npm run verify` myself (not trusting the report's numbers):
-
-```
-typecheck: tsc -b --force -> clean, no errors
-lint: eslint . -> clean
-test: vitest run -> Test Files 31 passed | 2 skipped (33), Tests 565 passed | 27 skipped (592)
-```
-
-This matches IMPLEMENTATION-REPORT.md's claimed numbers exactly (565
-passed, 27 skipped, 33 test files; the 2 skipped files are the pre-existing
-Docker-gated SQL Server/PostgreSQL integration suites, unrelated to this
-task). No discrepancy between claimed and observed results.
-
-## Summary judgment
-
-The implementation matches TASK-BRIEF.md's scope precisely. The Table-
-mode-only gate is genuinely checked before any connector resolution
-(confirmed via a spy that would catch a resolve-then-skip-fetch version of
-the bug, not just a getSchema-not-called check); `resolveConnectorByName`
-is composed in `activate.ts` from the exact same
-`ConnectionProfileStore`/`SecretStore`/`resolveConnector` pieces
-`buildConnectorRegistry` already uses, with `comparisonEditorProvider.ts`
-never importing either store directly; no credential-shaped value crosses
-into the webview under any of the failure/success paths I probed; a
-`getSchema` failure (including non-Error rejection values and
-unresolvable-connector cases the implementer's own tests didn't cover) is
-fully isolated from the other four tabs' Apply behavior; `escapeHtml`
-coverage is complete for every fetched/manual column name and error
-message, verified against XSS-shaped adversarial inputs; purity holds
-under both reference-reuse and deep-clone reconstruction; the file-
-ownership diff matches the declared list exactly with no prohibited files
-touched; and no UI exists for the out-of-scope derived
-`ColumnMappingEntry` variant. My own fresh `npm run verify` run matches
-the implementation report's claimed numbers exactly.
-
-The only finding (T-37-01, no debounce on the fetch trigger) is Minor,
-was already disclosed by the implementer, and has no correctness or
-security impact — it does not block approval.
-
-## Final disposition
+## Disposition
 
 **APPROVED**
 
-0 Critical, 0 Important, 1 Minor (disclosed, does not block approval).
+0 Critical, 0 Important, 1 Minor (T-38-01 — disclosed pre-existing UX gap
+in the confirmation panel's messaging for an unreachable connection;
+correctness is unaffected, does not block approval, recommended as a small
+future-task follow-up).
