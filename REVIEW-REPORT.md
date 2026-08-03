@@ -1,191 +1,110 @@
-# REVIEW-REPORT.md — T-48: results webview source/target header line
+# ParityLens — Review Report T-49
 
-## Review independence statement
+## Review independence
 
-This review was performed by a separate reviewer agent instance with no
-memory of authoring the implementation under review. All findings below are
-based on direct inspection of the actual diff, direct reading of the current
-source, my own independently re-run verification commands, and adversarial
-probes I constructed myself — not on trusting IMPLEMENTATION-REPORT.md's
-claims. Every claim in that report that could be independently checked was
-checked.
+This review was performed by a separate agent instance from whoever
+implemented T-49. No claim in `IMPLEMENTATION-REPORT.md` was taken at face
+value — every factual claim (diff scope, test counts, adversarial-case
+behavior, error-propagation) was independently re-derived from the actual
+diff, actual source, and fresh command output captured during this review.
+No implementation-owned file was edited by this review.
 
-## Scope reviewed
+## Review scope
 
-- `TASK-BRIEF.md` (T-48, resolving finding T-34-02) at repo root.
-- `IMPLEMENTATION-REPORT.md` at repo root.
-- Full diff `main..task/T-48-results-webview-header-line`.
-- Current source of all 5 owned files plus `PROGRESS-LEDGER.md` for
-  T-34-02's original recorded text.
-- Fresh `npm run verify` run by this reviewer.
+- **Task objective:** Resolve finding T-38-01 — `planQueries`'s Layer-1
+  `testConnection()` gate short-circuited to a bare `[]` both when a
+  connection is genuinely unreachable and when a definition legitimately
+  produces zero queries, making the two cases visually indistinguishable
+  in the pre-execution confirmation panel. Fix: widen `planQueries`'s
+  return type to `PlanQueriesResult { queries: string[]; connectionUnreachable: boolean }`,
+  thread it through `activate.ts`'s `confirmRun` plumbing, and render a
+  distinguishing notice in `renderRunConfirmationHtml` when
+  `connectionUnreachable` is true.
+- **Files and interfaces reviewed:**
+  `packages/engine/src/orchestration/planner/planQueries.ts` (new
+  `PlanQueriesResult` export, widened `planQueries` return shape),
+  `packages/engine/src/orchestration/planner/planQueries.test.ts`,
+  `packages/extension/src/activation/activate.ts` (`confirmRun` signature,
+  `createWebviewConfirmRun`, `plannedQueries` call site),
+  `packages/extension/src/activation/activate.test.ts`,
+  `packages/extension/src/webview/runConfirmationWebview.ts`
+  (`renderRunConfirmationHtml` new second parameter, new
+  `CONNECTION_UNREACHABLE_NOTICE`), `packages/extension/src/webview/runConfirmationWebview.test.ts`.
+  Confirmed zero diff on the two explicitly prohibited files:
+  `packages/engine/src/orchestration/planner/planner.ts` and
+  `packages/extension/src/webview/resultsWebview.ts`.
+- **Evidence reviewed:** full diff of every changed file (`git diff
+  main..task/T-49-planqueries-unreachable-disambiguation`), a fresh full
+  `npm run verify` run, `PROGRESS-LEDGER.md`'s T-38-01 finding text and
+  T-38/T-48 history entries, and three independently-authored adversarial
+  probe tests (constructed and deleted by this review, not part of the
+  implementer's own test suite) exercising the exact three behaviors the
+  brief's Handoff section calls out.
 
-## Findings
+## Critical findings
 
-### Critical
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-NONE.
+## Important findings
 
-### Important
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-NONE.
-
-### Minor
+## Minor findings
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-48-01 | `deriveSideLabel`'s `sqlFile` branch falls back to the full `filePath` string (not the leading-separator-stripped last segment) when `filePath` ends in a path separator (e.g. `"C:\Users\alex\secrets\"` or `"/home/alex/secrets/"`), because `split` produces a trailing empty string and the `|| side.filePath` fallback then returns the untouched original path — which does leak a full local filesystem path into the header for this one degenerate input shape. | Reproduced by hand: `"/home/alex/secrets/".split(/[/\\]/)` → last segment `""` → falls through to `side.filePath` → `"/home/alex/secrets/"` verbatim. Not exercised by any test in `planner.test.ts` (all three sqlFile-kind tests there use a `filePath` with a real trailing filename, e.g. `source.sql`). | Low severity: `filePath` for `kind: "sqlFile"` is expected to reference a `.sql` file per the type's own contract, so a definition author providing a bare directory path is a malformed definition, not a realistic path through this UI. No user-supplied untrusted string reaches this code (`filePath` is authored by whoever writes the parity YAML — the same person who can already see their own filesystem). Does not block approval; worth a one-line follow-up (`return segments[segments.length - 1] || segments[segments.length - 2] || side.filePath`, or just accept and document the edge case) whenever this code is next touched. |
+| NONE | — | — | — |
 
-## Disposition of prior findings this task was meant to resolve
+The implementer's own disclosed limitation (`activate.test.ts` cannot
+exercise `connectionUnreachable: true` end-to-end through
+`runComparisonCommand` because its fixture-backed test harness has no way
+to make a registered connector's `testConnection()` fail) is real and
+accurately described — confirmed by reading `activate.test.ts`'s `createDeps`
+helper and fixture-registry setup, which only ever registers real
+`FixtureConnector` instances (always reachable). This is not scored as a
+finding: the brief's own Handoff reviewer-note list does not ask for that
+specific end-to-end case, and the property it would prove is already
+covered at both boundaries — directly at `planQueries` (two new tests) and
+at rendering (four new tests) — which is sufficient to establish the
+plumbing is correct given `activate.ts`'s change at the call site is a
+single, mechanically-forced pass-through (`deps.confirmRun(plannedQueries)`,
+textually unchanged) verified below.
 
-**T-34-02** (OPEN, non-blocking cosmetic, per `PROGRESS-LEDGER.md`): "the
-results webview's header meta line omits the `source object → target
-object` segment." I independently reproduced the original gap by reading
-`main`'s pre-T-48 `resultsWebview.ts` (no `sourceLabel`/`targetLabel`
-handling, no segment in the header) and confirmed the fix by rendering the
-header both with and without the new fields present (see Verification
-below). **Genuinely resolved** — the header now renders `Run <runId> ·
-source→target · duration` when both labels are present, and omits the
-segment cleanly (no dangling separator, no literal `"undefined"`) when
-either or both are absent, including for runs replayed from pre-T-48
-persisted JSON (`sourceLabel`/`targetLabel` naturally `undefined` on old
-records, exactly as the brief's Prohibited Changes section anticipated).
+## Verification performed
 
-## Verification performed (independent, by this reviewer)
+| Check | Exact command or inspection | Result |
+| --- | --- | --- |
+| Diff scope | `git diff --stat main..task/T-49-planqueries-unreachable-disambiguation` | Exactly 6 owned source/test files + `TASK-BRIEF.md`/`IMPLEMENTATION-REPORT.md`. No file outside the declared ownership list. |
+| Prohibited-file check | `git diff main..task/T-49-planqueries-unreachable-disambiguation -- packages/engine/src/orchestration/planner/planner.ts packages/extension/src/webview/resultsWebview.ts` | Empty output — zero diff on both, confirming the brief's Prohibited-changes constraint held. |
+| `planQueries.ts` change shape | Full file read + diff | Only the two `return` statements changed shape (`return []` → `return { queries: [], connectionUnreachable: true }` at the Layer-1 gate; `return queriesUsed` → `return { queries: queriesUsed, connectionUnreachable: false }` at the normal-path return), plus the new `PlanQueriesResult` interface and doc comments. Every other line (imports, control flow, `getSchema`/`resolveSideInput` calls, error-propagation) byte-for-byte unchanged from `main`. |
+| Adversarial case 1: legitimately-zero-queries, reachable connections | Independently authored throwaway test (`__t49_reviewer_probe.test.ts`, deleted after use): all four `checks.*.enabled: false`, both sides real reachable `FixtureConnector`s | `planQueries` returned `{ queries: [], connectionUnreachable: false }` — NOT the connectivity-failure branch. Confirms the core correctness property: a false positive here would be worse than the original ambiguity, and none occurred. |
+| Adversarial case 1 (rendering) | `runConfirmationWebview.test.ts` line 87: `renderRunConfirmationHtml([], false)` | Renders `"ParityLens will issue 0 queries"` (the original empty-state notice), and asserts `.not.toContain("could not be reached")`. Independently re-read the source of `renderRunConfirmationHtml` (lines 196–201) and confirmed the ternary genuinely branches on the `connectionUnreachable` parameter, not on `queries.length`, so this is not a coincidental pass. |
+| Adversarial case 2: genuinely unreachable connector | Independently authored throwaway test: same all-disabled definition, source connector's `testConnection()` overridden to return `{ success: false }` | `planQueries` returned `{ queries: [], connectionUnreachable: true }`. Also independently re-ran the implementer's own two `UnreachableConnector` tests in `planQueries.test.ts` (source-unreachable and target-unreachable) — both pass. |
+| Adversarial case 2 (rendering) | `runConfirmationWebview.test.ts` line 67: `renderRunConfirmationHtml([], true)` | Renders the new `CONNECTION_UNREACHABLE_NOTICE` text (`"could not be reached"`) and does not render `"ParityLens will issue"`. Read `CONNECTION_UNREACHABLE_NOTICE`'s definition directly — a `const` string literal with no template interpolation, confirming it is genuinely static. |
+| Error-propagation unchanged past Layer-1 gate | Independently authored throwaway test: definition with `checks.schema.enabled: true` against a non-existent source object (forces a genuine `getSchema` rejection past the gate) | `planQueries(...)` rejected (threw), not swallowed into `{ connectionUnreachable: true }`. Also confirmed the pre-existing `activate.test.ts` test `"surfaces a planQueries failure via showErrorMessage without ever calling confirmRun or runComparison"` (present verbatim in `main` before this task, `git show main:...activate.test.ts` confirms identical test name pre-existed) still passes unmodified in behavior — only its `vi.fn<...>` type annotation changed, not its assertions or its outcome. |
+| Pure-function contract / escaping | Read full `runConfirmationWebview.ts`; ran `runConfirmationWebview.test.ts`'s purity test (`renderRunConfirmationHtml(queries, false)` called twice, `toEqual`) and XSS-escaping test (`<script>` payload) | Both pass. `CONNECTION_UNREACHABLE_NOTICE` is a plain string constant built from two string literals concatenated with `+` — no `${...}` interpolation anywhere in it, confirming the brief's "static, not dynamic, no `escapeHtml` needed" claim is accurate, not just asserted. |
+| `activate.ts` call-site mechanics | Read `activate.ts` lines 383–384 and the diff | `const plannedQueries = await planQueries(...)` then `deps.confirmRun(plannedQueries)` — textually unchanged from before this task (only the *type* the variable now flows through changed, mechanically forced by `planQueries`'s widened return type, exactly as the brief predicted and the report claimed). |
+| Full fresh verification | `npm run verify` (typecheck + lint + `vitest run`, this review's own terminal, working tree clean per `git status --porcelain` before and after) | PASS — 34 files passed, 2 skipped (pre-existing live-DB-container integration suites, unrelated to this task); **621 passed, 27 skipped, 648 total**. Matches `IMPLEMENTATION-REPORT.md`'s claimed counts exactly, and matches the claimed baseline delta (615→621 passed, same 27 skipped, 642→648 total). |
+| Scope/ownership | Read `TASK-BRIEF.md`'s Files owned list against `git diff --stat` | All 6 changed source/test files fall within declared ownership. No unauthorized scope expansion. |
 
-1. **Scope/ownership check.** `git diff --stat main..task/T-48-results-webview-header-line`
-   shows exactly: `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`,
-   `packages/engine/src/orchestration/planner/planner.test.ts`,
-   `packages/engine/src/orchestration/planner/planner.ts`,
-   `packages/extension/src/webview/resultsWebview.test.ts`,
-   `packages/extension/src/webview/resultsWebview.ts`,
-   `packages/shared/src/result.ts` — the 5 declared owned files plus the
-   two handoff docs, nothing else. `packages/shared/src/result.ts`'s diff
-   is a pure 18-line addition at the end of the `ComparisonResult`
-   interface (two new optional fields plus doc comments) — no
-   `DifferenceItem`-derived shape (`SchemaDifference`/`ProfileDifference`/
-   `AggregateDifference`/`RowDifference`) touched. `activate.ts` not in the
-   diff, confirmed.
-2. **Additive-only widening check.** Read the full `result.ts` diff:
-   `sourceLabel?: string` / `targetLabel?: string`, both optional, added
-   after the existing `queriesUsed?: string[]` field, no existing field
-   modified. Grepped the whole `packages/` tree for `ComparisonResult`
-   object-literal construction sites (14 files reference the type); none
-   outside the 2 changed construction sites in `planner.ts` were touched,
-   and a fresh `tsc -b --force` (below) passed clean across the whole
-   monorepo, which would have failed immediately had the widening been
-   non-optional and any existing literal needed updating.
-3. **Header composition trace.** Read the exact spliced markup in
-   `resultsWebview.ts`:
-   ```
-   <span>Run ${runId}</span>
-   <span class="meta-sep">&middot;</span>
-   ${renderSourceTargetSegment(result)}
-   <span>${duration}</span>
-   ```
-   `renderSourceTargetSegment` returns `""` when either label is
-   `undefined`, or `<span>src&rarr;tgt</span><span class="meta-sep">…</span>`
-   (with its own trailing separator) when both are present. Traced by
-   hand:
-   - **Present case:** `Run <id>` + sep + `[src→tgt span + sep]` + duration
-     span → renders as `Run <id> · src→tgt · duration`. One separator
-     between each of the three segments, no double separator.
-   - **Absent case:** `Run <id>` + sep + `""` + duration span → renders as
-     `Run <id> · duration`. No dangling/orphaned separator, no missing
-     separator — the pre-existing separator after `Run <id>` correctly
-     serves as the sole separator between the two remaining segments.
-   Confirmed against the actual rendered HTML via
-   `resultsWebview.test.ts`'s new ordering assertion (`runIndex <
-   segmentIndex < durationIndex`) and the omission tests, all passing.
-4. **`deriveSideLabel` correctness and path-leak check**, adversarially
-   probed independently (this review runs on Windows, so I tested both the
-   "native" backslash-style path and the "wrong" forward-slash style, plus
-   a mixed-separator case) by re-implementing the exact function in an
-   isolated Node script and running it directly (script deleted after use;
-   `git status --short` confirmed clean afterward):
-   ```
-   "C:\Users\alex\secrets\customers.sql" -> "customers.sql"
-   "/home/alex/secrets/customers.sql"    -> "customers.sql"
-   "customers.sql"                        -> "customers.sql"
-   "mixed/style\path/customers.sql"       -> "customers.sql"
-   "C:\Users\alex\secrets\"               -> "C:\Users\alex\secrets\"   (see T-48-01)
-   "/home/alex/secrets/"                  -> "/home/alex/secrets/"     (see T-48-01)
-   ```
-   Base-filename-only extraction confirmed correct and OS-separator-agnostic
-   for realistic inputs (a `filePath` ending in an actual filename, which is
-   the only shape the `sqlFile` `QueryInput` kind is meant to carry). The
-   one degenerate edge case (trailing separator, no filename) is recorded
-   as Minor finding T-48-01 above — no `.sql`-file-authoring workflow
-   produces this input, so it does not block approval.
-   `table`-kind and `query`-kind branches read correctly: `table` uses
-   `side.object` verbatim (already short/meaningful, e.g.
-   `"dbo.Customer"`); `query` uses a fixed `"(custom query)"` placeholder,
-   never the SQL text itself.
-5. **`escapeHtml` coverage / XSS probe.** Confirmed both new interpolations
-   (`resultsWebview.ts` line ~366) go through `escapeHtml(result.sourceLabel)`
-   and `escapeHtml(result.targetLabel)`, identically to every other
-   interpolated value in the file. `escapeHtml`'s implementation
-   (line 62) escapes `&`, `<`, `>`, `"`, and `'`. The implementer's own
-   test constructs `sourceLabel: "<script>alert(1)</script>"` and asserts
-   the raw string is absent and the escaped form
-   (`&lt;script&gt;alert(1)&lt;/script&gt;`) is present — I re-ran this
-   test myself (below) and additionally reasoned through a quote-breakout
-   attempt (e.g. `sourceLabel: "\" onmouseover=\"alert(1)"`): `escapeHtml`
-   converts `"` to `&quot;`, and the interpolation site
-   (`<span>${escapeHtml(...)}</span>`) places the value inside element text
-   content, not inside an HTML attribute, so a quote-breakout payload has
-   no attribute context to break out of even before escaping — no
-   plausible bypass found.
-6. **Layer-1 short-circuit path scope check.** Read `runComparison`'s two
-   `buildFailedResult` call sites (planner.ts lines 193 and 220): both are
-   inside `runComparison(definition: ParityDefinition, ...)` with
-   `definition` captured by closure, confirming `definition.source`/
-   `.target` are genuinely in scope at both call sites, not merely assumed
-   to be. `buildFailedResult`'s own diff shows `sourceLabel`/`targetLabel`
-   populated via `deriveSideLabel(definition.source)`/
-   `deriveSideLabel(definition.target)` unconditionally on that path. The
-   implementer's new planner test
-   (`"populates sourceLabel/targetLabel on the Layer-1 connectivity-failure
-   short-circuit path..."`) exercises the missing-connector-registration
-   branch specifically and asserts both labels populate on a
-   `status: "failed"` result — re-ran this test myself (below), passed.
-7. **Fresh full verification**, run independently by this reviewer:
-   ```
-   npm run verify
-   ```
-   Result: `tsc -b --force` clean (no output, exit 0); `eslint .` clean;
-   `vitest run` → **34 test files passed, 2 skipped (36 total); 615 tests
-   passed, 27 skipped (642 total)**. This matches
-   IMPLEMENTATION-REPORT.md's claimed numbers exactly. Independently
-   cross-checked the claimed baseline (606 passed) by counting `it(`
-   occurrences in `main`'s pre-T-48 versions of the two test files: 16 in
-   `resultsWebview.test.ts` (+5 new = 21, matches the file's reported
-   21/21) and 22 in `planner.test.ts` (+4 new = 26, matches the file's
-   reported 26/26); 606 + 9 = 615 reconciles exactly with the fresh run.
-8. **Residue check.** The only throwaway artifact created during this
-   review was a temporary Node script in the session scratchpad directory
-   (outside the repo), deleted before finishing;
-   `git status --short` in the repo shows no uncommitted changes beyond
-   this report.
+## Prior-finding disposition
 
-## Final disposition
+| Finding ID | Disposition | Evidence of resolution |
+| --- | --- | --- |
+| T-38-01 | RESOLVED | `planQueries` now returns `connectionUnreachable: true` distinctly from a legitimately-empty query list (verified directly, not merely via the implementer's tests — see the two independently-authored adversarial probes above), and `renderRunConfirmationHtml` renders a distinct, non-alarmist notice for that case while preserving the original empty-state message for the legitimately-zero-queries case. The finding's own recorded framing ("no correctness or security impact... `runComparison`'s own Layer-1 check will still produce the authoritative failed-status result") is preserved unchanged — `planner.ts` has zero diff, confirmed above. |
 
-**APPROVED.**
+## Approval status
 
-Zero Critical, zero Important findings. One Minor finding (T-48-01,
-degenerate trailing-separator edge case in `deriveSideLabel`'s `sqlFile`
-branch) does not block approval — it has no realistic trigger given the
-`sqlFile` `QueryInput` kind's own contract (a definition author supplying a
-bare directory path with no filename is a malformed definition, not a
-normal input), and is recorded here for optional cleanup whenever
-`deriveSideLabel` is next touched.
-
-All five re-verification points from TASK-BRIEF.md's Handoff section
-confirmed independently: (1) the `ComparisonResult` widening is genuinely
-additive/optional; (2) no difference-array shape was touched; (3) the
-header segment is correctly omitted (no literal `"undefined"` text) when
-either label is absent, on both the main-run and Layer-1 short-circuit
-paths; (4) `escapeHtml` covers both new interpolations; (5) a fresh full
-`npm run verify` is green and matches the claimed 615/27/642 counts, up
-from the independently-reconstructed 606/27/633 baseline.
-
-Finding T-34-02 is genuinely resolved.
+- **Status:** APPROVED
+- **Reviewer:** Claude Code Independent Reviewer subagent (Sonnet 5)
+- **Date:** 2026-08-03
+- **Release or dependency impact:** None outside this task's own scope.
+  T-38-01 can now be marked RESOLVED in `PROGRESS-LEDGER.md`'s open
+  findings table. No other open finding or in-flight task is affected by
+  this change; `planner.ts`'s `runComparison` behavior is provably
+  untouched (zero diff), so no downstream consumer of `runComparison`
+  is affected.
