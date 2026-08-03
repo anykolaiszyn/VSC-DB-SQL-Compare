@@ -1,6 +1,6 @@
 import { readdir, readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
-import type { ComparisonResult } from "@paritylens/shared";
+import type { ComparisonResult, ComparisonStatus } from "@paritylens/shared";
 import { writeExport } from "../export/writeExport";
 
 /**
@@ -11,11 +11,22 @@ import { writeExport } from "../export/writeExport";
  * result), a `timestamp` (ISO 8601, for "most recent first" ordering and
  * display), and the full `ComparisonResult` payload. No fields beyond what
  * `listRecentRuns`/`loadRun`'s own stated purpose needs are added.
+ *
+ * `status` (T-47, resolving finding T-34-01): an **optional**
+ * `ComparisonStatus` mirroring `result.status`, populated by `persistRun`
+ * so `listRecentRuns`/`RunSummary` consumers (the "Recent Runs" tree view)
+ * can key an outcome-colored icon off it without reading the full
+ * `ComparisonResult` body for every listed run (see `RunSummary`'s own
+ * doc comment for why that would be wasteful). It must stay optional so
+ * on-disk records written before this change — which have no `status`
+ * key at all — continue to parse and list successfully via
+ * `listRecentRuns`, with `status` simply `undefined` for those records.
  */
 export interface RunRecord {
   id: string;
   name: string;
   timestamp: string;
+  status?: ComparisonStatus;
   result: ComparisonResult;
 }
 
@@ -120,6 +131,7 @@ export async function persistRun(result: ComparisonResult, safeOutputRoot: strin
     id,
     name: result.comparison,
     timestamp: timestamp.toISOString(),
+    status: result.status,
     result
   };
 
@@ -176,7 +188,20 @@ export async function listRecentRuns(safeOutputRoot: string): Promise<RunSummary
       const contents = await readFile(resolve(resolvedRoot, entry), "utf8");
       const record = JSON.parse(contents) as RunRecord;
       if (typeof record.id === "string" && typeof record.name === "string" && typeof record.timestamp === "string") {
-        summaries.push({ id: record.id, name: record.name, timestamp: record.timestamp });
+        // `status` is additive/optional (T-47): pre-existing records
+        // written before this change have no `status` key at all, and
+        // must continue to parse and list successfully with `status`
+        // simply `undefined` rather than being treated as malformed. The
+        // conditional spread (rather than `status: record.status`) is
+        // required by this project's `exactOptionalPropertyTypes: true`
+        // setting, under which an optional property must be omitted
+        // entirely rather than explicitly assigned `undefined`.
+        summaries.push({
+          id: record.id,
+          name: record.name,
+          timestamp: record.timestamp,
+          ...(record.status !== undefined ? { status: record.status } : {})
+        });
       }
     } catch {
       // Skip unreadable/malformed entries; see doc comment above.
