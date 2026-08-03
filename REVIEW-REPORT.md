@@ -1,292 +1,135 @@
-# REVIEW-REPORT.md — T-34: Results webview + sidebar visual redesign
+# REVIEW-REPORT.md — T-35a: `ParitySide`/planner support for query & sqlFile kinds
 
 ## Review independence statement
 
-I am a separate reviewer instance from whoever implemented T-34. I did not
-author `resultsWebview.ts`, `parityTreeDataProvider.ts`, or their test
-files. All findings below are based on my own fresh reading of the diff and
-my own command execution on branch `task/T-34-results-sidebar-visual-redesign`
-(commit `33e6ccd`), not on the implementer's characterization in
-`IMPLEMENTATION-REPORT.md`.
+This review was performed by a separate reviewer agent instance from
+whoever implemented T-35a, with no memory of writing the implementation.
+All findings below come from independently reading the actual diff and
+source on `task/T-35a-parityside-query-kinds`, independently re-running
+verification commands, and independently constructing adversarial test
+probes — not from trusting `IMPLEMENTATION-REPORT.md`'s claims at face
+value. Every claim in the report that could be checked was re-derived or
+reproduced directly.
 
 ## Scope reviewed
 
-- `TASK-BRIEF.md` (root) — sole scope authority.
-- `IMPLEMENTATION-REPORT.md` (root) — implementer's self-report, treated as
-  a claim, not a fact.
-- `multi-agent-idea-to-app/design_handoff_paritylens_results_webview/README.md`.
-- Full diff of `packages/extension/src/webview/resultsWebview.ts`,
-  `packages/extension/src/webview/resultsWebview.test.ts`,
-  `packages/extension/src/views/parityTreeDataProvider.ts`,
-  `packages/extension/src/views/parityTreeDataProvider.test.ts` against
-  `main`.
-- `packages/extension/src/runHistory/runHistory.ts` (read-only, to verify
-  the disclosed `RunSummary` scope-boundary claim).
-
-## Verification performed (my own commands/results)
-
-### 1. Fresh full verification
-
-```
-npm run verify
-```
-Result: **typecheck clean, lint clean.** Vitest: `28 passed | 2 skipped (30 files)`,
-`477 passed | 27 skipped (504)`. This matches the implementation report's
-claimed full-verification numbers exactly (477 passed / 27 skipped). The 27
-skips are the documented SQL Server/PostgreSQL docker-integration tests
-(no container running in this environment), unrelated to T-34.
-
-### 2. `renderResultsHtml` purity and `enableScripts` guard
-
-- Diffed the full function body against `main`
-  (`git diff main...HEAD -- packages/extension/src/webview/resultsWebview.ts`).
-  Confirmed:
-  - Same exported signature: `export function renderResultsHtml(result: ComparisonResult): string`.
-  - Only import addition is more type-only members (`ComparisonStatus`,
-    `RowDifferenceCategory`, `Severity`) from `@paritylens/shared` — still
-    `import type`, no runtime `vscode` import added.
-  - No `Date.now()`, `Math.random()`, or any other non-determinism
-    (`grep` for these found zero matches in the file).
-  - No closures over external mutable state — `renderStyles()` returns a
-    fixed string literal with no arguments; all other new helpers
-    (`severityTagClass`, `statusTag`, `renderStatBand`, `renderRowDifferenceRow`)
-    are pure functions of their arguments.
-  - `showResultsWebview` (lines 689–707) is **byte-identical** to `main`'s
-    version — diffed `git show main:...` against the current file region;
-    `{ enableScripts: false }` is unchanged at the call site.
-- Confirmed via `resultsWebview.test.ts`'s new purity test
-  ("the same input rendered twice produces identical output") and arity
-  test (`renderResultsHtml.length === 1`) — both pass under my own
-  `npm run verify` run above, not just per the report's claim.
-
-### 3. No JavaScript in the webview
-
-- `grep -n "script\|onclick\|onchange\|javascript:"` over the file: zero
-  matches for any `<script>` tag or inline event-handler attribute (the
-  matches that did surface were all `color: var(--vscode-descriptionForeground)`
-  false positives from grep's substring match on "script" inside
-  "description", and doc-comment prose — no actual scripting construct).
-- Tab switching is five hidden `<input type="radio" name="paritylens-tab">`
-  elements plus `<label for="...">`, shown/hidden purely via
-  `#tab-X:checked ~ .tab-panels .tab-panel--X { display: block; }` CSS
-  sibling-combinator rules. Genuinely CSS-only.
-- Row-level expand/collapse uses native `<details class="row-detail">`/
-  `<summary>` — genuinely native-HTML, no JS.
-
-### 4. Escaping coverage
-
-Walked every new `${...}` interpolation in the diff
-(`grep -n '\${' resultsWebview.ts`, then manually excluded pure CSS
-`var(--vscode-...)` lines):
-- `renderStatBand`: `result.summary.passed/warnings/failed`,
-  `result.rowCounts.difference/source/target` — all wrapped in `escapeHtml`.
-  These are numbers today (per `packages/shared/src/result.ts`:
-  `ExecutionTiming`/`RowCounts` fields are typed `number`), so the escaping
-  here is defense-in-depth rather than a live risk, but it's present and
-  correct.
-- `severityTagClass`/`statusTag` output: class name strings are drawn from
-  a fixed `switch` over the `Severity`/`ComparisonStatus` enum values
-  (not user data) — no escaping needed for the class name; the *label*
-  text rendered alongside it is either a fixed string or, in the unhandled
-  `default` case of `statusTag`, `escapeHtml(status)`. Confirmed present
-  at the `default` branch.
-- `renderRowDifferenceRow`: `categoryLabel` (`CATEGORY_LABELS[d.category] ?? d.category`,
-  where the fallback is unescaped raw enum text) and `keyValuesLabel`
-  (`d.keyValues.map(String).join(", ")`, values of `unknown` type) are both
-  computed unescaped, but every render site wraps them in `escapeHtml`
-  (`<td>${escapeHtml(categoryLabel)}</td>`, confirmed twice — once in the
-  plain-row branch, once in the `<details>` branch). `d.message` similarly
-  passes through `escapeHtml` at both render sites. The `data-category`
-  attribute uses `escapeHtml(d.category)`.
-- `renderQueryPreviewSection`: unchanged escaping/one-`<pre>`-per-query
-  structure, confirmed still calls `escapeHtml(sql)` per query, only the
-  wrapper markup (card + "Query N" header) changed.
-- Meta line / header: `result.comparison`, `result.runId` — both
-  `escapeHtml`-wrapped, matching pre-existing pattern.
-- Existing XSS-probe test (`<script>alert(1)</script>` in comparison name)
-  still present and passing.
-
-No gap found: every `ComparisonResult`-derived string that could carry
-data-dependent content is routed through the pre-existing `escapeHtml`
-helper at the point of interpolation into the HTML string.
-
-**One accuracy note on the brief's own header spec, not a security
-finding:** the brief's Scope item 1 header description asks for a meta
-line reading `Run <runId> · source→target · duration`. The implemented
-meta line only renders `Run <runId>` and the duration
-(`${execution.sourceDurationMs}ms source / ${execution.targetDurationMs}ms target`)
-— it omits the `source object → target object` segment entirely (no
-`·` separator or object names appear). This is a real, verifiable gap
-against the brief's explicit header spec (confirmed by reading the
-`header-row`/`meta-line` markup in the current file: it only contains
-`Run ${...}` and the duration span, no second `meta-sep` or object-name
-span). It was not disclosed in the implementation report's
-Assumptions/Risks section. I judge this **Minor**: it does not affect
-purity, security, or scope-file boundaries, and the object-name fields
-were never listed as their own required Green-state evidence bullet
-(only "new required markup ... absent" tests were required, and one
-exists and passes for header/meta content in general) — but it is a
-literal, uncalled-out deviation from Scope item 1's explicit line-item
-spec and should be fixed or explicitly logged as a follow-up.
-
-### 5. Sidebar native-only compliance
-
-- `git diff main...HEAD -- parityTreeDataProvider.ts` shows exactly two
-  additions: `this.iconPath = new vscode.ThemeIcon("file")` in
-  `ParityComparisonTreeItem`, and `this.iconPath = new vscode.ThemeIcon("circle-outline")`
-  in `ParityRecentRunTreeItem`. No `ThemeColor` argument is used anywhere
-  in the diff (consistent with the disclosed neutral-icon decision — there
-  is no outcome to color by). No custom HTML, no webview conversion, no
-  new `description`/`contextValue` changes, `ParityTreeItem` (section
-  headers) untouched — matches Scope item 2's explicit "do not
-  over-engineer this node" instruction.
-- `"file"` and `"circle-outline"` are both real, standard, long-standing
-  built-in VS Code codicon ids (used extensively elsewhere in VS Code's own
-  UI, e.g. `circle-outline` for neutral/unset states in the SCM view). No
-  invalid id risk here since no `ThemeColor` id was introduced to spot-check.
-
-### 6. File-ownership scope
-
-```
-git diff --stat main...HEAD
-```
-```
- IMPLEMENTATION-REPORT.md                           | 438 ++++++++---------
- .../src/views/parityTreeDataProvider.test.ts       |  33 +-
- .../extension/src/views/parityTreeDataProvider.ts  |  24 +
- .../extension/src/webview/resultsWebview.test.ts   |  81 ++-
- packages/extension/src/webview/resultsWebview.ts   | 547 ++++++++++++++++++---
- 5 files changed, 833 insertions(+), 290 deletions(-)
-```
-Exactly the two owned source files, their two paired test files, and
-`IMPLEMENTATION-REPORT.md`. Explicitly confirmed **zero diff** against
-`main` for `packages/shared/src/result.ts`, `packages/extension/src/runHistory/`,
-`packages/extension/src/connections/`, `packages/extension/src/statusbar/parityStatusBar.ts`,
-and `packages/extension/src/activation/activate.ts` via
-`git diff main...HEAD -- <those paths>` returning empty output. `git status --short`
-on the branch is clean (no untracked/stray files).
-
-### 7. `RunSummary` scope-boundary judgment
-
-Read `packages/extension/src/runHistory/runHistory.ts` in full. Confirmed:
-`export type RunSummary = Omit<RunRecord, "result">` — i.e. exactly
-`{ id: string; name: string; timestamp: string }`, with a doc comment
-explicitly justifying the omission of `result` (and therefore `status`) as
-an intentional avoidance of reading/parsing every persisted run's full
-body just to list names/timestamps.
-
-Traced the only path `parityTreeDataProvider.ts` has to run data:
-`ParityTreeDataProviderDeps.listRecentRuns: () => Promise<RunSummary[]>`,
-consumed at `getRecentRunChildren` (`const runs = await this.deps.listRecentRuns()`)
-— there is no other injected dependency that could supply a `status`/outcome
-field. The only two ways to get an outcome-colored icon would be:
-(a) widening `RunSummary` in `runHistory.ts` — explicitly a Prohibited
-Changes file for this task, or (b) having the tree provider itself perform
-additional I/O (e.g. call `loadRun` per item) to recover the full
-`ComparisonResult` — which is filesystem I/O outside "`TreeItem`
-presentation only — no data-fetching/dependency-shape changes beyond what
-T-33 already established" (Files Owned). Both are genuinely out of this
-task's ownership as declared by the brief itself.
-
-**My independent judgment: stopping at a neutral icon was the correct
-call**, not a shortcut the implementer could have avoided within this
-task's actual file ownership. The brief's own Scope item 2 anticipated
-exactly this outcome ("If it doesn't carry anything sufficient, that's a
-scope boundary to flag and stop at, not silently work around") and the
-implementer's report discloses it explicitly and specifically (not vaguely)
-in both a code comment and the Assumptions/Risks section, with the two
-rejected alternatives and why each is out of bounds. This is model
-disclosed-scope-boundary behavior, not a defect.
-
-**However**, the brief's own Green-state evidence list explicitly requires
-"a `parityTreeDataProvider.test.ts` assertion that ... the run item's icon
-color reflects at least two distinct outcomes" — and this requirement is
-verifiably **not met**: the new tests only assert `instanceof ThemeIcon`,
-with no color/outcome differentiation, because none exists to assert. I
-treat this as a **disclosed, justified, but still real gap against a
-brief-mandated Green-state requirement** — see Findings below for how I'm
-classifying it.
-
-### 8. Test quality
-
-Read both new `describe` blocks in full (`resultsWebview.test.ts`'s
-`"T-34 visual redesign"` and `"T-34: renderResultsHtml purity + enableScripts guard"`
-blocks; `parityTreeDataProvider.test.ts`'s `"T-34 visual redesign: icons"`
-block). All are genuine, specific assertions:
-- Regex-anchored severity-tag-on-"Failure" check
-  (`/class="[^"]*severity-tag[^"]*"[^>]*>Failure</`), not a bare substring
-  check.
-- Explicit negative assertions against banned raw Nocturne hex values
-  (`#161826`, `#9184d9`) and against `<script>`/inline-handler patterns
-  (`/\son\w+\s*=/i`).
-- The `enableScripts` guard test inspects the actual 4th argument passed
-  to a mocked `createWebviewPanel`, not just that the panel was created.
-- The `ThemeIcon` tests use a real class-based `vi.mock("vscode", ...)`
-  with `instanceof` checks rather than presence-of-a-string checks.
-
-No vacuous "exists"/"is defined" placeholder assertions found.
+- `packages/engine/src/orchestration/definition/definition.ts` (+ `.test.ts`)
+- `packages/engine/src/orchestration/planner/planner.ts` (+ `.test.ts`)
+- `git diff --stat main..task/T-35a-parityside-query-kinds` (full diff, all files)
+- Fresh `npm run verify`, isolated `npx vitest run packages/engine`
+- Independent backward-compatibility diff script (main's `parseSide` vs
+  branch's `parseSide` against real fixture-shaped YAML)
+- Independent adversarial containment probes against `resolveSideInput`
+  (7 cases, run as a throwaway vitest file, deleted after use)
 
 ## Findings
 
 ### Critical
+
 NONE.
 
 ### Important
-NONE. The `RunSummary`/outcome-color gap is a real requirement miss (see
-below) but I am not blocking on it — see reasoning under Minor and the
-Disposition section.
+
+NONE.
 
 ### Minor
 
-| ID | Finding | Evidence | Resolution |
+| ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-34-01 | Brief's required Green-state evidence — "the run item's icon color reflects at least two distinct outcomes" — is not met. `ParityRecentRunTreeItem` uses a fixed, uncolored `ThemeIcon("circle-outline")` for every run regardless of outcome, because `RunSummary` (a file this task may not touch) carries no status field. | `packages/extension/src/views/parityTreeDataProvider.ts` diff; `RunSummary = Omit<RunRecord, "result">` in `runHistory.ts`; new tests only assert `instanceof ThemeIcon`, no color differentiation. | Accepted as a disclosed, correctly-justified scope boundary (see Handoff item 7 analysis above) rather than a defect to fix in this task. Route to a follow-up task authorized to additively extend `RunSummary` (e.g. an optional `status?: ComparisonStatus` field populated by `persistRun`, which already receives the full `ComparisonResult`) so `ParityRecentRunTreeItem` can then key an outcome-colored `ThemeColor` off it. Should be logged in `PROGRESS-LEDGER.md`'s open findings, routed to that future task, exactly as the implementer's own report recommends. |
-| T-34-02 | Header meta line omits the `source object → target object` segment that Scope item 1's header spec explicitly calls for (`Run <runId> · source→target · duration`). Only `Run <runId>` and the duration are rendered; no second `·` separator or object-name span exists in the markup. Not disclosed in the Assumptions/Risks section of the implementation report. | `packages/extension/src/webview/resultsWebview.ts`, `renderResultsHtml`'s `meta-line` block (only one `<span>Run ...</span>` and one duration `<span>` present, no source/target object span). | Should be added in a small follow-up: `ComparisonResult` doesn't appear to carry a distinct "source object"/"target object" display string as a top-level field under this name (worth confirming what's actually available — e.g. derived from `queriesUsed`/definition metadata), so this may itself need a short scope note if the data isn't cleanly available; at minimum, log it as a known gap against the brief's literal header spec. Does not block approval — it's a cosmetic completeness gap, not a purity/security/scope violation. |
+| T-35a-01 | `resolveSideInput` is called twice for the same `ParitySide` within a single `runComparison` run when both `rowCount` and (`schema` or `profile`) checks are enabled (once at planner.ts:245-246 for schema/profile, again at planner.ts:297-298 for row-count). For a `sqlFile`-kind side this means the file is read from disk twice per run instead of once. Not a correctness bug (the second read produces the same content, barring a concurrent external edit to the file mid-run, which is an inherent TOCTOU characteristic of reading any file twice, not something this task introduces) and not a security issue since the containment check is enforced identically both times. It is a minor and disclosed-adjacent inefficiency — the implementation report's Judgment call 2 explicitly reasons about avoiding a *double read within `runProfileChecks`* but does not mention the separate row-count resolution also duplicating the schema/profile resolution above it. | `planner.ts` lines 245-246 vs 297-298; confirmed by reading, not merely inferred | Non-blocking. A future task (row-count/row-level consolidation, or T-35b if convenient) could hoist a single `resolveSideInput` call per side to the top of `runComparison` and thread it to all four check families. Low priority since no current caller uses `sqlFile`-kind input in production. |
 
-## Disposition of prior findings
+## Verification performed
 
-No prior open findings from earlier review rounds were flagged as
-in-scope for T-34 to resolve (T-34 is a new visual-only task, not a
-remediation of a previously-flagged I-01/I-02-style finding). Nothing to
-re-verify here.
+### Fresh full verification (`npm run verify`)
 
-## Summary of independent verification vs. report's claims
+Reproduced independently, exact output:
 
-| Claim | Report's number | My independent number | Match? |
-| --- | --- | --- | --- |
-| Full verify test count | 477 passed, 27 skipped | 477 passed, 27 skipped | Yes |
-| Full verify typecheck/lint | clean | clean | Yes |
-| `showResultsWebview` `enableScripts: false` unchanged | claimed | confirmed byte-identical to `main` | Yes |
-| Scope confined to 2 files + 2 test files + report | claimed | confirmed via `git diff --stat` and empty diffs on all prohibited paths | Yes |
-| Escaping coverage complete | claimed | confirmed, walked every new interpolation | Yes |
-| `RunSummary` has no status field | claimed | confirmed by reading `runHistory.ts` | Yes |
-| Meta line includes source→target object info | implied by report's "Behavior delivered" prose ("a header with ... meta line") | **not actually present** in the rendered markup | **No — see T-34-02** |
+- `npm run typecheck` → **exit 1**, exactly one error:
+  `packages/extension/src/authoring/buildComparisonYaml.test.ts(59,26): error TS2339: Property 'where' does not exist on type 'ParitySide'.` — matches the report's disclosure precisely (same file, same line, same error).
+- `npm run lint` → exit 0, no output.
+- `npx vitest run` (all workspaces) → **2 files failed / 26 passed / 2 skipped** (30 total); **3 tests failed / 496 passed / 27 skipped** (526 total). All 3 failures confirmed to be in `packages/extension`:
+  - `buildComparisonYaml.test.ts` — 2 failures, both `toEqual` deep-equality mismatches caused solely by the new `kind: "table"` field appearing in the parsed `ParitySide` (diff output shows `+ "kind": "table",` as the only delta in each case).
+  - `newComparisonWizard.test.ts` — 1 failure, same root cause (`+ kind: 'table'` in the diff).
+  - No failures anywhere in `packages/engine`.
 
-## Final approval status
+This matches the implementation report's Full verification row exactly (same counts, same files, same root cause).
+
+### `packages/engine` in isolation
+
+`npx vitest run packages/engine` → **14 files passed, 2 skipped (integration, no test containers); 389 tests passed, 27 skipped**. Matches the report's claimed 389/389 exactly. Confirms `packages/engine` itself is fully green and the extension break is genuinely isolated to `packages/extension`.
+
+### Independent backward-compatibility check (Handoff item 1)
+
+Not satisfied with the report's description alone. Extracted `definition.ts` at `main` and at the task branch into standalone bundles (via `esbuild`, `yaml` dependency vendored locally) and parsed two real fixture-shaped YAML documents with each:
+
+1. The Idea Prompt.md section 7 worked example verbatim (as reproduced in `definition.test.ts`'s own "worked example" describe block) — has a `where` clause on both sides, no `kind` field.
+2. A minimal source/target pair with no `where` clause, no `kind` field (matching the shape used throughout the pre-existing `buildComparisonYaml`/`newComparisonWizard` extension tests).
+
+Result for both samples: `branch.source` and `branch.target` are **byte-for-byte equal to `main.source`/`main.target` plus exactly one added field, `kind: "table"`** — no other field changed, none dropped, no reordering-sensitive issue (deep-equal, not string-equal, was used, so key order is irrelevant). This is a real, reproduced diff, not a restatement of the report's claim. Confirms the single most important regression guard in this task holds against genuine fixture-shaped input, not just the implementer's own new test cases.
+
+### Independent adversarial `baseDir` containment probes (Handoff item 2)
+
+`planner.test.ts` already covers: `../` traversal, an absolute path outside `baseDir`, and a sibling-directory-prefix bypass (`baseDir` vs `baseDir-evil`) — matching the brief's "at minimum" list.
+
+Beyond those, constructed and ran 7 additional adversarial probes as a throwaway test file (`packages/engine/src/orchestration/planner/__adversarial-review-probe.test.ts`, deleted after the run; `git status` confirms clean working tree with no residue):
+
+1. Backslash-traversal (`..\outside.sql`) — **rejected** (`SqlFilePathEscapesBaseDirError`).
+2. Mixed-slash traversal (`sub/../../outside.sql`) — **rejected**.
+3. `filePath: "."` (baseDir itself, a directory not a file) — **rejected** (throws; does not silently "succeed" against a directory read).
+4. Sibling-prefix bypass constructed with backslash separators (`..\<baseDirName>-evil\x.sql`) — **rejected**.
+5. Windows drive-absolute escape (`C:\Windows\win.ini`) — **rejected**.
+6. Negative control: legitimate nested subdirectory access (`a/b/q.sql` under `baseDir`) — **succeeds**, returns the file's contents as expected (confirms the check isn't overly strict/broken).
+7. Sibling-prefix bypass with no separator between the base name and the suffix (`../<baseDirName>Evil/x.sql`) — **rejected**.
+
+All 7 passed as expected (6 correctly rejected, 1 correctly allowed). `resolveSideInput`'s `path.relative`-based containment check (`rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)`, computed after `path.resolve`, which normalizes both `/` and `\` on Windows and collapses `..` segments) holds against every adversarial variant constructed independently of the implementer's own test suite, including the Windows-specific backslash and drive-absolute cases the brief's Handoff note specifically asked for.
+
+### No `sqlFile`-kind reaches a connector directly (Handoff item 3)
+
+Grepped `planner.ts` for every `.getSchema(`/`.executeQuery(` call site:
+
+- `planner.ts:247-248` — `source.getSchema(sourceInput)` / `target.getSchema(targetInput)`, where `sourceInput`/`targetInput` are assigned at lines 245-246 exclusively via `await resolveSideInput(definition.source/target, baseDir)`.
+- `planner.ts:453` — `connector.executeQuery({ kind: "query", sql }, executionOptions)`, where `sql` is `await buildFetchAllRowsSql(connector, side, baseDir)` (line 443), and `buildFetchAllRowsSql` itself routes `query`/`sqlFile`-kind sides through `resolveSideInput` (line 407) before ever touching a connector.
+
+Also confirmed `profiling.ts`'s `profileColumn`/`buildProfileQueries` and `volume.ts`'s `compareVolume`/`buildRowCountSql` all take `QueryInput` (never `ParitySide`) as their parameter type, and every call site in `planner.ts` passes only the already-resolved `sourceInput`/`targetInput`/`rowCountSourceInput`/`rowCountTargetInput` (all products of `resolveSideInput`) into them — never a raw `ParitySide`. No code path exists where a `sqlFile`-kind `ParitySide` or a `{kind:"sqlFile"}` `QueryInput` could reach a connector method without first passing through `resolveSideInput`'s read-and-convert step.
+
+### `buildFetchAllRowsSql`/`fetchAllRows` invariant (Handoff item 4)
+
+Confirmed structurally, not just via the implementer's own test assertions: `fetchAllRows` (planner.ts:438-461) computes `const sql = await buildFetchAllRowsSql(connector, side, baseDir);` and then uses that exact same `sql` variable, unmodified, as the value passed to `connector.executeQuery({ kind: "query", sql }, ...)`. Since it is the literal same value (not reconstructed from `side` a second time), the previewed SQL (`buildFetchAllRowsSql`'s return value, which is what `queriesUsed` collects at lines 331-333) and the executed SQL are provably identical by construction, for all 3 kinds — the invariant does not depend on the two code paths happening to agree, there is only one code path. `planner.test.ts`'s three `T-35a: buildFetchAllRowsSql` tests independently confirm the string output is correct for each kind (byte-for-byte unchanged for `table`, correctly subquery-wrapped for `query`/`sqlFile`).
+
+### File-ownership diff (Handoff item 5)
+
+```
+git diff --stat main..task/T-35a-parityside-query-kinds
+ IMPLEMENTATION-REPORT.md                                              | 253 ++++-----------------
+ packages/engine/src/orchestration/definition/definition.test.ts       | 167 ++++++++++++++
+ packages/engine/src/orchestration/definition/definition.ts            | 121 +++++++++-
+ packages/engine/src/orchestration/planner/planner.test.ts             | 221 +++++++++++++++++-
+ packages/engine/src/orchestration/planner/planner.ts                  | 188 ++++++++++++---
+ 5 files changed, 696 insertions(+), 254 deletions(-)
+```
+
+Confirmed via a second, exclusion-based diff (`git diff --stat ... -- . ':!IMPLEMENTATION-REPORT.md' ':!definition.ts' ':!definition.test.ts' ':!planner.ts' ':!planner.test.ts'`) that returned **zero output** — i.e., no file outside the five declared files changed at all. Specifically confirmed nothing under `packages/extension/**`, `packages/shared/**`, `comparison-core/profiling/**` (or any other `comparison-core/**` path), or `connector-sdk/**` changed. No new module file was added (matches the report's "no new module was added" note; brief permitted but did not require one).
+
+### `packages/extension` disclosure accuracy (Handoff item 6)
+
+Reproduced independently (see Full verification above): `packages/extension` genuinely fails to typecheck (1 error, `buildComparisonYaml.test.ts:59`, `.where` access on the narrowed union) and genuinely fails 3 tests (2 in `buildComparisonYaml.test.ts`, 1 in `newComparisonWizard.test.ts`), all caused by the new required `kind` field appearing in strict `toEqual` assertions written before this task. Confirmed `activate.ts`'s sole `runComparison` call site (`packages/extension/src/activation/activate.ts:307`) passes exactly 2 arguments (`definition, registry`), which remains valid against the new 3rd-optional-parameter signature — so the report's claim that `activate.ts` itself needs no follow-up edit (only the two test files do, for an unrelated reason: the `kind` field, not the signature change) is accurate. The typecheck/test break is real, correctly isolated to `packages/extension`, and correctly attributed to `kind` being new on `ParitySide` rather than to any signature-compatibility problem. This is not a T-35a defect — the brief explicitly prohibits touching `packages/extension/**`, and the break is a mechanically forced, disclosed, and previously-anticipated consequence of widening a type this task was specifically scoped to widen.
+
+## Disposition of prior findings this task was meant to resolve
+
+None — T-35a is a new task (no `T-35a-*` findings existed prior to this review), and no `PROGRESS-LEDGER.md` finding was cited as required to close in `TASK-BRIEF.md`'s scope for this task.
+
+## Overall assessment
+
+- Backward compatibility: verified independently against real fixture-shaped YAML — exact match (branch = main + `kind: "table"`, nothing else).
+- Security-relevant containment logic (`resolveSideInput`'s `baseDir` check): held against 7 independently constructed adversarial probes beyond the implementer's own 3, including the specific Windows backslash-traversal case the brief's Handoff note called out by name, plus a drive-absolute escape and multiple sibling-prefix bypass variants.
+- No path exists where `sqlFile`-kind input reaches a connector without first being converted to `query`-kind by `resolveSideInput`.
+- The `buildFetchAllRowsSql`/`fetchAllRows` preview-vs-executed invariant (T-16b's original stated property) is preserved by construction for all 3 kinds, not just `table`.
+- File-ownership scope is exactly as declared — zero unauthorized file changes.
+- The disclosed `packages/extension` typecheck/test break is real, correctly isolated, correctly attributed, and correctly left unfixed per the brief's explicit prohibition.
+- One Minor finding (T-35a-01, a redundant double-resolution/double-file-read across check families within one run) — non-blocking, does not affect correctness or security, flagged for optional future cleanup.
+
+## Approval status
 
 **APPROVED**
 
-Reasoning: zero Critical or Important findings. The one brief-mandated
-Green-state requirement that is not literally satisfied (run-item outcome
-color, T-34-01) is a case where the brief itself pre-authorized exactly
-this outcome ("that's a scope boundary to flag and stop at, not silently
-work around") if the underlying data genuinely isn't available within this
-task's file ownership — and my own independent trace of `runHistory.ts`
-and `parityTreeDataProvider.ts`'s dependency injection confirms it
-genuinely isn't. Treating a brief's own pre-authorized stopping point as a
-blocking failure would contradict the brief's explicit instruction and
-penalize correct behavior. The gap is disclosed prominently (code comment
-+ Assumptions/Risks section) with a concrete, actionable follow-up path
-(additive `RunSummary.status?` field), which is what "flag and stop"
-disclosure is supposed to produce. T-34-02 (missing source→target segment)
-is a genuine, undisclosed deviation from the brief's literal header spec,
-but it is cosmetic, does not touch purity/security/scope, and does not
-rise to a blocking Important-level finding.
-
-Both Minor findings (T-34-01, T-34-02) should be logged in
-`PROGRESS-LEDGER.md`'s open findings table with clear ownership for
-follow-up, per this project's standard practice for disclosed/accepted
-gaps.
-
-No throwaway probe files were created during this review; `git status`
-confirms no residue beyond this report.
+0 Critical, 0 Important, 1 Minor (non-blocking, tracked as T-35a-01 for optional future follow-up). T-35b may proceed.
