@@ -221,4 +221,74 @@ describe("renderResultsHtml", () => {
       expect(optionsArg).toEqual({ enableScripts: false });
     });
   });
+
+  // T-48: header meta-line source→target segment (finding T-34-02). These
+  // assertions must fail against unmodified rendering code (no
+  // sourceLabel/targetLabel handling exists yet) -- this is this task's
+  // red-state evidence.
+  describe("T-48: header meta-line source→target segment", () => {
+    it("renders the source→target segment between the Run <runId> and duration spans when both labels are present", () => {
+      const resultWithLabels: ComparisonResult = {
+        ...SAMPLE_RESULT,
+        sourceLabel: "dbo.Customer",
+        targetLabel: "CUSTOMER"
+      };
+
+      const html = renderResultsHtml(resultWithLabels);
+
+      expect(html).toContain("dbo.Customer&rarr;CUSTOMER");
+      // Ordering: the source→target segment appears after "Run <runId>" and
+      // before the duration text, matching "Run <runId> · source→target ·
+      // duration".
+      const runIndex = html.indexOf("Run run-001");
+      const segmentIndex = html.indexOf("dbo.Customer&rarr;CUSTOMER");
+      const durationIndex = html.indexOf("10ms source / 12ms target");
+      expect(runIndex).toBeGreaterThan(-1);
+      expect(segmentIndex).toBeGreaterThan(runIndex);
+      expect(durationIndex).toBeGreaterThan(segmentIndex);
+    });
+
+    it("escapes sourceLabel/targetLabel through escapeHtml", () => {
+      const resultWithLabels: ComparisonResult = {
+        ...SAMPLE_RESULT,
+        sourceLabel: `<script>alert(1)</script>`,
+        targetLabel: "target"
+      };
+
+      const html = renderResultsHtml(resultWithLabels);
+
+      expect(html).not.toContain("<script>alert(1)</script>");
+      expect(html).toContain("&lt;script&gt;alert(1)&lt;/script&gt;");
+    });
+
+    it("omits the source→target segment entirely when sourceLabel is undefined", () => {
+      const resultWithoutSource: ComparisonResult = {
+        ...SAMPLE_RESULT,
+        targetLabel: "CUSTOMER"
+      };
+
+      const html = renderResultsHtml(resultWithoutSource);
+
+      expect(html).not.toContain("undefined");
+      expect(html).not.toContain("rarr;CUSTOMER");
+    });
+
+    it("omits the source→target segment entirely when targetLabel is undefined", () => {
+      const resultWithoutTarget: ComparisonResult = {
+        ...SAMPLE_RESULT,
+        sourceLabel: "dbo.Customer"
+      };
+
+      const html = renderResultsHtml(resultWithoutTarget);
+
+      expect(html).not.toContain("undefined");
+      expect(html).not.toContain("dbo.Customer&rarr;");
+    });
+
+    it("omits the source→target segment when both sourceLabel and targetLabel are absent (matches today's baseline behavior)", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      expect(html).not.toContain("undefined");
+    });
+  });
 });

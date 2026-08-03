@@ -374,6 +374,9 @@ export async function runComparison(
       comparisonDurationMs,
     },
     ...(queriesUsed.length > 0 ? { queriesUsed } : {}),
+    // T-48: results webview header source→target segment (finding T-34-02).
+    sourceLabel: deriveSideLabel(definition.source),
+    targetLabel: deriveSideLabel(definition.target),
   };
 }
 
@@ -537,6 +540,38 @@ async function runProfileChecks(
   return { findings, queriesUsed };
 }
 
+/**
+ * T-48 (finding T-34-02): derives a short, human-readable display label for
+ * one `ParitySide`, for `ComparisonResult.sourceLabel`/`.targetLabel` (the
+ * results webview header's `source→target` segment -- see
+ * `packages/shared/src/result.ts`'s doc comment on those fields). Judgment
+ * calls, per TASK-BRIEF.md Scope item 2:
+ *  - `kind: "table"` uses the object reference itself (e.g. "dbo.Customer")
+ *    -- already a short, meaningful display string.
+ *  - `kind: "query"` has no short meaningful label (a full SQL string is not
+ *    a sensible header label per the brief) -- uses the fixed placeholder
+ *    "(custom query)".
+ *  - `kind: "sqlFile"` uses the file's base name only (e.g. "customers.sql"),
+ *    not the full `filePath`, to avoid leaking a local filesystem path into
+ *    a UI header. Base name is derived via a plain string split on both
+ *    "/" and "\\" (not `node:path`'s `basename`, since `filePath` is a
+ *    definition-authored string that may use either separator regardless of
+ *    the host OS, and this function has no I/O dependency otherwise) so it
+ *    stays correct for a definition authored on a different OS than the one
+ *    running the comparison.
+ */
+function deriveSideLabel(side: ParitySide): string {
+  if (side.kind === "table") {
+    return side.object;
+  }
+  if (side.kind === "query") {
+    return "(custom query)";
+  }
+  // side.kind === "sqlFile"
+  const segments = side.filePath.split(/[/\\]/);
+  return segments[segments.length - 1] || side.filePath;
+}
+
 /** Builds a `"failed"`-status `ComparisonResult` for a Layer 1 connectivity
  * failure -- schema/profile checks were never attempted, so
  * `schemaDifferences`/`profileDifferences` (and every other difference
@@ -567,6 +602,12 @@ function buildFailedResult(
     aggregateDifferences: [],
     rowDifferences: [],
     execution: execution ?? { sourceDurationMs: 0, targetDurationMs: 0, comparisonDurationMs: 0 },
+    // T-48: definition.source/.target are available at this short-circuit
+    // point (this failure path runs after connection-name resolution and/or
+    // Layer-1 connectivity testing, both of which already have the full
+    // parsed `definition` in scope) -- no reason to leave these unset here.
+    sourceLabel: deriveSideLabel(definition.source),
+    targetLabel: deriveSideLabel(definition.target),
   };
 }
 
