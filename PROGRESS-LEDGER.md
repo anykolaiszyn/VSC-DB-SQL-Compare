@@ -12,8 +12,9 @@
   redesign of the results webview and sidebar tree, from an approved
   design handoff) added 2026-08-02 as a new task depending on T-33. T-29,
   T-30, T-31, T-32, and T-33 are COMPLETE and merged; T-34 (visual
-  redesign, depends on T-33) is next.
-- **Exactly one task may be active:** NONE
+  redesign, depends on T-33) is now ACTIVE.
+- **Exactly one task may be active:** T-34 (results webview + sidebar
+  visual redesign, branch `task/T-34-results-sidebar-visual-redesign`)
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
