@@ -1,58 +1,133 @@
-# ParityLens — Implementation Report T-49
+# ParityLens — Implementation Report T-50
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
-- **Objective:** Resolve finding T-38-01 (recorded in `PROGRESS-LEDGER.md`'s Open findings table, OPEN/accepted non-blocking): `planQueries`'s Layer-1 `testConnection()` gate short-circuited to a bare `[]` both when a connection is genuinely unreachable and when a definition legitimately produces zero queries, making the two cases visually indistinguishable in the pre-execution confirmation panel (`runConfirmationWebview.ts`). Per TASK-BRIEF.md's recorded candidate resolution, `planQueries` now surfaces the connectivity-failure signal it already computes, and the confirmation panel renders a distinguishing message when it's set.
+- **Objective:** Resolve finding T-20-03 (recorded OPEN/accepted non-blocking
+  in `PROGRESS-LEDGER.md`'s Open findings table): `compareByHash` reads the
+  same `options.columns`/`options.keyColumns`/`options.partitionColumn` name
+  list against both the source and target fetches, so a genuine source/
+  target column-name mismatch (e.g. `sqlserver-customer`'s `IsActive` vs
+  `IS_ACTIVE`) currently surfaces as a raw, unhelpful connector/binder error
+  rather than a clear message pointing at the actual problem. Per
+  TASK-BRIEF.md's Scope section, this task does **not** add column-name-
+  mapping support — "it only makes the existing limitation visible and
+  diagnosable instead of surfacing as an opaque driver error."
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/engine/src/orchestration/planner/planQueries.ts` | Added exported `PlanQueriesResult { queries: string[]; connectionUnreachable: boolean }`; widened `planQueries`'s return type from `Promise<string[]>` to `Promise<PlanQueriesResult>`; the Layer-1 gate now returns `{ queries: [], connectionUnreachable: true }`, the normal path returns `{ queries: queriesUsed, connectionUnreachable: false }`. No other control flow changed. | TASK-BRIEF.md Scope item 1 |
-| `packages/engine/src/orchestration/planner/planQueries.test.ts` | Updated all existing assertions to the new `{ queries, connectionUnreachable }` shape; added a new `UnreachableConnector` test double and two new tests proving `connectionUnreachable: true` when either side's `testConnection()` fails. | TASK-BRIEF.md Scope item 4 |
-| `packages/extension/src/activation/activate.ts` | `confirmRun`'s type widened from `(queries: string[]) => Promise<boolean>` to `(result: PlanQueriesResult) => Promise<boolean>`; `PlanQueriesResult` imported from `@paritylens/engine`; `createWebviewConfirmRun`'s parameter/return type updated the same way, and its `panel.webview.html = renderRunConfirmationHtml(queries)` call updated to `renderRunConfirmationHtml(result.queries, result.connectionUnreachable)`. The `plannedQueries`/`deps.confirmRun(plannedQueries)` call site itself needed no textual change — `plannedQueries` already holds `planQueries`'s full return value, which is now `PlanQueriesResult` by construction. | TASK-BRIEF.md Scope item 2 (mechanically-forced follow-through of item 1) |
-| `packages/extension/src/activation/activate.test.ts` | Imported `PlanQueriesResult`; updated both `createDeps(confirmRun: ...)` helper signatures and all `vi.fn<...>` mock type parameters to the new callback shape; updated 4 assertions that previously read `confirmRun.mock.calls[0]?.[0]` as a bare array to read `.queries`/compare against `{ queries: [], connectionUnreachable: false }` instead. | TASK-BRIEF.md Scope item 4 |
-| `packages/extension/src/webview/runConfirmationWebview.ts` | `renderRunConfirmationHtml`'s signature widened from `(queries: string[])` to `(queries: string[], connectionUnreachable: boolean)`. Added a static `CONNECTION_UNREACHABLE_NOTICE` string, rendered in place of the normal "ParityLens will issue N queries..." notice when `connectionUnreachable` is true. `renderQueryPreviewSection(queries)` (still showing "No queries recorded for this run." for an empty list) is unchanged and always rendered underneath the notice, regardless of `connectionUnreachable`. | TASK-BRIEF.md Scope item 3 |
-| `packages/extension/src/webview/runConfirmationWebview.test.ts` | Updated all 6 existing calls to pass the new second argument (`false` in every pre-existing case, preserving their original behavior); added a new `describe("connectionUnreachable (T-49, finding T-38-01)")` block with 4 tests: the distinguishing notice renders when `true`; Run/Cancel buttons and the empty-state query section still render when `true`; the original "no queries" notice (not the connectivity message) renders for the adversarial legitimately-zero-queries case (`connectionUnreachable: false`, empty `queries`); the normal query-count notice renders when `connectionUnreachable: false` with queries present. | TASK-BRIEF.md Scope item 4 + Handoff's reviewer note item 1 |
-
-`planner.ts` and `resultsWebview.ts` were not touched (confirmed via `git diff --stat -- packages/engine/src/orchestration/planner/planner.ts packages/extension/src/webview/resultsWebview.ts`, which produced no output).
+| `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts` | (1) Added an explicit limitation statement to the file's header comment and to `HashComparisonOptions`'s doc comment (Scope item 1). (2) Changed `fetchNormalizedRows`'s query from `SELECT <named columns> FROM <object>` to `SELECT * FROM <object>` so a missing column name can no longer fail the connector-level SQL query itself before a `RecordBatch` is returned. (3) Added `assertFetchColumnsPresent`, called immediately after each side's `RecordBatch` is fetched and before any column-name lookup, which throws a clear `Error` naming the missing column(s), the affected side (`source`/`target`), and a pointer back to `HashComparisonOptions`'s doc comment (Scope items 2–3). (4) `fetchNormalizedRows` now takes a `side: "source" \| "target"` parameter, threaded from its two call sites in `compareByHash`. | TASK-BRIEF.md Scope items 1–3 |
+| `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts` | Added a `describe("compareByHash: column-name mismatch disclosure (T-50 / finding T-20-03)")` block with two tests: (a) constructs a fixture pair where the target's real column is named `IS_ACTIVE_TARGET` instead of the configured `IS_ACTIVE`, and asserts `compareByHash` throws an `Error` whose message contains the missing column name, the word "target", and the phrase "no per-side mapping"; (b) confirms the same fixture pair still works exactly as before (`result.matched === true`) when both sides genuinely share a column name (`NAME`). Added `fixtureWithMismatchedColumnName`, a small DuckDB-backed connector-pair builder following the file's existing `fixtureWithCasingVariant`/`fixtureWithStringVariant` pattern. | TASK-BRIEF.md Scope item 4 |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** The confirmation panel now shows a distinct, non-alarmist message ("One or both connections could not be reached, so no queries could be planned for preview. Review your connection settings, or choose Run to see the full failure detail.") when either side's `testConnection()` failed during `planQueries`, instead of the same "No queries recorded for this run." empty state a legitimately-zero-queries definition also produces. Clicking Run in either case is unchanged — `runComparison`'s own existing Layer-1 check still produces the authoritative `"failed"`-status result, per the finding's own confirmed-safe framing.
-- **Interfaces consumed:** `planner.ts`'s existing `testConnection()`-based Layer-1 pattern (read-only reference, not modified).
-- **Interfaces produced:** `PlanQueriesResult` (new, exported from `packages/engine/src/orchestration/planner/planQueries.ts`, re-exported through `@paritylens/engine`'s existing `export * from "./orchestration/planner/planQueries.js"` wildcard in `packages/engine/src/index.ts` — that index file itself required no edit). `renderRunConfirmationHtml(queries: string[], connectionUnreachable: boolean): string` (signature change, second parameter added). `confirmRun?: (result: PlanQueriesResult) => Promise<boolean>` (signature change in `activate.ts`'s `RunComparisonCommandDeps`-shaped options object).
+- **Behavior delivered:** When `options.columns`/`keyColumns`/
+  `partitionColumn` names a column that does not actually exist on one side
+  (source or target), `compareByHash` now throws a single, clear `Error` of
+  the form:
+
+  ```
+  compareByHash: column(s) "IS_ACTIVE" not found on the target side
+  (actual target columns: "id", "is_active_target"). compareByHash
+  requires identical column names on both sides; no per-side mapping
+  is supported -- see HashComparisonOptions's doc comment.
+  ```
+
+  instead of the previous raw DuckDB binder error (captured verbatim below
+  under Red state). Behavior is otherwise unchanged: when both sides do
+  share the configured column names, `compareByHash` works exactly as
+  before (verified by the added no-regression test and by all 13
+  pre-existing tests in this file passing unchanged).
+- **Interfaces consumed:** No new interfaces. `RecordBatch`/
+  `DataPlatformConnector` from `@paritylens/shared`, already imported and
+  used read-only in this file, per TASK-BRIEF.md's Interfaces-consumed
+  section ("None new").
+- **Interfaces produced:** `compareByHash`'s exported signature,
+  `HashComparisonOptions`, `HashMismatch`, and `HashComparisonResult`'s
+  field shapes are unchanged (per the brief's Prohibited-changes section) —
+  only doc comments changed and a new internal error path was added.
+  `fetchNormalizedRows` (a private, unexported function) gained one new
+  parameter (`side`) and now calls a new private helper
+  (`assertFetchColumnsPresent`); neither is part of this module's public
+  surface.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | PASS — 34 files, 615 passed, 27 skipped | captured in this session's transcript before any edit |
-| Red state | `npx vitest run packages/engine/src/orchestration/planner/planQueries.test.ts` (run against the new test file, before `planQueries.ts` was edited) | FAIL — 7 of 8 tests failed: assertion errors reading `.queries`/`.connectionUnreachable` off the still-`string[]`-shaped return value (e.g. `expected undefined to be true`, `Cannot read properties of undefined (reading 'length')`) | captured in this session's transcript |
-| Focused green state | `npx vitest run packages/engine/src/orchestration/planner/planQueries.test.ts packages/extension/src/webview/runConfirmationWebview.test.ts packages/extension/src/activation/activate.test.ts packages/engine/src/orchestration/planner/planner.test.ts` | PASS — 4 files, 67 tests passed | captured in this session's transcript |
-| Typecheck | `npx tsc -b --force` | PASS — no output, exit 0 | captured in this session's transcript |
-| Lint | `npx eslint .` | PASS — no output, exit 0 | captured in this session's transcript |
-| Full verification (post-change) | `npm run verify` | PASS — 34 files (2 skipped: postgres/sqlserver integration suites, unrelated, same as baseline), **621 passed**, 27 skipped, 648 total | captured in this session's transcript |
-
-Net test-count change: 615 → 621 passed (+6 new tests: 2 in `planQueries.test.ts` for the unreachable-source/unreachable-target cases, 4 in `runConfirmationWebview.test.ts` for the `connectionUnreachable` rendering states). No pre-existing test was deleted; no regression.
+| Baseline (before any change) | `npm run verify` | PASS — 34 test files passed / 2 skipped, 621 tests passed / 27 skipped | Captured in this session's transcript before any edit |
+| Red state | `npx vitest run packages/engine/src/comparison-core/hash-comparison -t "column-name mismatch"` (new test added, before the `hash-comparison.ts` fix) | FAIL — `AssertionError: expected 'binder error: referenced column "is_a…' to contain 'no per-side mapping'`, actual raw error text: `binder error: referenced column "is_active" not found in from clause! candidate bindings: "is_active_target", "id"` | Captured in this session's transcript |
+| Focused green state | `npx vitest run packages/engine/src/comparison-core/hash-comparison` (after the fix) | PASS — 1 test file, **15** tests passed (13 pre-existing + 2 new) | Captured in this session's transcript |
+| Full verification | `npm run verify` (after the fix) | PASS — typecheck clean, lint clean, 34 test files passed / 2 skipped, **623** tests passed / 27 skipped (up from baseline's 621 — exactly +2, the new tests; no regression) | Captured in this session's transcript |
 
 ## Assumptions and risks
 
-- **Assumptions:**
-  - `PlanQueriesResult`'s exact field names/shape were the brief's own suggested shape (`{ queries: string[]; connectionUnreachable: boolean }`), used verbatim rather than an alternative naming, since the brief explicitly offered it as "a reasonable shape (your call on exact naming, document it)" and it required no deviation to satisfy the objective.
-  - `renderRunConfirmationHtml`'s new parameter was added as a second positional `boolean` argument (`(queries, connectionUnreachable)`) rather than folding both fields into one options object — the brief explicitly allowed either ("or an additional `connectionUnreachable: boolean` parameter — your call on exact signature shape"). Chose the two-positional-argument form to minimize the diff against the existing single-argument call site and its existing test suite's structure.
-  - The exact wording of `CONNECTION_UNREACHABLE_NOTICE` is my own judgment call per the brief's "exact wording is your call, keep it accurate and non-alarmist" — I used a close paraphrase of the brief's own suggested wording, adjusted only to fit the panel's existing sentence structure.
+- **Assumptions / judgment call:**
+  - The brief requires validating "after each side's `RecordBatch` is
+    fetched" and "before any lookup that would otherwise throw a raw/opaque
+    error," using only the already-fetched `RecordBatch.columns` (no
+    `getSchema` preflight). The module's prior SQL
+    (`SELECT <named columns> FROM <object>`) makes a genuinely missing
+    column name fail *the query itself* at the connector level — no
+    `RecordBatch` is ever returned in that case, so there was nothing to
+    validate against post-fetch. To satisfy "validate against an already-
+    fetched `RecordBatch`" without adding a new connector call, I changed
+    the fetch query to `SELECT * FROM <object>`, which always succeeds
+    (assuming the table/object itself exists) and returns the side's real
+    column list, so `assertFetchColumnsPresent` can then do a pure
+    in-memory check and raise this module's own clear error instead of
+    letting the query fail with a raw binder/driver error. This is a scoped
+    SQL-shape change confined to the one file this task owns, not a new
+    capability or a widened interface, but it is a real behavior change
+    worth a reviewer's explicit attention (documented in code as well, in
+    `fetchNormalizedRows`'s updated doc comment).
+  - No other query-shape or behavioral change was made. Identical-column-
+    name cases resolve exactly the same values as before (the JS-side
+    column lookup by name from `batch.columns` is unchanged; only which
+    columns the SQL requests changed, from an explicit list to `*`).
 - **Risks or limitations:**
-  - `activate.test.ts`'s test harness (fixture-registry-backed, no `connectionProfileStore`/`secretStore` supplied) has no way to simulate a genuinely-unreachable connection at the `runComparisonCommand` level — every fixture connector's `testConnection()` always succeeds. So `activate.test.ts` only proves `connectionUnreachable: false` plumbs through correctly end-to-end (via 3 updated assertions); the `connectionUnreachable: true` path is proven directly at the `planQueries` level (2 new tests in `planQueries.test.ts`) and at the rendering level (4 new tests in `runConfirmationWebview.test.ts`), but not as a single true end-to-end integration test through `runComparisonCommand`. This is a pre-existing test-harness limitation (fixture connectors are always reachable), not something this task's file ownership permits fixing, and the brief's own Handoff reviewer-note list does not ask for that specific end-to-end case — it asks for the two rendering states and the `planner.ts`/error-propagation/full-verify checks, all of which are covered.
-  - No new `vscode` API surface was added to `runConfirmationWebview.ts` (confirmed: no `import` of `vscode` in that file, matching the Prohibited-changes constraint).
+  - `SELECT *` fetches every column the underlying table/view exposes, not
+    just the columns `compareByHash` needs — a minor efficiency change
+    versus the prior targeted `SELECT`. For the fixture-scale data this
+    module already scopes itself to (`maxRows` defaulting to 10,000, per
+    this file's own documented scope boundary), this was judged acceptable
+    rather than chasing a second validated code path; a reviewer may want
+    to weigh in on this tradeoff specifically.
+  - If the table/object itself doesn't exist (as opposed to a column within
+    it), `SELECT *` will still fail with a raw connector error — this task
+    only discloses/fixes the column-name-mismatch case named in the
+    finding, not object-not-found errors, which remain out of scope per
+    the brief's literal wording.
+  - Column-name-mapping support remains explicitly NOT implemented, per the
+    brief's Prohibited-changes section — this is a disclosure/
+    diagnosability fix only, not a capability addition.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Commit:** `2c0bf3c0230b6ad0eb6bf0884f14516d0cc76582` (message: "T-49: planQueries returns connectionUnreachable to disambiguate empty-queries states")
-- **Branch:** `task/T-49-planqueries-unreachable-disambiguation`, repository `V:\Secret Projects\VSC-DB-SQL-Compare`.
+- **Commit:** `fdb7595931864ce68f23b1c32fa333d844a2a87f` (message: "T-50: disclose hash-comparison column-name-mismatch limitation clearly")
+- **Branch:** `task/T-50-hash-comparison-column-mismatch-disclosure`, repository `V:\Secret Projects\VSC-DB-SQL-Compare`.
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent, per this project's AGENTS.md ("Every implementation task receives an independent review by a reviewer who did not author the task's change") and TASK-BRIEF.md's Handoff section, which additionally asks the reviewer to specifically re-verify: (1) a genuinely legitimately-zero-queries definition (all checks disabled, reachable connections) still renders the original empty-state message; (2) an unreachable-connection case renders the new distinguishing message; (3) `planner.ts` has zero diff; (4) no `getSchema`/other-error propagation behavior changed past the Layer-1 gate; (5) a fresh full `npm run verify` is green. This report does not constitute review or approval of the change.
+Independent review by a separate reviewer agent, per this project's
+lifecycle kit (`AGENTS.md`/`multi-agent-idea-to-app/HANDBOOK.md`) — this
+implementer does not self-approve. The brief's Handoff section specifically
+asks the reviewer to re-verify: (1) the new error message is genuinely
+clear and actionable (names the missing column(s) and side, not just
+"column not found") — confirmed satisfied by the message shape shown
+above; (2) no `getSchema` call was added — confirmed: the fix uses only the
+existing single `executeQuery` call per side, now requesting `*` instead of
+named columns; (3) every pre-existing passing test in this file still
+passes unchanged — confirmed, all 13 pass unmodified; (4) no column-name-
+mapping capability was accidentally added — confirmed, no
+`columnMapping`-style option exists anywhere in the diff; (5) a fresh full
+`npm run verify` is green — confirmed above. The reviewer should also
+independently judge the `SELECT *` query-shape change documented under
+Assumptions above, since it is the one place this implementation made a
+judgment call beyond the brief's most literal reading (the brief describes
+the fix purely in terms of a post-fetch validation step, and did not
+explicitly anticipate that the existing named-column `SELECT` would itself
+need to change to make that validation reachable).
