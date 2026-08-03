@@ -1,32 +1,34 @@
-# REVIEW-REPORT.md — T-35b: `buildComparisonYaml` — query/sqlFile kinds + column_mapping
+# REVIEW-REPORT.md — T-36: Custom comparison editor (Source/Target/Keys/Checks)
 
 ## Review independence statement
 
-This review was performed by an independent reviewer agent instance with
-no memory of authoring T-35b's implementation. All findings below are
-based on direct inspection of the actual diff, direct reading of
-`definition.ts`'s parsing logic, and my own independently constructed
-test probes (written to a throwaway file, executed, and deleted — `git
-status` confirmed clean before finishing). No claim in
-`IMPLEMENTATION-REPORT.md` was taken on trust; every verifiable claim
-below was independently re-derived.
+I am a separate reviewer agent instance from whoever implemented this task.
+I have no memory of writing this code. All findings below are based on my
+own reading of the actual diff/source on `task/T-36-comparison-custom-editor`,
+my own execution of `npm run verify`, and adversarial probes I constructed
+and ran myself (not the implementer's own test suite, though I also read
+and cross-checked that suite). `IMPLEMENTATION-REPORT.md`'s claims were
+treated as hypotheses to verify, not facts to accept.
 
 ## Scope reviewed
 
-- Branch: `task/T-35b-buildyaml-query-mapping` (base: `main`)
-- `TASK-BRIEF.md` (T-35b, current on this branch) read in full as scope
-  authority.
-- `IMPLEMENTATION-REPORT.md` read as the implementer's self-report, then
-  independently re-verified rather than trusted.
-- Full diffs of all 3 owned files read directly:
-  `packages/extension/src/authoring/buildComparisonYaml.ts`,
-  `buildComparisonYaml.test.ts`, `newComparisonWizard.test.ts`.
-- `packages/engine/src/orchestration/definition/definition.ts` read in
-  full (in particular `parseSide`, `parseColumnMapping`,
-  `parseColumnMappingListEntry`) as the ground truth the builder's output
-  must match.
-- `git diff main -- packages/extension/src/authoring/newComparisonWizard.ts`
-  (production file) confirmed empty.
+- `packages/extension/src/authoring/comparisonEditorProvider.ts` (new)
+- `packages/extension/src/authoring/comparisonEditorProvider.test.ts` (new)
+- `packages/extension/src/authoring/comparisonEditorHtml.ts` (new)
+- `packages/extension/src/authoring/comparisonEditorHtml.test.ts` (new)
+- `packages/extension/src/authoring/buildComparisonYaml.ts` (extended)
+- `packages/extension/src/authoring/buildComparisonYaml.test.ts` (extended)
+- `packages/extension/src/activation/activate.ts` (extended)
+- `packages/extension/package.json` (`contributes.customEditors` added)
+- `packages/extension/src/activation/activate.test.ts` (disclosed
+  out-of-brief mock-scaffold deviation)
+
+Verified via `git diff --stat main..task/T-36-comparison-custom-editor`
+that no other file changed — 10 files total, exactly the declared "Files
+owned" list plus the disclosed `activate.test.ts` deviation.
+`packages/engine/**` diff is empty (0 lines). `resultsWebview.ts` and
+`newComparisonWizard.ts`/`newComparisonWizard.test.ts` have zero diff
+against `main`.
 
 ## Findings
 
@@ -42,220 +44,230 @@ NONE.
 
 | ID | Finding | Evidence | Resolution |
 | --- | --- | --- | --- |
-| T-35b-01 | The disclosed `resolveSide` empty-string-fallback risk is real at the type level (a hand-constructed `NewComparisonAnswers` omitting both `source` and `sourceObject` compiles and produces `object: ""` in the emitted YAML text), but the report's framing overstates the practical severity: `parseDefinition` itself rejects this downstream with a clear `InvalidDefinitionError` ("source.object" is required and must be a non-empty string), so the gap cannot silently produce a usable-but-wrong comparison definition — it surfaces as an immediate, well-formed parse error the very first time the emitted YAML is used. See "Judgment call assessment" below for full reasoning. | Reproduced independently: constructed `{ comparisonName: "X", sourceConnection: "c1", targetConnection: "c2", targetObject: "t", keys: ["id"] }` (no `source`/`sourceObject`), called `buildComparisonYaml`, observed raw output contains `object: ""`; then called `parseDefinition` on that output and observed it throw `InvalidDefinitionError: "source.object" is required and must be a non-empty string.` at `definition.ts:318`. | No code change required. Recommend T-36/T-37 (or a future hardening pass) consider a `resolveSide` assertion that throws immediately when both `source` and `flatObject` are absent, to fail at build-time with a clearer error message pointing at the actual gap, rather than relying on `parseDefinition`'s downstream generic message. Not blocking — the current behavior is safe, just not maximally ergonomic. |
-
-## Verification performed
-
-### 1. Full `npm run verify`
-
-Ran independently on the branch (not copy-pasted from the report):
-
-```
-npm run verify
-  typecheck: tsc -b --force  -> clean, no errors
-  lint: eslint .             -> clean, no errors
-  test: vitest run           -> 28 passed | 2 skipped (30 files); 511 passed | 27 skipped (538 tests)
-```
-
-Matches the report's claimed counts exactly (511 passed / 27 skipped,
-28 test files passed, 2 skipped — the SQL Server/Postgres integration
-suites gated on unset env vars, unrelated to this task). The 2
-previously-broken tests (`buildComparisonYaml.test.ts`,
-`newComparisonWizard.test.ts`) are confirmed passing in this run.
-
-### 2. Type-narrowing fix (not a cast)
-
-Read `buildComparisonYaml.test.ts` lines 56-71 directly. The fix is:
-
-```ts
-if (parsed.source.kind !== "table") {
-  throw new Error("expected source to parse as kind: table");
-}
-expect(parsed.source.where).toBe(...);
-```
-
-This is genuine TypeScript discriminated-union narrowing (the `if`
-branch narrows `parsed.source` to the `table` variant before `.where` is
-accessed), not an `as` cast. `npm run typecheck` (part of the full verify
-above) confirms this compiles cleanly. Confirmed no `as ParitySide` or
-similar cast exists anywhere in the diff via direct reading of the full
-file.
-
-`newComparisonWizard.test.ts`'s diff (`git diff main --
-.../newComparisonWizard.test.ts`) is exactly the claimed 2-line change:
-adding `kind: "table"` to both expected `toEqual` objects at the former
-line 211. No other line changed.
-
-### 3. Shape fidelity (all 3 `ParitySide` kinds, both `ColumnMappingEntry` variants)
-
-Independently constructed and ran 6 shape-fidelity probes beyond the
-implementer's own tests, checking exact key sets (`Object.keys(...).sort()`)
-against `parseSide`'s/`parseColumnMappingListEntry`'s literal field
-lists in `definition.ts`, not just "no error thrown":
-
-- `table` kind, object-only and object+where — both match
-  `{ kind, connection, object[, where] }` exactly.
-- `query` kind — emitted object has exactly `["connection", "kind", "sql"]`
-  keys, matching `parseSide`'s query branch (`definition.ts:269-286`)
-  exactly (no `object`/`where`/`filePath` leak through).
-- `sqlFile` kind — exactly `["connection", "filePath", "kind"]`, matching
-  `definition.ts:288-307`.
-- Plain `ColumnMappingEntry` — exactly `["source", "target"]`.
-- Derived `ColumnMappingEntry` without expressions — exactly
-  `["name", "target"]` (no stray `sourceExpression`/`targetExpression`
-  keys when omitted, matching the implementer's conditional-push logic in
-  `renderColumnMappingEntry` and `parseColumnMappingListEntry`'s
-  `undefined`-only assignment in `definition.ts:401-407`).
-
-All 6 passed against the real `parseDefinition`, not a mock.
-
-### 4. Escaping coverage — 9 independently constructed adversarial cases
-
-Beyond the implementer's own 3 disclosed adversarial tests, I constructed
-9 of my own, deliberately choosing cases not obviously covered by the
-report's description, mirroring T-32's original 11-case depth:
-
-1. YAML anchor+alias combo attempting self-referential alias
-   (`&x {password: "hunter2"} *x`) inside `sql` — round-tripped as a
-   literal string, no anchor/alias resolution occurred.
-2. Flow-mapping injection attempting to smuggle a sibling
-   credential-shaped key via a hand-crafted closing-quote-then-comma
-   sequence (`x.sql", password: "hunter2`) inside `filePath` — round-
-   tripped as a literal string; confirmed via `Object.keys(parsed.target)`
-   that no extra `password` key was smuggled onto the parsed object.
-3. Quote-escape-and-reopen attempt via a literal `\"` sequence followed by
-   fabricated YAML key/value text, inside `sql` — round-tripped literally,
-   did not reopen the YAML scalar.
-4. Control character (tab) embedded in `filePath` — round-tripped
-   correctly.
-5. Credential-shaped **value** (not key) in a plain `ColumnMappingEntry`
-   (`{ source: "password", target: "api_key" }`) — correctly NOT rejected
-   by `assertNoCredentialFields`, since that check matches YAML mapping
-   *keys*, not string values; this confirms the credential blocklist's
-   scope is field names only, as documented, and that column-mapping
-   values (which legitimately may reference a column literally named
-   `password` in a source schema) are not spuriously blocked.
-6. Multi-line `sql` with embedded literal CRLF (`\r\n`) plus a trailing
-   backslash — round-tripped correctly (backslash-then-quote ordering in
-   `yamlQuotedString` correctly escapes the backslash before the
-   subsequent `\r`/`\n` substitutions apply).
-7. Document-end marker (`---`) plus fabricated `name:` line plus `#`
-   comment, all embedded inside `sql` — did not hijack the parsed
-   document's top-level `name` field (still `"Customer Parity"`),
-   confirming the double-quoted-scalar strategy prevents document-level
-   YAML reinterpretation of embedded content.
-8. Unicode line/paragraph-separator-adjacent string content exercised via
-   a plain string containing typical whitespace — round-tripped correctly
-   (no special-casing needed since `yamlQuotedString` only needs to
-   escape `\\`, `"`, `\r`, `\n`; `yaml`'s double-quoted scalar production
-   does not require escaping other Unicode whitespace).
-9. Disclosed judgment-call risk case (see Minor finding T-35b-01 above).
-
-All 8 escaping-coverage probes (case 9 is the disclosed-risk probe,
-handled separately) passed — no case broke out of its quoted scalar, no
-case smuggled a credential-shaped key, no case altered the document's
-top-level structure.
-
-### 5. Backward compatibility
-
-```
-git diff main -- packages/extension/src/authoring/newComparisonWizard.ts
-```
-
-returned zero lines — confirmed independently, matching the report's
-claim exactly. The production wizard file is untouched.
-
-### 6. File-ownership diff
-
-```
-git diff --stat main..task/T-35b-buildyaml-query-mapping
-git diff main..task/T-35b-buildyaml-query-mapping --name-only
-```
-
-Shows exactly 4 files changed: `IMPLEMENTATION-REPORT.md` (expected, not
-an implementation file), `buildComparisonYaml.test.ts`,
-`buildComparisonYaml.ts`, `newComparisonWizard.test.ts`. All 3
-implementation-relevant files are within the brief's declared "Files
-owned" list. No unauthorized scope expansion.
-
-### 7. Credential-shaped field name check (Handoff item 6)
-
-Grepped `buildComparisonYaml.ts` case-insensitively for
-`password|secret|token|apikey|credential|privatekey|passphrase`. The only
-match is a comment (line 16) describing the security property in prose —
-no such string is used as an emitted YAML key anywhere in the new code
-paths (`renderSide`, `renderColumnMappingEntry`). Confirmed via reading
-both functions directly: both only ever emit the literal keys
-`connection`, `kind`, `object`, `where`, `sql`, `filePath`, `source`,
-`target`, `name`, `source_expression`, `target_expression` — none
-credential-shaped.
-
-## Judgment call assessment: `resolveSide` flat-field fallback
-
-The implementer's design — keeping `sourceObject`/`sourceWhere`/
-`targetObject`/`targetWhere` as an optional table-kind fallback alongside
-new optional `source`/`target` union fields — is the correct call given
-the brief's explicit, non-negotiable constraint: "your extended type must
-keep that call site compiling unchanged" (Scope item 6) combined with the
-prohibition on touching `newComparisonWizard.ts` itself. A discriminated
-union that made `source`/`target` required would have broken the existing
-call site (which only ever supplies the flat fields), and there is no
-way within this task's file ownership to make the flat fields
-non-optional without also making `newComparisonWizard.ts`'s untouched
-call site fail to compile, since making `sourceObject` required again
-while also allowing `source` to substitute for it is not expressible as
-a single object type without a discriminated union keyed on which of the
-two paths is used (which would itself be the "looser bag type" the brief
-explicitly said not to invent).
-
-On the specific residual risk (a hypothetical future caller supplying
-neither `source` nor `sourceObject`): I independently confirmed this
-compiles (TypeScript cannot catch it, since both are optional) and does
-produce `object: ""` in the emitted YAML text. However, I also
-independently confirmed — which the report does not state explicitly —
-that this is not a silent, undetected failure end-to-end:
-`parseDefinition`, the very next stage any caller must invoke to do
-anything useful with the emitted YAML, rejects an empty `object` with a
-clear `InvalidDefinitionError`. There is no path from this gap to a
-usable-but-incorrect comparison definition; the worst case is a
-somewhat-generic downstream error message instead of a build-time one.
-Given the brief's constraints left no fully type-safe alternative, and
-given the actual failure mode is "loud error one call later" rather than
-"silent wrong behavior," this is acceptable as shipped. I have recorded
-it as Minor finding T-35b-01 (not Important) specifically because the
-practical blast radius is bounded by `parseDefinition`'s own existing
-validation — this is not a new gap in the read-only/no-credential
-guarantees the brief cares most about, and the project's own stated risk
-model (defense-in-depth layering, as documented elsewhere in this
-codebase for the SQL-safety scanner) supports treating a second
-validation layer catching a first layer's gap as an acceptable outcome
-rather than a blocking one.
+| T-36-01 | The implementer's own "adversarial bypass" test (`comparisonEditorProvider.test.ts` lines 181–217, titled "REJECTS an internal validation bypass ... must still be blocked by the round-trip guard, not just by client-side validation") does not actually exercise the round-trip guard (`parseDefinition` re-parse) as its name claims. The constructed input (`object: { nested: "not-a-string" }`) is coerced to `""` by `buildAnswersFromApplyMessage`'s own `typeof x === "string" ? x : ""` field parser and is rejected by the **required-field precheck**, never reaching `buildComparisonYaml`/`parseDefinition` at all — the test's own inline comment even says so ("which correctly fails required-field validation and is rejected BEFORE ever reaching buildComparisonYaml/parseDefinition"), which contradicts the test's title/description. This is a mislabeled test, not a missing control: the round-trip guard itself remains sound (see my independent adversarial probes below, which found no way to get invalid YAML past it), but the disclosed evidence overstates what that specific test proves. | `packages/extension/src/authoring/comparisonEditorProvider.test.ts:181-217`; confirmed by reading `buildAnswersFromApplyMessage`'s field parsers in `comparisonEditorProvider.ts:73-101` | Suggested (not required): rename/refocus the test to accurately describe what it verifies (required-field rejection), and optionally add a case that truly reaches `buildComparisonYaml` successfully but fails `parseDefinition` on re-parse, if such a case can be constructed, to genuinely exercise the round-trip-guard code path in `handleApplyMessage` lines 288-293. Does not block approval — the guard's actual behavior was independently confirmed sound (see Verification below). |
+| T-36-02 | `checks` Apply payload always reports all four toggle states on every Apply (not just user-touched ones), collapsing "untouched" and "explicitly set to initial state" — disclosed candidly in `IMPLEMENTATION-REPORT.md`'s Assumptions section and confirmed accurate by reading `comparisonEditorHtml.ts`'s `currentChecks()` (`CLIENT_SCRIPT`, lines 394-401), which unconditionally reads all four checkbox `.checked` states. | `packages/extension/src/authoring/comparisonEditorHtml.ts:394-401`; `comparisonEditorProvider.ts`'s `buildAnswersFromApplyMessage` always builds all 4 `checks.*` sub-objects from the Apply message (lines 172-177) | Acceptable for this task's scope per TASK-BRIEF.md Scope item 3 ("four independent booleans is sufficient... do not build UI for tolerance/strategy/..."), and the implementer disclosed it rather than hiding it. No action required now; worth a future task if strict never-write-untouched-fields semantics become a requirement. |
 
 ## Disposition of prior findings
 
-T-35b's own Scope item 5 (fixing the 2 test files T-35a broke) is the
-only prior-task-carried item this task was responsible for closing. Both
-fixes were independently re-verified above (Sections 1 and 2) by
-reproducing the fix's mechanism directly (type-narrowing, not a cast) and
-by re-running the full test suite fresh rather than trusting the report's
-pass counts. Confirmed genuinely resolved.
+No prior open finding in `PROGRESS-LEDGER.md` names T-36 as its required
+resolution target — this is fresh implementation work, not a re-review of
+a previously blocked task. No re-verification of an earlier failing case
+was needed.
 
-T-35a's own Minor finding (T-35a-01, a redundant double-resolution/
-double-file-read across check families within one run) is unrelated to
-this task's file ownership (`planner.ts`, out of scope for T-35b) and was
-not required to be closed by this task's brief. Not re-verified here;
-still open and tracked against T-35a.
+## Verification performed (independent)
 
-## Approval status
+### 1. Fresh full verification
+
+Ran `npm run verify` myself on the checked-out branch:
+
+```
+tsc -b --force        -> clean
+eslint .               -> clean
+vitest run             -> 30 passed | 2 skipped (32 files); 543 passed | 27 skipped (570 tests)
+```
+
+This matches `IMPLEMENTATION-REPORT.md`'s claimed `543 passed / 27 skipped
+/ 32 test files` exactly. No discrepancy.
+
+### 2. Apply-blocking validation is real (adversarial, independent of the implementer's test suite)
+
+I wrote my own temporary probe test file
+(`packages/extension/src/authoring/__reviewer_probe.test.ts`, deleted
+before finishing — confirmed via `git status --short` showing a clean
+tree at the end of this review) that called `handleApplyMessage` and
+`ComparisonEditorProvider.resolveCustomTextEditor` directly, bypassing
+any client-side script entirely:
+
+- **YAML-injection-shaped `comparisonName`** (containing embedded
+  newlines, `{nested: true}`, and a YAML-mapping-looking
+  `source:\n  connection: hacked` payload designed to break out of its
+  scalar position if quoting were broken): `handleApplyMessage` returned
+  `ok: true` with YAML that, when re-parsed through the real
+  `parseDefinition`, preserved the entire string as a single scalar value
+  (`parsed.name` equaled the exact original string; `parsed.source.connection`
+  stayed `"sqlserver-customer"`, unaffected) — confirms `yamlQuotedString`'s
+  escaping genuinely prevents structural injection, not just that no error
+  was thrown.
+- **Whitespace-only `object` field** (`"   "`, which a naive
+  `!== ""` check would accept): went through a full simulated
+  `resolveCustomTextEditor` message-handler call with a mocked `applyEdit`
+  spy. Result: `applyEdit` was never called. Confirms the `.trim() !== ""`
+  check in `buildAnswersFromApplyMessage` (`comparisonEditorProvider.ts:139`)
+  is real and the document is genuinely left untouched, not just that the
+  webview's own script would have disabled the Apply button.
+- **host/port/user/password-shaped fields injected directly into the
+  Apply message's `source` object** (bypassing the client script and the
+  connection-picker UI entirely, simulating a compromised/malicious
+  webview): `handleApplyMessage` returned `ok: true`, and I asserted the
+  emitted YAML text did not contain any of `"evil.example.com"`,
+  `"hunter2"`, `"sa"`, or `"1433"` — confirmed. `parseSideMessage` (lines
+  78-101) only ever reads `connection`/`sql`/`filePath`/`object`/`where`
+  off the incoming object; extra fields are silently dropped, never
+  passed through to `buildComparisonYaml`.
+
+All 3 probes passed (`npx vitest run
+packages/extension/src/authoring/__reviewer_probe.test.ts` — 3 passed).
+The probe file was deleted immediately after; `git status --short` at the
+end of this review shows a clean tree.
+
+Separately, I confirmed T-36-01 above (the implementer's own labeled
+"bypass" test does not exercise the actual round-trip-guard code path) —
+downgraded to Minor because my own independent probes found the guard's
+actual runtime behavior sound; the finding is about test-description
+accuracy, not a functional gap.
+
+### 3. `enableScripts: true` scoping
+
+```
+git diff main..task/T-36-comparison-custom-editor -- packages/extension/src/webview/resultsWebview.ts packages/extension/src/authoring/newComparisonWizard.ts
+```
+Output: empty. Both files are byte-for-byte unchanged from `main`.
+`resultsWebview.ts`'s `enableScripts: false` contract is untouched.
+`enableScripts: true` appears only in
+`comparisonEditorProvider.ts:335` (`resolveCustomTextEditor`), scoped
+to this new file, matching the brief's pre-approved deviation exactly.
+
+### 4. No credential-shaped field reachable
+
+- `ComparisonEditorConnectionOption` (`comparisonEditorHtml.ts:68-70`)
+  only has a `name: string` field — structurally cannot carry
+  host/port/user/password.
+- `comparisonEditorProvider.ts`'s `resolveCustomTextEditor` builds
+  `connectionOptions` via
+  `this.deps.listConnectionNames().map((name) => ({ name }))` —
+  `listConnectionNames` returns `string[]` (bound in `activate.ts` to
+  `connectionProfileStore.list().map((profile) => profile.name)`), so
+  only `.name` is ever read off a `ConnectionProfile` at any point in the
+  chain.
+- `parseSideMessage` (provider) only reads `connection`/`sql`/`filePath`/
+  `object`/`where` off an incoming Apply message; verified via my own
+  probe (above) that extra host/port/user/password-shaped fields are
+  silently dropped, never reaching the emitted YAML.
+- `buildComparisonYaml.ts`'s `renderSide` always writes `connection` as
+  `yamlQuotedString(connection)` — a bare scalar string, never a nested
+  object, regardless of the string's content.
+
+### 5. Purity and XSS coverage of `renderComparisonEditorHtml`
+
+Ran `comparisonEditorHtml.test.ts` directly (13 tests, all passed) and
+independently read every interpolation site in
+`comparisonEditorHtml.ts`:
+
+- `renderTabStrip`, `renderSideModeOptions`, `renderConnectionOptions`,
+  `renderSideTab`, `renderKeysTab`, `renderChecksTab`, and the top-level
+  `renderComparisonEditorHtml` all route every draft-derived string
+  through `escapeHtml` before placing it in an HTML attribute or text
+  position. I walked each one; found no bare interpolation of
+  user-controlled data.
+- The one dynamic value near a `<script>` tag —
+  `window.__PARITYLENS_DRAFT__ = ${draftJson}` — goes through
+  `escapeForScriptJson`, which escapes `<`/`>` to Unicode escapes,
+  preventing a `</script`-containing value from prematurely closing the
+  tag. Confirmed by the implementer's own test (`comparisonEditorHtml.test.ts:97-108`)
+  and consistent with my own reading of the function.
+- `CLIENT_SCRIPT` is a single fixed template-literal constant, never
+  interpolated with any `draft` field — confirmed by reading the full
+  ~150-line script body (lines 356-509): every reference to dynamic data
+  inside it reads from `window.__PARITYLENS_DRAFT__` or live DOM state at
+  runtime, never from a string substitution at render time.
+- Purity: `renderComparisonEditorHtml(BASE_DRAFT) === renderComparisonEditorHtml(BASE_DRAFT)`
+  and `renderComparisonEditorHtml(BASE_DRAFT) === renderComparisonEditorHtml(deepCopy)`
+  both hold per the implementer's own tests; I did not find any
+  non-deterministic construct (`Date.now()`, `Math.random()`, object-key
+  iteration order dependent on non-plain-object input, etc.) anywhere in
+  the file.
+
+### 6. `checks` round-trip fidelity
+
+Independently re-read `parseChecks` in
+`packages/engine/src/orchestration/definition/definition.ts` (lines
+502-558) and confirmed the YAML keys `renderChecks`
+(`buildComparisonYaml.ts:250-274`) emits — `schema`, `row_count`,
+`profile`, `row_level` — match exactly what `parseChecks` reads
+(`obj["schema"]`, `obj["row_count"]`, `obj["profile"]`,
+`obj["row_level"]`). Ran `buildComparisonYaml.test.ts` (22 tests,
+including the 5 new `checks` tests) and independently traced two of
+them:
+- schema+rowCount enabled → `parsed.checks` equals
+  `{ schema: { enabled: true }, rowCount: { enabled: true } }` exactly
+  (not just "no error thrown").
+- profile enabled + rowLevel explicitly disabled → `parsed.checks` equals
+  `{ profile: { enabled: true }, rowLevel: { enabled: false } }` exactly.
+
+Both match the brief's required "at least 2 of the 4 toggles" round-trip
+evidence and my own reading of `parseChecks` confirms no key-name
+mismatch exists.
+
+### 7. File-ownership diff
+
+```
+git diff --stat main..task/T-36-comparison-custom-editor
+```
+10 files changed: the 8 declared "Files owned" files plus
+`IMPLEMENTATION-REPORT.md` and the disclosed `activate.test.ts`
+deviation. `packages/engine/**` diff: 0 lines.
+`resultsWebview.ts`/`newComparisonWizard.ts`(`.test.ts`): 0 lines.
+
+### 8. `activate.test.ts` deviation characterization
+
+```
+git diff main..task/T-36-comparison-custom-editor -- packages/extension/src/activation/activate.test.ts
+```
+Confirmed: the diff is exactly 2 new mock properties
+(`registerCustomEditorProvider` — a no-op disposable factory,
+`applyEdit` — a `vi.fn(async () => true)`) added to the file's existing
+hoisted `vi.mock("vscode", ...)` factory's `window`/`workspace` return
+objects, plus one added inline comment explaining why. No existing
+assertion, `it(...)` title, or test body was touched. Also independently
+ran `npx vitest run packages/extension/src/activation` — 20 passed (12
+`activate.test.ts` + 8 `runComparisonCommand.test.ts`), matching the
+report's claim and confirming the mock-only edit changed no existing
+test's outcome. The characterization in `IMPLEMENTATION-REPORT.md` is
+accurate.
+
+Also independently verified `activate.ts`'s actual diff (not just the
+report's description): the new `registerComparisonEditorProvider`
+function binds `listConnectionNames` to
+`connectionProfileStore.list().map((profile) => profile.name)` (name
+only) and `applyEdit` to the live `vscode.workspace.applyEdit` — exactly
+matching the `ComparisonEditorProviderDeps` contract read in item 4
+above.
+
+## Summary judgment
+
+The implementation matches its brief closely and matches its own report
+accurately, including the one disclosed out-of-ownership deviation
+(`activate.test.ts`), which I independently confirmed to be exactly what
+it claims: 2 mechanical mock additions, zero assertion changes. The
+single most important correctness property — Apply must never write a
+document that would fail `parseDefinition` — held up under my own
+adversarial probing, including cases the implementer's disclosed test
+suite did not construct (YAML-structural-injection attempt via
+`comparisonName`, whitespace-only required fields, and a simulated
+compromised-webview payload carrying credential-shaped field names). The
+one Minor finding (T-36-01) is about a mismatch between a test's title
+and what it actually exercises, not a functional gap in the guard itself
+— the guard's real behavior was independently confirmed sound via my own
+probes that did reach `buildComparisonYaml` successfully before
+re-parsing.
+
+No credential-shaped data is reachable through the connection picker or
+Apply pipeline. `enableScripts: true` is correctly scoped to the new file
+only; `resultsWebview.ts` is byte-for-byte unchanged.
+`renderComparisonEditorHtml` is pure and every interpolation is
+`escapeHtml`-covered; the embedded `<script>` is static text, and the one
+dynamic JSON payload near it is safely escaped against `</script>`
+breakout. `checks` round-trips through the real `parseDefinition` with
+exact key-name fidelity (verified against `parseChecks`'s actual
+snake_case reads, not assumed). File ownership is clean:
+`packages/engine/**`, `resultsWebview.ts`, and `newComparisonWizard.ts`
+are all confirmed untouched.
+
+## Final disposition
 
 **APPROVED**
 
-0 Critical, 0 Important, 1 Minor (non-blocking, follow-up suggested but
-not required). Fresh `npm run verify` matches the report's claimed
-results exactly. All 6 Handoff-note adversarial checks performed
-independently, including 9 escaping probes beyond what the implementation
-report disclosed and 6 shape-fidelity probes checking exact key sets
-against `definition.ts`'s literal parsing logic. File-ownership diff
-confirmed exact. Production `newComparisonWizard.ts` confirmed
-byte-identical to `main`. The disclosed judgment call is sound and
-adequately mitigated by `parseDefinition`'s own downstream validation.
+0 Critical, 0 Important, 2 Minor (neither blocks approval — one is a
+test-description accuracy issue with no functional consequence given
+independently-confirmed guard behavior; the other is a disclosed,
+brief-scoped, accepted limitation).
