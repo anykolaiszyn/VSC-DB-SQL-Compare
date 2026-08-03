@@ -9,8 +9,8 @@
   built from `main` commit `6480f8c76e08811953b1a93afdd80e7feeba78e8`,
   approved by the owner with no conditions). Phase 4 (T-29–T-33) is
   approved and written into `IMPLEMENTATION-PLAN.md`. T-29 and T-30 are
-  COMPLETE and merged; T-31 (Result Store) is next.
-- **Exactly one task may be active:** NONE
+  COMPLETE and merged; T-31 (Result Store) is now active.
+- **Exactly one task may be active:** T-31
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
