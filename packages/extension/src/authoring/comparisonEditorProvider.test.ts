@@ -57,6 +57,40 @@ import {
 } from "./comparisonEditorProvider";
 import { renderComparisonEditorHtml } from "./comparisonEditorHtml";
 import { parseDefinition } from "@paritylens/engine";
+import type { ColumnDefinition, DataPlatformConnector } from "@paritylens/shared";
+
+function col(name: string): ColumnDefinition {
+  return {
+    name,
+    ordinalPosition: 1,
+    nativeType: "VARCHAR(50)",
+    canonicalType: "String",
+    nullable: true,
+    isPrimaryKeyCandidate: false
+  };
+}
+
+/** Minimal fake `DataPlatformConnector` -- only `getSchema` is exercised by
+ * this task's fetch-columns handling; every other method throws if called,
+ * so a test would fail loudly if the provider ever called something beyond
+ * `getSchema` on a resolved connector. */
+function makeFakeConnector(overrides?: Partial<DataPlatformConnector>): DataPlatformConnector {
+  const unimplemented = () => {
+    throw new Error("not implemented in this fake");
+  };
+  return {
+    testConnection: unimplemented,
+    getCatalogs: unimplemented,
+    getSchemas: unimplemented,
+    getObjects: unimplemented,
+    getSchema: async () => [],
+    executeQuery: unimplemented as never,
+    getCapabilities: unimplemented,
+    quoteIdentifier: unimplemented,
+    buildProfileQuery: unimplemented,
+    ...overrides
+  } as DataPlatformConnector;
+}
 
 const VALID_YAML = `version: 1
 name: "Customer Parity"
@@ -222,6 +256,7 @@ describe("ComparisonEditorProvider.resolveCustomTextEditor", () => {
     return {
       listConnectionNames: () => ["sqlserver-customer", "postgres-products"],
       applyEdit: vi.fn(async () => true),
+      resolveConnectorByName: async () => undefined,
       ...overrides
     };
   }
@@ -315,5 +350,161 @@ describe("ComparisonEditorProvider.resolveCustomTextEditor", () => {
 describe("COMPARISON_EDITOR_VIEW_TYPE", () => {
   it("is a stable, namespaced view type string", () => {
     expect(COMPARISON_EDITOR_VIEW_TYPE).toBe("paritylens.comparisonEditor");
+  });
+});
+
+describe("ComparisonEditorProvider Column Mapping tab fetch handling (T-37)", () => {
+  function makeDeps(overrides?: Partial<ComparisonEditorProviderDeps>): ComparisonEditorProviderDeps {
+    return {
+      listConnectionNames: () => ["sqlserver-customer", "postgres-products"],
+      applyEdit: vi.fn(async () => true),
+      resolveConnectorByName: async () => undefined,
+      ...overrides
+    };
+  }
+
+  const TABLE_MODE_FETCH_MESSAGE = {
+    type: "fetch-columns",
+    source: { kind: "table", connection: "sqlserver-customer", object: "dbo.Customer" },
+    target: { kind: "table", connection: "postgres-products", object: "public.customer" }
+  };
+
+  it("both sides in Table mode with a resolvable connector: fetches getSchema for both sides and re-renders with populated dropdowns", async () => {
+    const sourceConnector = makeFakeConnector({ getSchema: async () => [col("customer_id"), col("full_name")] });
+    const targetConnector = makeFakeConnector({ getSchema: async () => [col("customer_id"), col("name")] });
+    const resolveConnectorByName = vi.fn(async (name: string) => {
+      if (name === "sqlserver-customer") return sourceConnector;
+      if (name === "postgres-products") return targetConnector;
+      return undefined;
+    });
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage(TABLE_MODE_FETCH_MESSAGE);
+
+    expect(resolveConnectorByName).toHaveBeenCalledWith("sqlserver-customer");
+    expect(resolveConnectorByName).toHaveBeenCalledWith("postgres-products");
+    expect(panel.webview.html).toContain('data-mapping-target="0"');
+    expect(panel.webview.html).toContain("customer_id");
+    expect(panel.webview.html).toContain("full_name");
+  });
+
+  it("a Query-mode source: never attempts a live getSchema fetch, falls back to manual entry", async () => {
+    const getSchema = vi.fn(async () => [col("customer_id")]);
+    const resolveConnectorByName = vi.fn(async () => makeFakeConnector({ getSchema }));
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage({
+      type: "fetch-columns",
+      source: { kind: "query", connection: "sqlserver-customer", sql: "SELECT 1" },
+      target: { kind: "table", connection: "postgres-products", object: "public.customer" }
+    });
+
+    expect(getSchema).not.toHaveBeenCalled();
+    expect(panel.webview.html).toContain("data-mapping-add-row");
+  });
+
+  it("a SQL-File-mode target: never attempts a live getSchema fetch, falls back to manual entry", async () => {
+    const getSchema = vi.fn(async () => [col("customer_id")]);
+    const resolveConnectorByName = vi.fn(async () => makeFakeConnector({ getSchema }));
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage({
+      type: "fetch-columns",
+      source: { kind: "table", connection: "sqlserver-customer", object: "dbo.Customer" },
+      target: { kind: "sqlFile", connection: "postgres-products", filePath: "queries/target.sql" }
+    });
+
+    expect(getSchema).not.toHaveBeenCalled();
+    expect(panel.webview.html).toContain("data-mapping-add-row");
+  });
+
+  it("both sides Table mode but no object name yet on one side: skips the live fetch, falls back to manual entry without calling getSchema", async () => {
+    const getSchema = vi.fn(async () => [col("customer_id")]);
+    const resolveConnectorByName = vi.fn(async () => makeFakeConnector({ getSchema }));
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage({
+      type: "fetch-columns",
+      source: { kind: "table", connection: "sqlserver-customer", object: "" },
+      target: { kind: "table", connection: "postgres-products", object: "public.customer" }
+    });
+
+    expect(getSchema).not.toHaveBeenCalled();
+    expect(panel.webview.html).toContain("data-mapping-add-row");
+  });
+
+  it("a getSchema rejection shows an inline Mapping-tab error without crashing the provider or affecting the other four tabs' Apply behavior", async () => {
+    const failingConnector = makeFakeConnector({ getSchema: async () => Promise.reject(new Error("connection refused")) });
+    const resolveConnectorByName = vi.fn(async () => failingConnector);
+    const applyEdit = vi.fn(async () => true);
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName, applyEdit }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await expect(panel.__simulateMessage(TABLE_MODE_FETCH_MESSAGE)).resolves.not.toThrow();
+
+    expect(panel.webview.html.toLowerCase()).toContain("could not fetch columns");
+    expect(panel.webview.html).toContain("connection refused");
+
+    // The other four tabs must still work normally: a subsequent Apply
+    // (Source/Target/Keys/Checks only, no columnMapping) still succeeds.
+    await panel.__simulateMessage(VALID_APPLY_MESSAGE);
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+  });
+
+  it("round-trips columnMapping entries selected via the dropdown through Apply -> buildComparisonYaml -> parseDefinition", async () => {
+    const provider = new ComparisonEditorProvider(makeDeps());
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage({
+      type: "apply",
+      draft: {
+        ...VALID_APPLY_MESSAGE.draft,
+        columnMapping: [
+          { source: "customer_id", target: "customer_id" },
+          { source: "full_name", target: "name" }
+        ]
+      }
+    });
+
+    const applyEdit = (provider as unknown as { deps: ComparisonEditorProviderDeps }).deps.applyEdit as ReturnType<typeof vi.fn>;
+    expect(applyEdit).toHaveBeenCalledTimes(1);
+    const editArg = applyEdit.mock.calls[0]?.[0] as unknown as { entries: Array<{ newText: string }> };
+    const newText = editArg.entries[0]?.newText;
+    expect(newText).toBeDefined();
+    const parsed = parseDefinition(newText as string);
+    expect(parsed.columnMapping).toEqual([
+      { source: "customer_id", target: "customer_id" },
+      { source: "full_name", target: "name" }
+    ]);
+  });
+
+  it("never posts a credential-shaped value back to the webview from a fetch result (only column names/types cross the boundary)", async () => {
+    const sourceConnector = makeFakeConnector({ getSchema: async () => [col("customer_id")] });
+    const targetConnector = makeFakeConnector({ getSchema: async () => [col("customer_id")] });
+    const resolveConnectorByName = vi.fn(async (name: string) => (name === "sqlserver-customer" ? sourceConnector : targetConnector));
+    const provider = new ComparisonEditorProvider(makeDeps({ resolveConnectorByName }));
+    const document = makeFakeDocument(VALID_YAML);
+    const panel = makeFakeWebviewPanel();
+
+    provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
+    await panel.__simulateMessage(TABLE_MODE_FETCH_MESSAGE);
+
+    expect(panel.webview.html.toLowerCase()).not.toContain("password");
   });
 });

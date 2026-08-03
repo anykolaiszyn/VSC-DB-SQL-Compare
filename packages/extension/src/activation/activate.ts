@@ -1,7 +1,7 @@
 import * as vscode from "vscode";
 import { readFile, writeFile, stat } from "node:fs/promises";
 import { join } from "node:path";
-import type { ComparisonResult } from "@paritylens/shared";
+import type { ComparisonResult, DataPlatformConnector } from "@paritylens/shared";
 import {
   parseDefinition,
   runComparison,
@@ -548,6 +548,36 @@ export async function reopenRunCommand(
 }
 
 /**
+ * T-37: resolves a saved connection profile *name* into a real
+ * `DataPlatformConnector`, composing exactly the same
+ * `ConnectionProfileStore`/`SecretStore`/`resolveConnector` (T-29) pieces
+ * `buildConnectorRegistry` above already uses for `runComparisonCommand`
+ * -- mirrored deliberately (per TASK-BRIEF.md Scope item 1) rather than
+ * reimplemented, so credential resolution has exactly one code path in
+ * this file. Unlike `buildConnectorRegistry`, this never falls back to
+ * `FixtureConnector` for an unmatched name: it returns `undefined`, which
+ * `ComparisonEditorProviderDeps.resolveConnectorByName`'s own contract
+ * treats as "fall back to manual entry" -- silently substituting fixture
+ * data into an editing UI that's supposed to reflect the user's actual
+ * configured connections would be misleading, not helpful, in this
+ * context (distinct from `runComparisonCommand`'s own fixture-fallback
+ * behavior, which this function does not touch or weaken).
+ */
+function buildResolveConnectorByName(
+  connectionProfileStore: ConnectionProfileStore,
+  secretStore: SecretStore
+): (connectionName: string) => Promise<DataPlatformConnector | undefined> {
+  return async (connectionName: string) => {
+    const profile = findProfileByName(connectionProfileStore, connectionName);
+    if (profile === undefined) {
+      return undefined;
+    }
+    const password = (await secretStore.get(secretKeyFor(profile.id))) ?? "";
+    return resolveConnector(profile, password);
+  };
+}
+
+/**
  * Registers `ComparisonEditorProvider` (T-36) against the live `vscode`
  * API for `.paritylens` files (per `package.json`'s
  * `contributes.customEditors` entry, `viewType:
@@ -557,12 +587,14 @@ export async function reopenRunCommand(
  * `connectionProfileStore`/`vscode.workspace.applyEdit`, following the
  * same injected-dependency binding pattern
  * `registerRunComparisonCommand`/`registerNewComparisonCommand` above
- * already use.
+ * already use. T-37 additionally binds `resolveConnectorByName` (see
+ * above) for the Column Mapping tab's live `getSchema` fetch.
  */
-function registerComparisonEditorProvider(connectionProfileStore: ConnectionProfileStore): vscode.Disposable {
+function registerComparisonEditorProvider(connectionProfileStore: ConnectionProfileStore, secretStore: SecretStore): vscode.Disposable {
   const provider = new ComparisonEditorProvider({
     listConnectionNames: () => connectionProfileStore.list().map((profile) => profile.name),
-    applyEdit: (edit) => vscode.workspace.applyEdit(edit)
+    applyEdit: (edit) => vscode.workspace.applyEdit(edit),
+    resolveConnectorByName: buildResolveConnectorByName(connectionProfileStore, secretStore)
   });
   return vscode.window.registerCustomEditorProvider(COMPARISON_EDITOR_VIEW_TYPE, provider);
 }
@@ -646,7 +678,7 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(registerDeleteConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerNewComparisonCommand(connectionProfileStore));
   context.subscriptions.push(registerReopenRunCommand());
-  context.subscriptions.push(registerComparisonEditorProvider(connectionProfileStore));
+  context.subscriptions.push(registerComparisonEditorProvider(connectionProfileStore, secretStore));
 
   return { treeDataProvider, treeView, secretStore };
 }

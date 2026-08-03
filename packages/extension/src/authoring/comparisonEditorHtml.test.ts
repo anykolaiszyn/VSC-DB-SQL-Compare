@@ -7,7 +7,8 @@ const BASE_DRAFT: ComparisonEditorDraft = {
   target: { kind: "table", connection: "postgres-products", object: "public.customer" },
   keys: ["customer_id"],
   checks: { schema: true, rowCount: false, profile: false, rowLevel: false },
-  connectionOptions: [{ name: "sqlserver-customer" }, { name: "postgres-products" }]
+  connectionOptions: [{ name: "sqlserver-customer" }, { name: "postgres-products" }],
+  columnMapping: { mode: "manual", rows: [{ source: "", target: "", targetOptions: [] }] }
 };
 
 describe("renderComparisonEditorHtml", () => {
@@ -28,7 +29,7 @@ describe("renderComparisonEditorHtml", () => {
     expect(renderComparisonEditorHtml.length).toBe(1);
   });
 
-  it("renders all four tabs (Source, Target, Keys, Checks) and a placeholder for the not-yet-built Column Mapping tab", () => {
+  it("renders all five tabs (Source, Target, Keys, Checks, Column Mapping)", () => {
     const html = renderComparisonEditorHtml(BASE_DRAFT);
     expect(html).toContain(">Source<");
     expect(html).toContain(">Target<");
@@ -37,10 +38,9 @@ describe("renderComparisonEditorHtml", () => {
     expect(html.toLowerCase()).toContain("column mapping");
   });
 
-  it("does not render an actual Column Mapping tab panel (T-37's scope, not this task's)", () => {
+  it("renders an actual Column Mapping tab panel (T-37)", () => {
     const html = renderComparisonEditorHtml(BASE_DRAFT);
-    expect(html).not.toContain('data-panel="columnMapping"');
-    expect(html).not.toContain('data-panel="mapping"');
+    expect(html).toContain('data-panel="columnMapping"');
   });
 
   it("renders the connection picker with only bare connection name strings, never host/port/user/password fields", () => {
@@ -125,5 +125,75 @@ describe("renderComparisonEditorHtml", () => {
     const html = renderComparisonEditorHtml(BASE_DRAFT);
     expect(html).toContain("<script>");
     expect(html).toContain("acquireVsCodeApi()");
+  });
+});
+
+describe("renderComparisonEditorHtml -- Column Mapping tab (T-37)", () => {
+  it("renders a populated dropdown row per source column with the fetched target options, in fetched mode", () => {
+    const draft: ComparisonEditorDraft = {
+      ...BASE_DRAFT,
+      columnMapping: {
+        mode: "fetched",
+        rows: [
+          { source: "customer_id", target: "customer_id", targetOptions: ["customer_id", "name", "email"] },
+          { source: "full_name", target: "", targetOptions: ["customer_id", "name", "email"] }
+        ]
+      }
+    };
+    const html = renderComparisonEditorHtml(draft);
+    expect(html).toContain("customer_id");
+    expect(html).toContain("full_name");
+    // Every target option should appear as a <select> option somewhere.
+    expect(html).toContain(">email<");
+    // A "no mapping / same name" default option must exist for the unmapped row.
+    expect(html.toLowerCase()).toContain("no mapping");
+  });
+
+  it("renders plain text inputs (not populated dropdowns) with Add/Remove row affordances in manual mode", () => {
+    const draft: ComparisonEditorDraft = {
+      ...BASE_DRAFT,
+      columnMapping: { mode: "manual", rows: [{ source: "a", target: "b", targetOptions: [] }] }
+    };
+    const html = renderComparisonEditorHtml(draft);
+    expect(html).toContain('data-mapping-add-row');
+    expect(html).toContain('data-mapping-remove-row');
+  });
+
+  it("shows an inline mapping-tab error without affecting the rest of the document when columnMapping.fetchError is set", () => {
+    const draft: ComparisonEditorDraft = {
+      ...BASE_DRAFT,
+      columnMapping: { mode: "manual", rows: [{ source: "", target: "", targetOptions: [] }], fetchError: "getSchema failed: connection refused" }
+    };
+    const html = renderComparisonEditorHtml(draft);
+    expect(html).toContain("getSchema failed: connection refused");
+    // The Source/Target/Keys/Checks tabs must still render normally alongside the error.
+    expect(html).toContain(">Source<");
+    expect(html).toContain(">Checks<");
+  });
+
+  it("escapes HTML-significant characters in fetched column names (untrusted database-originated data)", () => {
+    const draft: ComparisonEditorDraft = {
+      ...BASE_DRAFT,
+      columnMapping: {
+        mode: "fetched",
+        rows: [{ source: '<script>alert(1)</script>', target: "", targetOptions: ['"><img src=x onerror=alert(2)>'] }]
+      }
+    };
+    const html = renderComparisonEditorHtml(draft);
+    expect(html).not.toContain("<script>alert(1)</script>");
+    expect(html).not.toContain("<img src=x onerror=alert(2)>");
+  });
+
+  it("is pure with a populated columnMapping sub-state: same draft input twice produces identical output", () => {
+    const draft: ComparisonEditorDraft = {
+      ...BASE_DRAFT,
+      columnMapping: {
+        mode: "fetched",
+        rows: [{ source: "customer_id", target: "customer_id", targetOptions: ["customer_id", "name"] }]
+      }
+    };
+    const first = renderComparisonEditorHtml(draft);
+    const second = renderComparisonEditorHtml(JSON.parse(JSON.stringify(draft)));
+    expect(first).toBe(second);
   });
 });

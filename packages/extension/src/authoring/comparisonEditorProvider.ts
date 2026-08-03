@@ -28,16 +28,27 @@
 // `enableScripts: false` contract -- disclosed and pre-approved in
 // TASK-BRIEF.md's Objective section. It does not relax or affect
 // `resultsWebview.ts`, which is untouched by this task.
+// T-37: extended with the Column Mapping tab's live `getSchema` round trip
+// (Table-mode-only gating), a new `resolveConnectorByName` injected
+// dependency (composed in `activate.ts` by mirroring
+// `buildConnectorRegistry`'s existing `ConnectionProfileStore`/
+// `SecretStore`/`resolveConnector` pattern -- this provider never imports
+// either store directly, per TASK-BRIEF.md's "Prohibited changes"), and
+// Mapping-tab message handling (`fetch-columns` request/response). See
+// `columnMapping.ts` for the pure data-shaping helpers this glue calls.
 import * as vscode from "vscode";
 import { parseDefinition, type ParityDefinition, type ParitySide } from "@paritylens/engine";
+import type { DataPlatformConnector } from "@paritylens/shared";
 import {
   renderComparisonEditorHtml,
   type ComparisonEditorDraft,
   type ComparisonEditorSideDraft,
   type ComparisonEditorChecksDraft,
-  type ComparisonEditorConnectionOption
+  type ComparisonEditorConnectionOption,
+  type ComparisonEditorColumnMappingDraft
 } from "./comparisonEditorHtml";
 import { buildComparisonYaml, type NewComparisonAnswers } from "./buildComparisonYaml";
+import { buildMappingRowsFromColumns, buildManualMappingRows, mappingRowsToColumnMappingEntries, type ColumnMappingRow } from "./columnMapping";
 
 /** View type this provider is registered under -- matches
  * `package.json`'s `contributes.customEditors[].viewType`. */
@@ -57,6 +68,12 @@ interface ApplyMessage {
     target: unknown;
     keys: unknown;
     checks: unknown;
+    /** T-37: the Column Mapping tab's currently-selected/entered rows, as
+     * `{source, target}` pairs (the client script's `currentColumnMapping()`
+     * output) -- optional so an older/simpler Apply payload without this
+     * field (e.g. this file's own pre-T-37 tests) still parses; absent is
+     * treated identically to an empty array. */
+    columnMapping?: unknown;
   };
 }
 
@@ -117,6 +134,31 @@ function parseChecksMessage(value: unknown): ComparisonEditorChecksDraft {
   };
 }
 
+/** Narrows an untrusted Apply message's `columnMapping` payload (an array
+ * of `{source, target}`-shaped entries from the client script's
+ * `currentColumnMapping()`) into `ColumnMappingRow[]`, then converts it via
+ * `columnMapping.ts`'s pure `mappingRowsToColumnMappingEntries` helper
+ * (T-37, TASK-BRIEF.md Scope item 4) -- so this provider never hand-rolls
+ * its own row-to-entry conversion, staying in lockstep with the same
+ * helper the render path uses. A missing/non-array field, or a non-object
+ * row, is simply skipped rather than rejecting the whole Apply -- the
+ * Mapping tab's data is optional per-column (T-28's identical-name
+ * fallback), so a malformed mapping entry degrades to "no mapping for that
+ * row" rather than blocking the rest of a valid Apply. */
+function parseColumnMappingMessage(value: unknown): ReturnType<typeof mappingRowsToColumnMappingEntries> {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+  const rows: ColumnMappingRow[] = value
+    .filter((entry): entry is Record<string, unknown> => typeof entry === "object" && entry !== null)
+    .map((entry) => ({
+      source: typeof entry["source"] === "string" ? entry["source"] : "",
+      target: typeof entry["target"] === "string" ? entry["target"] : "",
+      targetOptions: []
+    }));
+  return mappingRowsToColumnMappingEntries(rows);
+}
+
 /** Converts a webview Apply message's draft payload into the
  * `NewComparisonAnswers` shape `buildComparisonYaml` (T-35b, extended by
  * this task) expects, throwing a descriptive `Error` if any required field
@@ -161,6 +203,7 @@ function buildAnswersFromApplyMessage(message: ApplyMessage): NewComparisonAnswe
   }
 
   const checks = parseChecksMessage(message.draft.checks);
+  const columnMapping = parseColumnMappingMessage(message.draft.columnMapping);
 
   return {
     comparisonName,
@@ -169,6 +212,7 @@ function buildAnswersFromApplyMessage(message: ApplyMessage): NewComparisonAnswe
     targetConnection: target.connection,
     target,
     keys,
+    ...(columnMapping.length > 0 ? { columnMapping } : {}),
     checks: {
       schema: { enabled: checks.schema },
       rowCount: { enabled: checks.rowCount },
@@ -215,6 +259,16 @@ function defaultSideDraft(): ComparisonEditorSideDraft {
   return { kind: "table", connection: "", object: "" };
 }
 
+/** Default Column Mapping tab draft (T-37): manual-entry mode with a
+ * single blank row, matching `columnMapping.ts`'s `buildManualMappingRows()`
+ * default. Used for the initial render before the webview's first
+ * `fetch-columns` request round trip completes (see `renderMappingTab`'s
+ * doc comment on why the live-fetch result is never a render-time side
+ * effect) and for the "no fetch attempted" fallback states below. */
+function defaultColumnMappingDraft(): ComparisonEditorColumnMappingDraft {
+  return { mode: "manual", rows: buildManualMappingRows() };
+}
+
 /** Builds the `ComparisonEditorDraft` for a document's current text:
  * parses it via `parseDefinition` and maps the result into the view
  * shape, or -- on a parse failure -- returns a draft carrying
@@ -231,7 +285,8 @@ export function buildDraftFromText(text: string, connectionOptions: ComparisonEd
       target: sideToDraft(definition.target),
       keys: definition.keys,
       checks: checksToDraft(definition.checks),
-      connectionOptions
+      connectionOptions,
+      columnMapping: defaultColumnMappingDraft()
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -242,6 +297,7 @@ export function buildDraftFromText(text: string, connectionOptions: ComparisonEd
       keys: [],
       checks: { schema: false, rowCount: false, profile: false, rowLevel: false },
       connectionOptions,
+      columnMapping: defaultColumnMappingDraft(),
       parseError: { message, rawText: text }
     };
   }
@@ -305,6 +361,111 @@ export interface ComparisonEditorProviderDeps {
    * listing `ConnectionProfile.name` values". */
   listConnectionNames: () => string[];
   applyEdit: (edit: vscode.WorkspaceEdit) => Thenable<boolean>;
+  /**
+   * T-37: resolves a saved connection profile *name* into an actual
+   * `DataPlatformConnector`, for the Column Mapping tab's live `getSchema`
+   * fetch. Returns `undefined` when no profile matches `name` (this
+   * provider then falls back to manual entry for that side -- the same
+   * "connection not found" handling `buildConnectorRegistry`
+   * (`activate.ts`) has for `runComparisonCommand`, just surfaced as
+   * `undefined` here instead of a `FixtureConnector` fallback, since a
+   * silent fixture substitution would be actively misleading in an
+   * editing UI that's supposed to reflect the user's real configured
+   * connections).
+   *
+   * Composed at the `activate.ts` call site from the same
+   * `ConnectionProfileStore`/`SecretStore`/`resolveConnector` (T-29)
+   * pieces `buildConnectorRegistry` already uses -- per TASK-BRIEF.md
+   * Scope item 1, this provider must never import `SecretStore`/
+   * `ConnectionProfileStore` directly or duplicate that resolution logic
+   * itself; it only ever calls this already-composed capability.
+   */
+  resolveConnectorByName: (name: string) => Promise<DataPlatformConnector | undefined>;
+}
+
+/** The shape of a "fetch-columns" message the webview's static script
+ * posts back when the Mapping tab is opened or Source/Target
+ * mode/connection/object changes (see `comparisonEditorHtml.ts`'s
+ * `requestColumnFetch`). Carries the webview's current in-progress
+ * Source/Target draft state (not necessarily what's saved on disk yet),
+ * since the fetch must reflect whatever the user has currently selected,
+ * matching the same loosely-typed-at-the-boundary, re-validated-here
+ * pattern `ApplyMessage`/`parseSideMessage` already establish. */
+interface FetchColumnsMessage {
+  type: "fetch-columns";
+  source: unknown;
+  target: unknown;
+}
+
+function isFetchColumnsMessage(message: unknown): message is FetchColumnsMessage {
+  return typeof message === "object" && message !== null && (message as { type?: unknown }).type === "fetch-columns";
+}
+
+/**
+ * Decides whether a live `getSchema` fetch is even attempted for the
+ * Mapping tab (TASK-BRIEF.md Scope item 1's Table-mode-only gating): both
+ * sides must be in Table mode, with a non-blank `connection` name and a
+ * non-blank `object` name. Any other combination (Query/SQL-File mode
+ * either side, or a Table-mode side with no object typed yet) means the
+ * live fetch is skipped entirely -- not attempted and failed, per the
+ * brief's explicit "do not attempt it" instruction -- and the caller falls
+ * back to manual entry.
+ */
+function bothSidesReadyForLiveFetch(source: ComparisonEditorSideDraft, target: ComparisonEditorSideDraft): boolean {
+  return (
+    source.kind === "table" &&
+    target.kind === "table" &&
+    source.connection.trim() !== "" &&
+    target.connection.trim() !== "" &&
+    source.object.trim() !== "" &&
+    target.object.trim() !== ""
+  );
+}
+
+/**
+ * Builds the Column Mapping tab's draft state for the current
+ * Source/Target sides (T-37, TASK-BRIEF.md Scope item 1): when both sides
+ * are Table-mode with a resolved connection + object, resolves both
+ * connectors via `deps.resolveConnectorByName` and calls `getSchema` on
+ * each; a `getSchema` rejection (or an unresolvable connection name) falls
+ * back to manual entry with `fetchError` set to a human-readable message,
+ * scoped to just this tab -- it never throws out of this function, so a
+ * fetch failure cannot crash `resolveCustomTextEditor`'s message handler
+ * or affect the other four tabs. When either side isn't Table-mode-ready,
+ * no `getSchema` call is made at all (not attempted-and-caught -- the
+ * Table-mode-only gate is checked before any connector resolution starts).
+ */
+async function fetchColumnMappingDraft(
+  source: ComparisonEditorSideDraft,
+  target: ComparisonEditorSideDraft,
+  resolveConnectorByName: ComparisonEditorProviderDeps["resolveConnectorByName"]
+): Promise<ComparisonEditorColumnMappingDraft> {
+  if (!bothSidesReadyForLiveFetch(source, target) || source.kind !== "table" || target.kind !== "table") {
+    return defaultColumnMappingDraft();
+  }
+
+  try {
+    const [sourceConnector, targetConnector] = await Promise.all([
+      resolveConnectorByName(source.connection),
+      resolveConnectorByName(target.connection)
+    ]);
+    if (sourceConnector === undefined) {
+      throw new Error(`No connection named "${source.connection}" could be resolved.`);
+    }
+    if (targetConnector === undefined) {
+      throw new Error(`No connection named "${target.connection}" could be resolved.`);
+    }
+
+    const [sourceColumns, targetColumns] = await Promise.all([
+      sourceConnector.getSchema({ kind: "table", object: source.object }),
+      targetConnector.getSchema({ kind: "table", object: target.object })
+    ]);
+
+    return { mode: "fetched", rows: buildMappingRowsFromColumns(sourceColumns, targetColumns) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    return { mode: "manual", rows: buildManualMappingRows(), fetchError: message };
+  }
 }
 
 /**
@@ -349,6 +510,22 @@ export class ComparisonEditorProvider implements vscode.CustomTextEditorProvider
     });
 
     const messageSubscription = webviewPanel.webview.onDidReceiveMessage(async (rawMessage: unknown) => {
+      // T-37: fetch-columns is handled independently of Apply -- a
+      // getSchema failure here must never prevent Apply from working
+      // normally on the other four tabs (TASK-BRIEF.md Scope item 1's
+      // isolation requirement), so this branch never touches
+      // handleApplyMessage/applyEdit at all.
+      if (isFetchColumnsMessage(rawMessage)) {
+        const source = parseSideMessage(rawMessage.source, "source");
+        const target = parseSideMessage(rawMessage.target, "target");
+        const columnMapping = await fetchColumnMappingDraft(source, target, this.deps.resolveConnectorByName);
+
+        const connectionOptions = this.deps.listConnectionNames().map((name) => ({ name }));
+        const draft = buildDraftFromText(document.getText(), connectionOptions);
+        webviewPanel.webview.html = renderComparisonEditorHtml({ ...draft, source, target, columnMapping });
+        return;
+      }
+
       if (typeof rawMessage !== "object" || rawMessage === null || (rawMessage as { type?: unknown }).type !== "apply") {
         return;
       }
