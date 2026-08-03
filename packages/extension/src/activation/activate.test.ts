@@ -75,15 +75,35 @@ vi.mock("vscode", () => {
   }));
   const findFiles = vi.fn(async () => []);
 
+  // T-36: activate() now also registers a CustomTextEditorProvider for
+  // `.paritylens` files (registerComparisonEditorProvider) -- a minimal,
+  // mechanically-required addition to this pre-existing mock (this file is
+  // outside TASK-BRIEF.md T-36's "Files owned" list, but every existing
+  // test below constructs a real `activate()` call, which now
+  // unconditionally calls `vscode.window.registerCustomEditorProvider` and
+  // `vscode.workspace.applyEdit` needs a mock surface too, mirroring
+  // `createTreeView`/`registerCommand`'s existing no-op-disposable mocks
+  // above). No existing test's assertions change; this only keeps
+  // `activate()` callable under this file's mocked `vscode` module.
+  const registerCustomEditorProvider = () => ({ dispose: () => undefined });
+  const applyEdit = vi.fn(async () => true);
+
   return {
     TreeItem,
     EventEmitter,
     TreeItemCollapsibleState,
     ViewColumn,
     StatusBarAlignment,
-    window: { createTreeView, createWebviewPanel, showInformationMessage, showErrorMessage, createStatusBarItem },
+    window: {
+      createTreeView,
+      createWebviewPanel,
+      showInformationMessage,
+      showErrorMessage,
+      createStatusBarItem,
+      registerCustomEditorProvider
+    },
     commands: { registerCommand },
-    workspace: { workspaceFolders: undefined, findFiles }
+    workspace: { workspaceFolders: undefined, findFiles, applyEdit }
   };
 });
 

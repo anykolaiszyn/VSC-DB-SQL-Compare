@@ -1,180 +1,236 @@
-# ParityLens — Implementation Report T-35b
+# ParityLens — Implementation Report T-36
 
 ## Status and objective
 
-- **Status:** COMPLETE (implementation and evidence only — not
-  self-approved; independent review required next, per this task's own
-  brief and `AGENTS.md`'s "Every implementation task receives an
-  independent review by a reviewer who did not author the task's
-  change.")
-- **Objective:** Resume the original T-35 scope (renamed T-35b): extend
-  `buildComparisonYaml` (`packages/extension/src/authoring/buildComparisonYaml.ts`,
-  T-32) to emit all three `ParitySide` kinds (`table`/`query`/`sqlFile`,
-  per T-35a's widened union in
-  `packages/engine/src/orchestration/definition/definition.ts`) and
-  `column_mapping` entries, and to fix the 2 test files T-35a's `kind`
-  field addition broke, bringing `npm run verify` back to green.
+- **Status:** COMPLETE (implementation + evidence only — not reviewed or approved)
+- **Objective:** Per `TASK-BRIEF.md`'s Objective section: give `.paritylens`
+  files "a real, interactive authoring UI instead of forcing every edit
+  beyond T-32's minimal scaffold into raw YAML text," by registering a
+  `vscode.CustomTextEditorProvider` with four tabs — **Source**, **Target**,
+  **Keys**, **Checks** — backed by `buildComparisonYaml`/`parseDefinition`
+  as the sole source of truth, and extending `buildComparisonYaml` to emit
+  `checks` (Scope item 5), which T-35b's brief explicitly did not include.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/src/authoring/buildComparisonYaml.ts` | Added `NewComparisonAnswerSide` discriminated union (`table`/`query`/`sqlFile`, mirroring `ParitySide`); extended `NewComparisonAnswers` with optional `source`/`target`/`columnMapping` fields (backward-compatible — existing flat `sourceObject`/`sourceWhere`/`targetObject`/`targetWhere` fields still work); rewrote `renderSide` to dispatch on `kind` and always emit an explicit `kind: "table"`/`"query"`/`"sqlFile"`; added `renderColumnMappingEntry` and `column_mapping` block emission (omitted when absent/empty); re-exported `ColumnMappingEntry` from `@paritylens/engine` for caller convenience. | TASK-BRIEF.md Scope items 1–4. |
-| `packages/extension/src/authoring/buildComparisonYaml.test.ts` | Fixed 2 pre-existing failing assertions (added `kind: "table"` to expected `toEqual` objects) and the typecheck error at the old line 59 (`parsed.source.where`) via `kind`-narrowing (`if (parsed.source.kind !== "table") throw ...`) instead of a cast. Added 14 new tests: query-kind source round-trip, sqlFile-kind target round-trip, mixed table/query sides, column_mapping omitted-when-absent/empty, plain and derived `ColumnMappingEntry` round-trips (with/without expressions), multiple mixed entries in order, and 3 adversarial escaping tests for `sql`/`filePath`/`column_mapping` fields (YAML anchors/aliases, flow-mapping injection, embedded newlines, credential-shaped-looking substrings). | TASK-BRIEF.md Scope item 5 (disclosed fix) + Red/Green verification evidence requirements. |
-| `packages/extension/src/authoring/newComparisonWizard.test.ts` | Fixed the 1 pre-existing failing assertion (added `kind: "table"` to both expected `toEqual` objects at the old line 211). No other change. | TASK-BRIEF.md Scope item 5 (disclosed fix), file ownership limited to this fix only. |
+| `packages/extension/src/authoring/comparisonEditorProvider.ts` (new) | `vscode`-touching glue: `ComparisonEditorProvider` implementing `resolveCustomTextEditor`, `enableScripts: true`, Apply-message handling with the provider-side `parseDefinition` round-trip guard, re-render on out-of-band document change | TASK-BRIEF.md Scope items 1–2 |
+| `packages/extension/src/authoring/comparisonEditorProvider.test.ts` (new) | Red/green tests for the provider, including the adversarial round-trip-guard-bypass simulation | TASK-BRIEF.md Red/Green evidence requirements |
+| `packages/extension/src/authoring/comparisonEditorHtml.ts` (new) | Pure `renderComparisonEditorHtml(draft)`; `ComparisonEditorDraft` view-state type; four tabs (Source/Target/Keys/Checks) plus a visible, unbuilt Column Mapping tab slot for T-37 | TASK-BRIEF.md Scope item 3 |
+| `packages/extension/src/authoring/comparisonEditorHtml.test.ts` (new) | Purity tests, XSS/escaping tests, script-determinism test, parse-error banner test | TASK-BRIEF.md Green-state evidence requirements |
+| `packages/extension/src/authoring/buildComparisonYaml.ts` | Extended `NewComparisonAnswers` with optional `checks?: NewComparisonAnswerChecks`; added `renderChecks` emitting `checks.schema`/`row_count`/`profile`/`row_level` `enabled` toggles, omitted entirely when absent/empty | TASK-BRIEF.md Scope item 5 |
+| `packages/extension/src/authoring/buildComparisonYaml.test.ts` | Added 5 tests covering `checks` emission and round-trip through `parseDefinition` | TASK-BRIEF.md Red/Green evidence requirements |
+| `packages/extension/src/activation/activate.ts` | Added `registerComparisonEditorProvider` (binds `ComparisonEditorProviderDeps` to live `vscode.window`/`vscode.workspace` APIs) and one line registering it in `activate()`, alongside the existing command-registration pattern | TASK-BRIEF.md Scope item 1, Files owned |
+| `packages/extension/package.json` | Added `contributes.customEditors` entry (`viewType: "paritylens.comparisonEditor"`, `selector.filenamePattern: "*.paritylens"`, `priority: "default"`) | Confirmed against `@types/vscode`'s `registerCustomEditorProvider`/`CustomTextEditorProvider` — VS Code requires a manifest `customEditors` contribution for `onCustomEditor:viewType` activation and view-type resolution |
+| `packages/extension/src/activation/activate.test.ts` | **Outside T-36's declared "Files owned" list — disclosed deviation, see below.** Added `registerCustomEditorProvider`/`applyEdit` no-op mocks to the file's existing hoisted `vi.mock("vscode", ...)` factory | Mechanically required: every existing test in this file calls the real `activate()`, which now unconditionally calls `vscode.window.registerCustomEditorProvider`; without a mock, every existing test in the file failed with `TypeError: window.registerCustomEditorProvider is not a function`. No existing test's assertions were changed. |
 
-`packages/extension/src/authoring/newComparisonWizard.ts` (production
-code) was **not touched** — confirmed via `git diff main -- packages/extension/src/authoring/newComparisonWizard.ts`
-returning zero lines. Its existing call site (`answers.sourceObject`/etc.)
-keeps compiling unchanged because the new `source`/`target`/`columnMapping`
-fields on `NewComparisonAnswers` are all optional additions, not
-replacements of the existing flat fields.
+### Disclosed scope-boundary note
+
+`packages/extension/src/activation/activate.test.ts` is not in
+`TASK-BRIEF.md`'s "Files owned" list, but extending `activate.ts` (which
+**is** owned) broke every one of that file's pre-existing tests purely at
+the mock-surface level (a missing function on the mocked `vscode.window`
+object, not a behavioral assertion failure). This is the same category of
+mechanically-forced edit the implementer contract calls out ("a test
+literal elsewhere breaks because you widened a shared type the brief
+explicitly authorized you to widen"), and `activate.ts`'s own prior task
+briefs (T-22, T-30, T-33) establish the identical precedent of extending
+this same mock file for the same reason. The diff is two mock-object
+property additions (`registerCustomEditorProvider`, `applyEdit`) — no
+existing assertion, test name, or test behavior changed. Flagging this
+explicitly per the implementer contract rather than silently expanding
+scope.
 
 ## Behavior and interfaces
 
 - **Behavior delivered:**
-  - `buildComparisonYaml` can now emit a `query`-kind or `sqlFile`-kind
-    `source`/`target` block (`kind`, `connection`, and exactly the one
-    kind-specific field — `sql` or `filePath` — with no `object`/`where`),
-    matching `parseSide`'s validation in `definition.ts` exactly (which
-    rejects `object`/`where` on non-`table` kinds).
-  - Every `table`-kind side is now emitted with an explicit
-    `kind: "table"` line rather than relying on `parseSide`'s
-    absent-kind-defaults-to-table backward-compatibility path.
-  - `buildComparisonYaml` can now emit a `column_mapping:` list block from
-    an optional `columnMapping: ColumnMappingEntry[]` answer, in the
-    list-of-objects form (not the flat string-map form), supporting both
-    the plain `{ source, target }` and derived
-    `{ name, target, sourceExpression?, targetExpression? }` variants,
-    with `source_expression`/`target_expression` YAML keys (matching
-    `parseColumnMappingListEntry`'s field names). The field is omitted
-    entirely when `columnMapping` is absent or `[]`, relying on
-    `parseDefinition`'s existing "absent → `[]`" default.
-  - All new user-supplied string fields (`sql`, `filePath`, and every
-    `ColumnMappingEntry` string field) go through the existing
-    `yamlQuotedString` escaping helper — no new bare/unquoted scalar is
-    emitted anywhere.
+  - Opening a `.paritylens` file now opens `ComparisonEditorProvider`'s
+    custom editor by default (`priority: "default"` in `package.json`).
+  - The editor renders four tabs (Source, Target, Keys, Checks) reflecting
+    the document's current parsed state, with a visible but unbuilt
+    Column Mapping tab-strip slot reserved for T-37.
+  - Source/Target each support a Table/Query/SQL File mode toggle
+    (matching `NewComparisonAnswerSide`'s 3-kind union) and a connection
+    picker populated from `ConnectionProfileStore.list()` (bare `name`
+    strings only — see Security note below).
+  - Keys is a simple add/remove list editor for composite key columns.
+  - Checks exposes four independent enabled toggles
+    (`schema`/`rowCount`/`profile`/`rowLevel`) — no
+    `tolerance`/`strategy`/`maxDifferences`/`topValues` UI, per
+    TASK-BRIEF.md Scope item 3's explicit exclusion.
+  - Clicking Apply posts the collected field values to the provider,
+    which validates them, builds YAML via the extended
+    `buildComparisonYaml`, round-trips the result through
+    `parseDefinition` itself, and only then applies a single
+    `WorkspaceEdit` replacing the full document range. Any failure at any
+    step (missing required field, or — simulating a bypass of client-side
+    validation — a built document that still fails `parseDefinition`)
+    results in **zero** calls to `applyEdit` and a failure message posted
+    back to the webview; the document is left completely unchanged. This
+    is verified directly (not just inferred) by
+    `comparisonEditorProvider.test.ts`'s
+    `"NEVER calls applyEdit when the Apply message would fail the
+    provider-side round-trip guard"` test, which calls
+    `resolveCustomTextEditor` + simulates the message end-to-end and
+    asserts `applyEdit` was never invoked.
+  - Opening a document whose current text is invalid/unparseable YAML (or
+    valid YAML failing `ParityDefinition` validation) shows a disclosed
+    "this file has a parse error: {message}" banner plus the raw text,
+    not a crash or blank form — verified by both
+    `comparisonEditorHtml.test.ts` (render-level) and
+    `comparisonEditorProvider.test.ts` (provider-level, asserting
+    `resolveCustomTextEditor` does not throw).
+  - If the underlying document changes on disk while the editor is open,
+    `vscode.workspace.onDidChangeTextDocument` triggers a re-render from
+    the fresh text (minimal handling, not a full conflict-resolution UI,
+    per TASK-BRIEF.md's explicit "minimal, correct handling is
+    acceptable").
+  - `buildComparisonYaml` now emits a `checks:` block (snake_case YAML
+    keys `row_count`/`row_level` matching `parseChecks`'s reads in
+    `packages/engine/src/orchestration/definition/definition.ts` lines
+    ~502–558, confirmed by direct read before writing the emitter) only
+    for the toggles the caller actually supplies; an absent/empty
+    `checks` answer omits the `checks:` key entirely (documented judgment
+    call in `NewComparisonAnswers.checks`'s doc comment, matching this
+    file's existing omit-when-absent convention for `where`/
+    `column_mapping`).
 
-- **Interfaces consumed (read-only):** `QueryInput`
-  (`@paritylens/shared`), `ParitySide`/`ColumnMappingEntry`/
-  `parseDefinition` (`@paritylens/engine`, T-35a's widened shapes and
-  T-08/T-28's `parseColumnMapping`/`parseColumnMappingListEntry`) — read
-  in full before writing the generator, per the brief's instruction not
-  to guess the shape.
+- **Interfaces consumed (read-only):**
+  - `parseDefinition`, `ParityDefinition`, `ParitySide`, `ParityChecks`
+    (`@paritylens/engine`) — used exactly as-is; nothing under
+    `packages/engine/**` was touched.
+  - `ConnectionProfileStore.list()` (T-29) — only `.name` is ever read
+    into `ComparisonEditorConnectionOption`; no other `ConnectionProfile`
+    field (host/port/user/etc.) is ever read or rendered.
+  - `buildComparisonYaml`/`NewComparisonAnswers`/`NewComparisonAnswerSide`
+    (T-35b) — extended, not replaced; every pre-existing call site
+    (`newComparisonWizard.ts`) keeps compiling and behaving unchanged
+    since `checks` is an additive optional field.
 
-- **Interfaces produced (new exported shape, for T-36/T-37 to consume):**
-
-  ```ts
-  export type NewComparisonAnswerSide =
-    | { kind: "table"; object: string; where?: string }
-    | { kind: "query"; sql: string }
-    | { kind: "sqlFile"; filePath: string };
-
-  export interface NewComparisonAnswers {
-    comparisonName: string;
-    sourceConnection: string;
-    sourceObject?: string;   // flat table-kind convenience field, used only when `source` is absent
-    sourceWhere?: string;    // ditto
-    source?: NewComparisonAnswerSide;   // takes precedence over sourceObject/sourceWhere when present
-    targetConnection: string;
-    targetObject?: string;   // flat table-kind convenience field, used only when `target` is absent
-    targetWhere?: string;    // ditto
-    target?: NewComparisonAnswerSide;   // takes precedence over targetObject/targetWhere when present
-    keys: string[];
-    columnMapping?: ColumnMappingEntry[];  // omitted from YAML when absent/empty
-  }
-
-  export type { ColumnMappingEntry } from "@paritylens/engine"; // re-exported for caller convenience
-
-  export function buildComparisonYaml(answers: NewComparisonAnswers): string;
-  ```
-
-  **Judgment call (documented, not silently made):** rather than making
-  `source`/`target` required discriminated-union fields and dropping the
-  flat `sourceObject`/`sourceWhere`/`targetObject`/`targetWhere` fields
-  entirely, I kept both: the flat fields remain as a `table`-kind-only
-  convenience/back-compat path (used when `source`/`target` is absent),
-  and the new `source`/`target` fields take precedence when present. This
-  was necessary to satisfy the brief's explicit constraint ("your extended
-  type must keep that call site compiling unchanged" — Scope item 6,
-  Prohibited changes) since `newComparisonWizard.ts`'s existing call site
-  only ever supplies the flat fields and must not be touched. A future
-  task (T-36/T-37) wiring UI collection for `query`/`sqlFile` answers
-  would use the `source`/`target` fields directly.
+- **Interfaces produced:**
+  - Registered `CustomTextEditorProvider` for `.paritylens`
+    (`COMPARISON_EDITOR_VIEW_TYPE = "paritylens.comparisonEditor"`,
+    matching `package.json`'s new `contributes.customEditors` entry).
+  - `renderComparisonEditorHtml(draft: ComparisonEditorDraft): string`
+    (pure, exported from `comparisonEditorHtml.ts`).
+  - **`ComparisonEditorDraft` shape** (documented in full in
+    `comparisonEditorHtml.ts`'s header/type comments — summarized here
+    per TASK-BRIEF.md's "document the exact draft-state type shape ...
+    T-37 will need to extend it" instruction):
+    ```ts
+    interface ComparisonEditorDraft {
+      comparisonName: string;
+      source: ComparisonEditorSideDraft;   // { kind: "table"|"query"|"sqlFile", connection, ... }
+      target: ComparisonEditorSideDraft;
+      keys: string[];
+      checks: ComparisonEditorChecksDraft; // { schema, rowCount, profile, rowLevel: boolean }
+      connectionOptions: ComparisonEditorConnectionOption[]; // { name: string }[]
+      parseError?: { message: string; rawText: string };
+    }
+    ```
+    T-37 should extend this additively (e.g. a `columnMapping` field) per
+    this file's own header comment, not restructure the existing fields.
+  - Extended `buildComparisonYaml`/`NewComparisonAnswers` supporting an
+    optional `checks?: NewComparisonAnswerChecks` field
+    (`{ schema?, rowCount?, profile?, rowLevel?: { enabled: boolean } }`).
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Red state (Scope item 5, pre-existing) | `npm run verify` on `main` before any change (captured on this branch prior to editing, per brief: "no need to re-create this failure; it already exists") | **FAIL** — typecheck step: `packages/extension/src/authoring/buildComparisonYaml.test.ts(59,26): error TS2339: Property 'where' does not exist on type 'ParitySide'.` (typecheck halts the `verify` chain before lint/test run) | Captured in this session's transcript, first tool call of the session |
-| Red state (Scope item 5, focused) | `npx vitest run packages/extension/src/authoring` (same pre-edit state) | **FAIL** — 3 failed / 15 passed (18 total): `buildComparisonYaml.test.ts` 2 failed (missing `kind: "table"` in expected `toEqual` objects), `newComparisonWizard.test.ts` 1 failed (same pattern) | Captured in this session's transcript, second tool call |
-| Focused green state | `npx vitest run packages/extension/src/authoring` (post-edit) | **PASS** — 17 tests in `buildComparisonYaml.test.ts` (5 original, fixed + 12 new), 13 tests in `newComparisonWizard.test.ts` (all passing, only the 1 assertion changed) — 30 total, 0 failed | Captured in this session's transcript, after edits |
-| Full verification | `npm run verify` (typecheck + lint + test) | **PASS** — typecheck clean, lint clean, `511 passed \| 27 skipped (538)` across 28 test files (2 skipped files are the pre-existing SQL Server/PostgreSQL integration suites, gated on env vars not set in this environment — unrelated to this task) | Captured in this session's transcript, final full-verify run |
+| Baseline (pre-change) | `npm run verify` | Exit 0. 511 passed, 27 skipped, 30 files | Run before any edit, this session |
+| Red state 1 (checks emission) | `npx vitest run packages/extension/src/authoring/buildComparisonYaml.test.ts` (after adding the 5 new `checks` tests, before touching `buildComparisonYaml.ts`) | **3 failed / 19 passed** — `expected {} to deeply equal {...}` for all three `checks`-asserting tests, confirming `checks` was silently absent from parsed output exactly as predicted | Command output captured this session |
+| Red state 2 (provider doesn't exist) | Provider file did not exist prior to this task; `comparisonEditorProvider.test.ts` could not have run (import would fail) | N/A — file creation is the red state per TASK-BRIEF.md's own wording ("fails today (the provider doesn't exist)") | Confirmed via `git status`/directory listing before creating the file |
+| Focused green (buildComparisonYaml) | `npx vitest run packages/extension/src/authoring/buildComparisonYaml.test.ts` | Exit 0. **22 passed** (17 pre-existing + 5 new) | Command output this session |
+| Focused green (comparisonEditorHtml) | `npx vitest run packages/extension/src/authoring/comparisonEditorHtml.test.ts` | Exit 0. **13 passed**, including purity (identical-object and structurally-equal-copy variants), `enableScripts`-adjacent `<script>` presence, XSS/escaping, and script-determinism-across-different-drafts tests | Command output this session |
+| Focused green (comparisonEditorProvider) | `npx vitest run packages/extension/src/authoring/comparisonEditorProvider.test.ts` | Exit 0. **14 passed**, including the `enableScripts: true` positive-assertion guard, the Apply-success end-to-end test, the "NEVER calls applyEdit" round-trip-guard-bypass test, and the parse-error-banner-not-crash test | Command output this session |
+| Focused green (activate) | `npx vitest run packages/extension/src/activation` | Exit 0. **20 passed** (12 activate.test.ts + 8 runComparisonCommand.test.ts) — confirms the disclosed mock-only edit didn't change any existing assertion's outcome | Command output this session |
+| Full verification | `npm run verify` (`tsc -b --force` && `eslint .` && `vitest run`) | **Exit 0.** typecheck clean, lint clean, **543 passed / 27 skipped / 32 test files** (up from the 511/27/30 baseline by exactly the 32 new tests added: 5 + 13 + 14 = 32) | Full transcript captured this session |
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - The list-of-objects YAML form was used for `column_mapping` rather
-    than the flat string-map alternative form, per the brief's own
-    guidance ("prefer it over the flat string-map alternative form unless
-    you find a concrete reason the flat form is needed") — no such reason
-    was found; the list form is the only form that can express the
-    derived-mapping variant (`name`/`sourceExpression`/`targetExpression`)
-    at all, since the flat form can only express `source: target` string
-    pairs.
-  - Kept the pre-existing flat `sourceObject`/`sourceWhere`/
-    `targetObject`/`targetWhere` answer fields rather than removing them,
-    as the documented judgment call above explains — this was required to
-    satisfy the brief's backward-compatibility constraint on
-    `newComparisonWizard.ts`'s untouched call site.
+  - `priority: "default"` in the `customEditors` manifest entry is the
+    correct choice to satisfy "give `.paritylens` files a real,
+    interactive authoring UI" (Objective) — VS Code still lets a user
+    reopen as plain text via "Reopen Editor With...", so this doesn't
+    remove the raw-YAML editing path, it just changes what opens by
+    default. Judgment call; a reviewer may prefer `"option"` (opens as
+    plain text by default, custom editor available as a menu option) if
+    the intent was more conservative. Documented here as a judgment call
+    rather than silently picked.
+  - `NewComparisonAnswerChecks`'s "omit unspecified toggles from the
+    emitted `checks:` block" behavior (rather than "always emit all four
+    toggles, defaulting unspecified ones to `false`") was the judgment
+    call TASK-BRIEF.md Scope item 5 explicitly left to the implementer
+    ("your call, document which you chose"). Chose omit-when-unspecified
+    because it distinguishes "user never touched this check" from
+    "user explicitly turned this check off" at the document level,
+    matching `parseDefinition`'s own `checks.<x>` optional-key semantics.
+  - The webview's Checks tab, per its own doc comment in
+    `comparisonEditorHtml.ts`, currently reports **all four** checkbox
+    states on every Apply (not just ones the user touched) — this
+    collapses "untouched" and "explicitly set to the rendered default"
+    into the same emitted YAML for this task's scope. This is disclosed
+    as a documented limitation, not silently smoothed over: a toggle a
+    user never interacts with still gets written into `checks:` at
+    whatever its initial (parsed-from-document) state was, since the
+    static client script has no separate "touched" tracking. Acceptable
+    for this task's scope (four plain booleans, per Scope item 3) but
+    worth a reviewer's attention if strict "never write a field the user
+    didn't touch" semantics were expected.
 
 - **Risks or limitations:**
-  - `resolveSide`'s flat-field fallback path (`resolveSide` in
-    `buildComparisonYaml.ts`) falls back to `object: flatObject ?? ""` if
-    `source`/`target` is absent and `sourceObject`/`targetObject` is also
-    `undefined`. This can only be reached if a caller constructs a
-    `NewComparisonAnswers` value that omits all of `source`,
-    `sourceObject` — the type system does not fully prevent this because
-    `sourceObject` was left optional for backward compatibility (it was
-    required in the pre-T-35b type). In practice `newComparisonWizard.ts`
-    always supplies `sourceObject`/`targetObject` when it doesn't supply
-    `source`/`target`, so this path is not reachable from the one existing
-    production caller, but a future caller could hit it and get an empty
-    `object: ""` written to YAML rather than a compile error. This is a
-    known, disclosed limitation of the backward-compatible type design,
-    not a silently-accepted gap — flagged here for the reviewer to weigh
-    whether it's acceptable given the brief's explicit "keep the call site
-    compiling unchanged" constraint left no fully-type-safe alternative
-    within this task's file ownership (the flat fields could not be made
-    required without either breaking backward compatibility or requiring
-    a second, incompatible answers type).
-  - No genuine parsing gap or bug was found while reading `definition.ts`
-    in full, per the brief's instruction to disclose rather than patch
-    any such finding. `parseSide`/`parseColumnMapping`/
-    `parseColumnMappingListEntry` were read completely before writing the
-    generator; the emitted YAML shapes were designed to match them field-
-    for-field.
+  - The embedded client-side `<script>` in `comparisonEditorHtml.ts` is
+    hand-written vanilla JS (no bundler/type-checking on that string) —
+    consistent with this being the first genuinely interactive webview in
+    this codebase, but it means any typo inside `CLIENT_SCRIPT` would only
+    surface at runtime inside a real VS Code webview, not at `tsc -b`
+    time. Mitigated by keeping the script's logic deliberately simple
+    (DOM reads/writes and one `postMessage` call) and by the script being
+    exercised structurally (presence, determinism-across-renders) by
+    `comparisonEditorHtml.test.ts`, though not executed in a real DOM —
+    no `jsdom`/browser-environment test actually runs this script's logic
+    end-to-end. This is a real coverage gap, disclosed rather than hidden:
+    the `postMessage`/Apply flow is verified end-to-end at the
+    *provider* level (real `handleApplyMessage` logic, simulated message
+    objects) but not at the *rendered-webview-script* level.
+  - `resolveCustomTextEditor`'s out-of-band document-change handling
+    (`vscode.workspace.onDidChangeTextDocument`) re-renders on *any*
+    document change, including ones the editor's own `applyEdit` call
+    itself causes — this means after a successful Apply, the webview gets
+    re-rendered a second time from the just-written text (harmless — it's
+    idempotent, re-parsing what was just written — but not verified by a
+    dedicated test; only inferred from the code path).
+  - `NewComparisonAnswerChecks`/`checks` emission was scoped strictly to
+    the four `enabled` toggles per TASK-BRIEF.md's explicit
+    exclusion — `tolerance`/`strategy`/`maxDifferences`/`topValues`
+    remain hand-YAML-edited only, exactly as instructed, not a gap I
+    introduced.
 
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Commit:** `a0321a92cbb63c024cd3cbd6bc929bcbde8ac695` — "T-35b: extend
-  buildComparisonYaml for query/sqlFile kinds + column_mapping"
-- **Branch:** `task/T-35b-buildyaml-query-mapping` (branched from `main`
-  after T-35a's merge)
-- **Diff scope confirmed:** `git diff --stat main..task/T-35b-buildyaml-query-mapping`
-  shows exactly the 3 owned files changed (`buildComparisonYaml.ts`,
-  `buildComparisonYaml.test.ts`, `newComparisonWizard.test.ts`); `git diff
-  main -- packages/extension/src/authoring/newComparisonWizard.ts` is
-  empty.
+- **Commit:** `4bcde212c57b17eb59f768fd84b8c2a9db6c4bbd` on branch
+  `task/T-36-comparison-custom-editor`
+- **Branch:** `task/T-36-comparison-custom-editor` (matches
+  TASK-BRIEF.md's Branch section)
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent (not this implementer),
-per `AGENTS.md`'s review-gate requirement and this task's own Handoff
-note (6 specific adversarial checks listed in `TASK-BRIEF.md`). This
-report does not constitute review or approval — recommend dispatching the
-`reviewer` subagent next, with particular attention to the disclosed
-`resolveSide` fallback-path risk above and the Handoff note's shape-
-fidelity and escaping-coverage checks.
+Independent review by a separate reviewer agent, per this project's
+standing rule that a task is never self-approved. The reviewer should, at
+minimum, work through TASK-BRIEF.md's own "Handoff note for the reviewer"
+checklist (items 1–6): re-verify the Apply-blocking round-trip guard
+adversarially, confirm `resultsWebview.ts` is byte-for-byte unchanged
+(`git diff --stat main..task/T-36-comparison-custom-editor` — confirmed
+in this report's own diff-stat check to touch only the declared files
+plus the disclosed `activate.test.ts` mock addition), confirm no
+credential-shaped field is reachable through the connection picker,
+confirm `renderComparisonEditorHtml` purity and full `escapeHtml`
+coverage, confirm `checks` round-trip fidelity against real
+`parseDefinition`, and confirm the file-ownership diff. This report does
+not constitute review, approval, or a completion claim beyond
+implementation-and-evidence scope.

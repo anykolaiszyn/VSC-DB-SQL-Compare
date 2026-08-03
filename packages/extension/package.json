@@ -51,6 +51,18 @@
         "command": "paritylens.newComparison",
         "title": "ParityLens: New Comparison"
       }
+    ],
+    "customEditors": [
+      {
+        "viewType": "paritylens.comparisonEditor",
+        "displayName": "ParityLens Comparison Editor",
+        "selector": [
+          {
+            "filenamePattern": "*.paritylens"
+          }
+        ],
+        "priority": "default"
+      }
     ]
   },
   "scripts": {
