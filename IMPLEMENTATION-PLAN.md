@@ -149,7 +149,8 @@ discussion) before being added to a future phase.
   and blockers table, not repeated here. Reactivate by resolving its
   trial-account blocker and following T-17/T-19's established pattern.
 
-### Candidate Phase 6 — self-service gap follow-ups (added 2026-08-02)
+### Phase 6 — self-service gap follow-ups (promoted from backlog
+2026-08-02)
 
 Sourced from `docs/superpowers/specs/2026-08-02-self-service-gap-analysis.md`,
 a user-journey/self-service-gap analysis run through a Jr. Data Analyst /
@@ -159,38 +160,19 @@ built). Four of the analysis's nine findings are already substantially
 covered by Phase 5's in-flight scope (hand-authoring YAML → T-36/T-37;
 no pre-execution SQL confirmation → T-38; engineer-voiced error text and
 no results→source navigation → partially touched by T-36/T-39) and are
-not repeated here. These five are genuinely new, untouched by Phase 5,
-and not yet scoped as tasks — each needs its own scoping pass (and, for
-the onboarding/welcome-view item, likely a small design discussion)
-before being added to a future phase:
+not repeated here. These five were promoted from the "Candidate Phase 6"
+backlog entry directly into scheduled tasks (owner-approved via
+`AskUserQuestion`) — sequenced independently of Phase 5 (T-36–T-39), no
+file-ownership overlap, may run in parallel with Phase 5's remaining
+tasks.
 
-- **No onboarding surface / empty-sidebar first run** (Finding 1) — a
-  first-time user sees three empty, unlabeled tree sections with no
-  welcome view, no placeholder "click here to start" text, and no
-  in-product signal to use the command palette at all. Ranked the
-  analysis's #1 impact item (combined with the next item) — the very
-  first moment of contact with the product.
-- **Command discovery relies entirely on the command palette** (Finding
-  2) — none of the 5 registered commands (`addConnection`,
-  `newComparison`, etc.) have a tree-view title-bar button, context-menu
-  entry, or `viewsWelcome` contribution; a user must already know to
-  open the command palette and guess a search term.
-- **No connection-test feedback at add-time** (Finding 3) —
-  `paritylens.addConnection` reports success immediately after storing a
-  profile, with zero verification the host/credentials actually work;
-  failures only surface later, disconnected from the input step that
-  caused them.
-- **Results webview isn't actionable for a non-engineer** (Finding 7) —
-  severity tags and diff messages are engine-voiced with no legend, no
-  "what does Compatible/Review/Risk mean," and no guidance on whether a
-  finding needs a fix, an escalation, or is expected migration noise.
-  Explicitly **not** touched by Phase 5 (its Non-goals section leaves
-  `resultsWebview.ts` untouched).
-- **Silent fixture-vs-real-connector fallback ambiguity** (Finding 9) —
-  a typo'd connection name silently falls back to canned fixture demo
-  data with only a passive, easy-to-miss toast as the signal; a user
-  could see a clean "Passed" result while unknowingly comparing fixture
-  data instead of their real databases.
+| ID | Depends on | Objective | Files owned | Interfaces consumed | Interfaces produced | Focused red/green verification | Review gate | Commit or patch checkpoint |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T-40 | T-10 | Onboarding: a `viewsWelcome` contribution for the empty `paritylens.dataParityView` tree (shown when no `.paritylens` files exist in the workspace and no connections are saved), with short guidance text and command-linked buttons (`command:paritylens.addConnection`, `command:paritylens.newComparison`) — VS Code's standard "empty view" pattern. Addresses gap-analysis Finding 1 (no onboarding surface) | `packages/extension/package.json` (`contributes.viewsWelcome` only) | None new — reuses existing `paritylens.addConnection`/`paritylens.newComparison` command IDs (T-29/T-32) | A `viewsWelcome` entry (declarative `package.json` contribution, no new TypeScript module) | Red: a test (or documented manual VS Code Extension Development Host check, since `viewsWelcome` is declarative JSON with no unit-testable runtime behavior — disclose which approach was used) confirming no welcome content exists today for the empty tree state. Green: the `viewsWelcome` contribution renders when `paritylens.dataParityView` has no children; a `package.json`-shape test (e.g. asserting the JSON key exists with the right `view`/`contents`/`when` fields) if `viewsWelcome` content can't otherwise be asserted by `vitest`. Full: `npm run verify` | Independent reviewer confirms the `when` clause genuinely gates on emptiness (not always-shown, which would be visual clutter once a user has data) and that both linked commands are real, already-registered command IDs (no typo'd `command:` URI, which fails silently in VS Code) | Branch `task/T-40-onboarding-welcome-view` |
+| T-41 | T-10 | Command discoverability: `contributes.menus` entries adding a `view/title` navigation button (`+`-style icon) to the "Connections" and "Comparisons" tree sections, invoking `paritylens.addConnection`/`paritylens.newComparison` respectively, using built-in codicons (no new asset). Addresses gap-analysis Finding 2 (command-palette-only discovery) | `packages/extension/package.json` (`contributes.menus`/`contributes.commands`'s `icon` fields only) | Existing command IDs (T-29/T-32), same as T-40 | `view/title` menu contributions with icons | Red: confirms no `contributes.menus` entry exists today (grep/read `package.json`). Green: `view/title` entries present, scoped via `when` to the correct view/section (`view == paritylens.dataParityView`), each pointing at a real, already-registered command ID with a valid built-in codicon name. Full: `npm run verify` | Independent reviewer confirms every referenced codicon name is a real VS Code codicon (spot-check against the codicon reference, same discipline T-34's review applied to `ThemeIcon`/`ThemeColor` ids) and that the `when` clauses don't clash with T-40's `viewsWelcome` state (both should coexist correctly, not fight over which is shown) | Branch `task/T-41-tree-view-title-buttons` |
+| T-42 | T-29 | Connection-test-on-add feedback: extend `paritylens.addConnection`'s flow to call the resolved connector's existing `testConnection()` (`DataPlatformConnector`, already defined, unused at add-time today) after collecting profile fields and before persisting, showing a blocking "Testing connection..." progress notification, then either persisting on success or showing the failure reason with an option to re-enter fields (not persisting a profile that's confirmed broken) or save anyway (some environments are legitimately unreachable at add-time, e.g. VPN-gated hosts — don't hard-block). Addresses gap-analysis Finding 3 (no connection-test feedback at add-time) | `packages/extension/src/connections/connectionCommands.ts` (extends T-29, add-flow only — edit/delete flows unchanged) | `testConnection()` (`DataPlatformConnector`, already defined in `@paritylens/shared`, read-only), `resolveConnector` (T-29) | Extended `addConnectionCommand` flow (same exported command ID, no signature change visible to callers) | Red: test adding a connection profile with mocked `testConnection()` returning a failure, expecting the user to see the failure reason and be offered a choice, fails today (current flow calls `store.add` and reports success unconditionally, never calling `testConnection`). Green: same test passes for both a failing and succeeding `testConnection()` result; a second test confirms choosing "save anyway" after a failure still persists the profile (preserving today's always-succeeds-eventually behavior as an explicit opt-in, not removed) | Independent reviewer confirms `testConnection()` failures never silently discard a user's typed input (they can still choose to save), confirms no credential is logged/displayed in the failure message, and confirms `editConnection`/`deleteConnection` remain genuinely untouched (diff against `main`) | Branch `task/T-42-connection-test-on-add` |
+| T-43 | T-11, T-16, T-34 | Results webview actionability: add a static legend/glossary panel (or inline tooltips, implementer's call within the CSS-only/`enableScripts:false` constraint T-34 established) explaining `Severity` values (`Failure`/`Warning`/`Informational`) and the `Compatible`/`Review`/`Risk` type-mapping classification in plain-language terms, plus a short "what this tab shows and what to do about a finding" caption per tab (Schema/Profile/Volume/Row-Level). Addresses gap-analysis Finding 7 (results not actionable for a non-engineer) — explicitly the one item Phase 5's own Non-goals section named as out of its scope, so this task exists independently of T-36–T-39 | `packages/extension/src/webview/resultsWebview.ts` (extends T-11/T-16/T-34, visual/copy-only — preserve `renderResultsHtml`'s pure-function contract exactly as every prior task touching this file has) | None new — presentational only, reads no new `ComparisonResult` fields | Restyled/extended `renderResultsHtml` output (same exported signature) | Red: a test asserting legend/explanatory text is absent from today's rendered output. Green: same test passes; a second test confirms `renderResultsHtml` purity is unchanged (same input twice → identical output) and `enableScripts` stays `false` (same guard test pattern T-34 established). Full: `npm run verify` | Independent reviewer confirms the added copy is genuinely plain-language (not just restating the engineering term differently) and confirms no new escaping gap was introduced by the added static text (should require no `escapeHtml` calls at all, since it's static copy, not `ComparisonResult`-derived — flag if any interpolation was used where it shouldn't have been) | Branch `task/T-43-results-webview-legend` |
+| T-44 | T-22, T-30 | Fixture-fallback disambiguation: when `runComparisonCommand` resolves a definition where at least one side has no matching saved `ConnectionProfile` (i.e. `MIXED_CONNECTION_NOTICE`'s existing condition, or the all-fixture `FIXTURE_ONLY_NOTICE` case), replace the current passive `showInformationMessage` toast with a blocking `showWarningMessage`-style confirmation requiring explicit acknowledgment before `runComparison` executes, distinguishing "this connection name has no saved profile — using fixture demo data" from a successful, all-real-profile run (which should stay a low-friction confirmation, not gain unnecessary friction). Addresses gap-analysis Finding 9 (silent fixture-fallback ambiguity) | `packages/extension/src/activation/activate.ts` (extends T-22/T-30, `runComparisonCommand`'s notice/confirmation step only) | `findProfileByName`/`sourceProfile`/`targetProfile` resolution (T-30, already computed in `runComparisonCommand`, reused not reimplemented) | Extended `runComparisonCommand` flow (same exported command ID) | Red: test running a comparison whose source connection name doesn't match any saved profile, expecting the command to block on explicit confirmation before calling `runComparison`, fails today (current flow shows a passive toast and proceeds immediately). Green: same test passes; a second test confirms an all-real-profile run's confirmation stays low-friction (does not gain the same blocking treatment, avoiding notification fatigue for the common case); a third confirms declining the confirmation aborts before any connector call. Full: `npm run verify` | Independent reviewer confirms the distinction between "some/all fixture fallback" and "fully real" is genuinely accurate (traces `sourceProfile`/`targetProfile` resolution, doesn't just trust the toast text), and confirms this task's scope doesn't overlap/conflict with T-38's future `planQueries` pre-execution confirmation (Phase 5) — the two should compose cleanly, not both fire redundant confirmations for the same run | Branch `task/T-44-fixture-fallback-confirmation` |
 
 ## Execution rules
 
@@ -254,3 +236,14 @@ preserve that property or receive a revised brief before starting.
   `docs/superpowers/specs/2026-08-02-comparison-authoring-ui-design.md`
   and approved; see `PROGRESS-LEDGER.md`'s decision log for the full
   record.
+- **Amendment (Phase 6, T-40–T-44):** proposed and approved 2026-08-02,
+  after a self-service gap analysis (Jr. Data Analyst / Jr. Analytics
+  Engineer lens, `docs/superpowers/specs/2026-08-02-self-service-gap-analysis.md`)
+  identified 5 gaps untouched by Phase 5's approved scope: no onboarding
+  surface, command-palette-only discoverability, no connection-test
+  feedback at add-time, results webview not actionable for a
+  non-engineer, and silent fixture-vs-real-connector fallback ambiguity.
+  Owner reviewed the analysis's findings and ranking, then confirmed
+  promoting all 5 directly into scheduled tasks (rather than leaving them
+  as an unscoped backlog entry) via `AskUserQuestion`; see
+  `PROGRESS-LEDGER.md`'s decision log for the full record.
