@@ -245,9 +245,8 @@ docker-container integration tests, unrelated to this task.
 - **Original implementation commit:** `7cb46a3` — "T-33: wire tree view
   Comparisons/Recent Runs sections and status bar"
 - **Report commit:** `107e060` — "T-33: add implementation report"
-- **T-33-01 fix commit:** see the commit created immediately after this
-  report update on this same branch (`git log -1` on
-  `task/T-33-tree-status-bar-wiring` at handoff time).
+- **T-33-01 fix commit:** `2c8a14e` — "T-33-01 fix: extract
+  reopenRunCommand for direct test coverage"
 - **Branch:** `task/T-33-tree-status-bar-wiring`
 
 ## Recommended next step
