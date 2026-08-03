@@ -154,17 +154,52 @@ function renderStyles(): string {
 }
 
 /**
+ * T-49 (resolves finding T-38-01): the distinguishing notice shown instead
+ * of the normal "ParityLens will issue N queries..." text when
+ * `connectionUnreachable` is true -- i.e. `planQueries`'s Layer-1
+ * `testConnection()` gate short-circuited before any query could be built,
+ * as opposed to a definition that legitimately has zero queries planned
+ * (all checks disabled, or schema-only). Wording is deliberately accurate
+ * and non-alarmist per TASK-BRIEF.md's Scope item 3: `runComparison`'s own
+ * Layer-1 check still produces the authoritative `"failed"`-status result
+ * if the user clicks Run anyway (this finding's own confirmed-safe
+ * framing), so this notice only informs, it does not block the Run button.
+ * Static text -- no dynamic interpolation, so no `escapeHtml` call is
+ * needed here (unlike the `queries.length` notice below).
+ */
+const CONNECTION_UNREACHABLE_NOTICE =
+  "One or both connections could not be reached, so no queries could be planned for preview. " +
+  "Review your connection settings, or choose Run to see the full failure detail.";
+
+/**
  * Renders the pre-execution SQL preview + confirmation panel's HTML
  * content: a header, the exact SQL query list `planQueries` produced (via
  * the reused `renderQueryPreviewSection`), and Run/Cancel buttons wired to
  * `postMessage` via the static `CLIENT_SCRIPT` above.
  *
  * `queries` is the direct output of `planQueries(definition, registry,
- * baseDir)` -- this function never re-derives or reformats it beyond what
- * `renderQueryPreviewSection` already does, so the confirmation panel can
- * never show SQL that differs from what `planQueries` actually returned.
+ * baseDir)`'s `queries` field -- this function never re-derives or
+ * reformats it beyond what `renderQueryPreviewSection` already does, so
+ * the confirmation panel can never show SQL that differs from what
+ * `planQueries` actually returned.
+ *
+ * `connectionUnreachable` (T-49, resolving finding T-38-01) is
+ * `planQueries`'s own `PlanQueriesResult.connectionUnreachable` field,
+ * passed through unchanged: when true, the notice paragraph is replaced
+ * with `CONNECTION_UNREACHABLE_NOTICE` instead of the normal
+ * queries-count notice, so a genuinely-unreachable connection is no longer
+ * visually indistinguishable from a definition that legitimately produces
+ * zero queries (both previously rendered the same "no queries" empty
+ * state -- see `renderQueryPreviewSection`'s own empty-state text, which
+ * is still used unchanged for the legitimately-zero-queries case).
  */
-export function renderRunConfirmationHtml(queries: string[]): string {
+export function renderRunConfirmationHtml(queries: string[], connectionUnreachable: boolean): string {
+  const notice = connectionUnreachable
+    ? CONNECTION_UNREACHABLE_NOTICE
+    : `ParityLens will issue ${escapeHtml(queries.length)} quer${queries.length === 1 ? "y" : "ies"} against your
+      configured source and target connections. Review the SQL below, then choose Run to proceed or Cancel to
+      abort — no query is executed until you click Run.`;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -177,9 +212,7 @@ export function renderRunConfirmationHtml(queries: string[]): string {
     <div class="eyebrow">Parity Run</div>
     <h1>Review queries before running</h1>
     <p class="notice">
-      ParityLens will issue ${escapeHtml(queries.length)} quer${queries.length === 1 ? "y" : "ies"} against your
-      configured source and target connections. Review the SQL below, then choose Run to proceed or Cancel to
-      abort — no query is executed until you click Run.
+      ${notice}
     </p>
     ${renderQueryPreviewSection(queries)}
     <div class="actions">
