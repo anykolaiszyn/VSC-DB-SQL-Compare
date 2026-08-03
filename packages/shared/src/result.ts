@@ -277,4 +277,22 @@ export interface ComparisonResult {
    * keeps that distinction available without a breaking change later).
    */
   queriesUsed?: string[];
+  /**
+   * T-48: a short, human-readable display label for the source side, for
+   * the results webview header's `Run <runId> · source→target · duration`
+   * meta line (`packages/extension/src/webview/resultsWebview.ts`). Purely
+   * presentational and derived, not semantically authoritative -- the same
+   * pattern/reasoning `queriesUsed`'s own doc comment above establishes: the
+   * webview needed data (a display label for the source object) that this
+   * shape didn't carry, and the natural source is `runComparison`'s own
+   * `ParityDefinition.source` input, not a value re-derived independently
+   * downstream. Optional and omitted (not a synthesized fallback string)
+   * when no label could be derived, so the webview can distinguish "no
+   * label available" (e.g. a run persisted before this field existed) from
+   * an empty/blank label -- see `resultsWebview.ts`'s omit-when-absent
+   * header rule.
+   */
+  sourceLabel?: string;
+  /** T-48: same as `sourceLabel`, for the target side. See `sourceLabel`'s doc comment for the full rationale. */
+  targetLabel?: string;
 }

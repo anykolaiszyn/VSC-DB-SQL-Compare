@@ -345,6 +345,28 @@ function renderStyles(): string {
   </style>`;
 }
 
+/**
+ * T-48 (finding T-34-02): renders the header meta-line's `source→target`
+ * segment (plus its trailing separator, so callers just splice the return
+ * value between the `Run <runId>` and duration spans), matching the
+ * originally-specified `Run <runId> · source→target · duration` format.
+ * Only rendered when both `result.sourceLabel`/`result.targetLabel` are
+ * present -- per this task's Scope item 3, `undefined` for either means
+ * omit the segment entirely rather than render a partial/broken one (e.g.
+ * a run persisted before this field existed, per this task's Prohibited
+ * Changes section on `reopenRunCommand`/persisted-run-replay). Both values
+ * are escaped through `escapeHtml`, exactly like every other interpolated
+ * value in this file.
+ */
+function renderSourceTargetSegment(result: ComparisonResult): string {
+  if (result.sourceLabel === undefined || result.targetLabel === undefined) {
+    return "";
+  }
+
+  return `<span>${escapeHtml(result.sourceLabel)}&rarr;${escapeHtml(result.targetLabel)}</span>
+          <span class="meta-sep">&middot;</span>`;
+}
+
 function renderStatBand(result: ComparisonResult): string {
   const rowDelta = result.rowCounts.difference;
   return `<div class="stat-band">
@@ -631,6 +653,7 @@ export function renderResultsHtml(result: ComparisonResult): string {
         <div class="meta-line">
           <span>Run ${escapeHtml(result.runId)}</span>
           <span class="meta-sep">&middot;</span>
+          ${renderSourceTargetSegment(result)}
           <span>${escapeHtml(result.execution.sourceDurationMs)}ms source / ${escapeHtml(result.execution.targetDurationMs)}ms target</span>
         </div>
       </div>

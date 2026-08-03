@@ -568,3 +568,95 @@ checks:
     }
   });
 });
+
+// T-48 (finding T-34-02): ComparisonResult.sourceLabel/.targetLabel
+// derivation, for the results webview header's source→target segment. Red
+// state: before this task, ComparisonResult had no sourceLabel/targetLabel
+// fields at all, so these assertions could not even compile/pass against
+// the pre-T-48 shape.
+describe("T-48: sourceLabel/targetLabel derivation", () => {
+  it("derives table-kind labels from the object reference itself", async () => {
+    const definition = parseDefinition(SCHEMA_ONLY_YAML);
+    const result = await runComparison(definition, fixtureRegistry());
+
+    expect(result.sourceLabel).toBe("customer_source");
+    expect(result.targetLabel).toBe("customer_target");
+  });
+
+  it("derives query-kind labels as the fixed '(custom query)' placeholder", async () => {
+    const yaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  kind: query
+  sql: "SELECT * FROM customer_source"
+target:
+  connection: snowflake-analytics
+  kind: query
+  sql: "SELECT * FROM customer_target"
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+    const definition = parseDefinition(yaml);
+    const registry: ConnectorRegistry = new Map();
+    registry.set("legacy-sql-prod", new FixtureConnector("sqlserver-customer", "source"));
+    registry.set("snowflake-analytics", new FixtureConnector("sqlserver-customer", "target"));
+    const result = await runComparison(definition, registry);
+
+    expect(result.sourceLabel).toBe("(custom query)");
+    expect(result.targetLabel).toBe("(custom query)");
+  });
+
+  it("derives sqlFile-kind labels as the file's base name only, not the full path", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paritylens-t48-sqlfile-"));
+    try {
+      await writeFile(join(dir, "source.sql"), "SELECT * FROM customer_source", "utf8");
+      await writeFile(join(dir, "target.sql"), "SELECT * FROM customer_target", "utf8");
+
+      const yaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  kind: sqlFile
+  filePath: source.sql
+target:
+  connection: snowflake-analytics
+  kind: sqlFile
+  filePath: target.sql
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+      const definition = parseDefinition(yaml);
+      const registry: ConnectorRegistry = new Map();
+      registry.set("legacy-sql-prod", new FixtureConnector("sqlserver-customer", "source"));
+      registry.set("snowflake-analytics", new FixtureConnector("sqlserver-customer", "target"));
+      const result = await runComparison(definition, registry, dir);
+
+      expect(result.sourceLabel).toBe("source.sql");
+      expect(result.targetLabel).toBe("target.sql");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("populates sourceLabel/targetLabel on the Layer-1 connectivity-failure short-circuit path when definition.source/.target are available", async () => {
+    const definition = parseDefinition(UNREGISTERED_TARGET_YAML);
+    const registry: ConnectorRegistry = new Map();
+    registry.set("legacy-sql-prod", new FixtureConnector("sqlserver-customer", "source"));
+    // "does-not-exist" intentionally left unregistered.
+
+    const result = await runComparison(definition, registry);
+
+    expect(result.status).toBe("failed");
+    expect(result.sourceLabel).toBe("customer_source");
+    expect(result.targetLabel).toBe("customer_target");
+  });
+});
