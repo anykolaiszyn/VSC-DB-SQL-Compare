@@ -12,8 +12,11 @@
   redesign of the results webview and sidebar tree, from an approved
   design handoff) added 2026-08-02 as a new task depending on T-33. T-29,
   T-30, T-31, and T-32 are COMPLETE and merged; T-33 (tree-view/status-bar
-  wiring) is next.
-- **Exactly one task may be active:** NONE
+  wiring) is now ACTIVE — see decision log for a scoping note on its
+  narrow amendment to `activate.ts` (persisting a run's result is
+  required to make "Recent Runs" genuinely populatable, and nothing
+  currently calls T-31's `persistRun`).
+- **Exactly one task may be active:** T-33 (tree-view/status-bar wiring)
 - **Last updated:** 2026-08-02, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 

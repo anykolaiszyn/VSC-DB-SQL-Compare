@@ -1,127 +1,173 @@
-# ParityLens — Task Brief T-32
+# ParityLens — Task Brief T-33
 
 ## Objective
 
-Comparison-authoring scaffold: a `paritylens.newComparison` command that
-walks the user through picking source/target connections, an object name
-and `where` per side, key column(s), and writes a valid, minimal
-`.paritylens` YAML file into the current workspace — so users stop
-hand-writing YAML from a blank file. Explicitly not the full custom
-editor/webview from `DESIGN-SPEC.md`'s Extension Layer row (that item is
-tracked in `IMPLEMENTATION-PLAN.md`'s Backlog) — a scaffolding wizard only,
-per `IMPLEMENTATION-PLAN.md`'s T-32 row.
+Tree-view/status-bar wiring: populate the "DATA PARITY" sidebar's
+`Comparisons` section with `.paritylens` files discovered in the current
+workspace, populate `Recent Runs` with T-31's persisted run history, and
+wire the currently-unused `parityStatusBar.ts` (T-11) to show
+`Parity: N passed | N warnings | N failed` after each run — per
+`IMPLEMENTATION-PLAN.md`'s T-33 row.
+
+`Recent Runs` is meaningless while nothing ever calls T-31's `persistRun`
+— confirmed this session that `runComparisonCommand`
+(`packages/extension/src/activation/activate.ts`, owned by T-22/T-30) does
+not currently persist any run. Making `Recent Runs` genuinely populatable
+therefore requires one narrow, additive call to `persistRun` inside that
+existing command flow, in addition to the two files
+`IMPLEMENTATION-PLAN.md`'s T-33 row names. This amends this task's file
+ownership beyond the plan row (see "Files owned" below) — a working
+`Recent Runs` section is the actual deliverable the plan row promises, and
+leaving it wired-but-permanently-empty would not satisfy T-33's own stated
+green-state test ("a second test confirms 'Recent Runs' lists a persisted
+run from T-31").
 
 ## Scope
 
-1. Create `packages/extension/src/authoring/` with a pure, testable
-   scaffold-building function — e.g.
-   `buildComparisonYaml(answers: NewComparisonAnswers): string` — that
-   takes already-collected answers (comparison name, source/target
-   connection names + object + optional `where`, key column(s)) and
-   returns a YAML string. Keep this function free of any `vscode` API
-   usage, matching this codebase's established pure-core /
-   injected-VS-Code-glue split (see `runComparisonCommand`'s `deps`
-   pattern in `activate.ts`, and `resultsWebview.ts`'s `renderResultsHtml`).
-   The produced YAML must, at minimum, set `version`, `name`, `source`,
-   `target`, and `keys` — the fields `parseDefinition` (T-08) requires.
-2. Implement the interactive collection flow — e.g.
-   `runNewComparisonWizard(deps): Promise<NewComparisonAnswers | undefined>`
-   — using injected `showQuickPick`/`showInputBox`/`showSaveDialog`-style
-   callbacks (same injected-dependency pattern `runComparisonCommand`
-   already uses in `activate.ts`, so this is testable without
-   `@vscode/test-electron`). Source/target connection pickers should list
-   configured `ConnectionProfile` names (T-29, via `ConnectionProfileStore`)
-   plus the existing fixture pair names as a fallback option, consistent
-   with T-30's fixture-fallback precedent — do not require a saved profile
-   to exist. Returning `undefined` at any step (user cancelled) must abort
-   the whole flow without writing a file.
-3. Add a `paritylens.newComparison` command registration in `activate.ts`
-   (new command registration only, following T-22/T-29/T-30's existing
-   registration pattern) and a matching entry in
-   `packages/extension/package.json`'s `contributes.commands`.
-4. Before writing, validate the scaffolded YAML actually round-trips
-   through `parseDefinition` (T-08) without throwing — if it doesn't, this
-   is a bug in the scaffold builder, not a user-facing error path.
-5. Never silently overwrite an existing file at the target path — check
-   existence first (e.g. via the injected file-system dependency) and
-   either prompt for a different name/location or abort with a clear
-   message. Do not implement an auto-numbering/rename-on-conflict scheme
-   unless it's trivial; aborting cleanly is an acceptable minimum.
+1. `packages/extension/src/views/parityTreeDataProvider.ts`: extend
+   `ParityTreeDataProvider.getChildren` so that when `element.section.id`
+   is `"comparisons"`, it returns one child `ParityTreeItem`-like node per
+   `.paritylens` file found via an injected workspace-file-discovery
+   dependency (do not call `vscode.workspace.findFiles` directly inside
+   the provider — inject it, matching this codebase's established
+   pure-core/injected-glue split, so the provider stays testable without
+   `@vscode/test-electron`). Each comparison node's `command` should
+   invoke the existing `paritylens.runComparison` command (T-22/T-30),
+   pre-selecting that file if the command supports it — if
+   `runComparisonCommand`'s existing file-picking flow does not accept a
+   pre-selected URI as an argument, it is acceptable for the click to just
+   invoke the command and let the existing open-dialog flow run (do not
+   modify `runComparisonCommand`'s picking behavior itself to add this —
+   that would exceed this task's narrow persist-only amendment below).
+2. Same file: when `element.section.id` is `"recentRuns"`, return one
+   child node per `RunSummary` from T-31's `listRecentRuns`, most-recent
+   first (already sorted that way by `listRecentRuns`). Each node's label
+   should show the run's `name` and `timestamp`; its `command` should
+   invoke `loadRun` for that `id` and pass the result to
+   `showResultsWebview` (T-11/T-16) to reopen it.
+3. Inject both the file-discovery function and `listRecentRuns`/`loadRun`
+   (and the safe output root string they need) into
+   `ParityTreeDataProvider`'s constructor rather than importing
+   `runHistory.ts`'s live filesystem calls directly — same
+   dependency-injection rationale as item 1.
+4. `packages/extension/src/statusbar/parityStatusBar.ts`: no change to
+   `formatParitySummary`/`createParityStatusBarItem` themselves (T-11's
+   existing, already-correct implementation) — this task's job is calling
+   `updateFromResult` and `.show()` from the run-comparison flow, not
+   changing the status bar module itself.
+5. **Narrow amendment**: in
+   `packages/extension/src/activation/activate.ts`, inside
+   `runComparisonCommand`, after a successful `runComparison` call and
+   before/alongside `showResultsWebview`, add one call to T-31's
+   `persistRun(result, safeOutputRoot)` and one call to the status bar's
+   `updateFromResult(result)` + `.show()`. Inject both the safe output
+   root — confirmed this session that no existing command wires a concrete
+   `safeOutputRoot` value yet (`writeExport.ts` only defines the
+   containment check; nothing currently supplies it a real path), so pick
+   a straightforward convention and document it, e.g. the first open
+   workspace folder's path (mirroring `registerRunComparisonCommand`'s own
+   `defaultUri` pattern a few lines above in the same file), with a clear
+   `showErrorMessage` (not a crash) if no workspace folder is open — and
+   the `ParityStatusBarItem`
+   instance as new fields on `runComparisonCommand`'s existing `deps`
+   object, following the same "typed optional, defaults to a no-op-safe
+   absent state" pattern already used for `connectionProfileStore`/
+   `secretStore` in that same `deps` object (see that function's own
+   header comment for why they're optional there). A `persistRun` failure
+   (e.g. no workspace open, no writable output root) must not crash or
+   block showing the results webview — the run's results should still
+   display even if persistence fails; catch and surface via
+   `showErrorMessage` (or silently skip, your call — document whichever)
+   rather than letting it propagate into the existing outer catch and
+   replace the success path with an error message.
+6. Update `activate()` itself to construct the status bar item once (via
+   `createParityStatusBarItem`), pass it into `registerRunComparisonCommand`
+   /`runComparisonCommand`'s deps, and add it to `context.subscriptions`
+   for disposal — the same wiring pattern already used for
+   `connectionProfileStore`/`secretStore`.
 
 ## Dependencies
 
-T-08 (COMPLETE, APPROVED — `parseDefinition`, the round-trip validation
-target). T-29 (COMPLETE, APPROVED — `ConnectionProfile`,
-`ConnectionProfileStore`, for listing configured connection names in the
-picker).
+T-30 (COMPLETE, APPROVED — real-connector-aware run command). T-31
+(COMPLETE, APPROVED — `persistRun`/`listRecentRuns`/`loadRun`).
 
 ## Files owned
 
-- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/T-30,
-  new command registration only — do not touch existing command handlers)
-- `packages/extension/src/authoring/**` (new)
-- `packages/extension/package.json` (`contributes.commands` array only —
-  add one new entry, do not touch existing entries)
+- `packages/extension/src/views/parityTreeDataProvider.ts` (extends T-10)
+- `packages/extension/src/statusbar/parityStatusBar.ts` (extends T-11 —
+  expected to need little or no change; do not alter
+  `formatParitySummary`'s output format)
+- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/
+  T-30/T-32 — **amendment**: narrowly, `runComparisonCommand`'s `deps`
+  shape/body for the `persistRun`/status-bar calls described in Scope
+  item 5, and `activate()`'s construction/subscription wiring described in
+  Scope item 6. Do not touch the connection-management or
+  comparison-authoring command registrations/handlers.)
 
 ## Interfaces consumed
 
-- `ConnectionProfile`, `ConnectionProfileStore` (T-29,
-  `packages/extension/src/connections/`) — read-only consumption (`.list()`
-  only; no writes).
-- `parseDefinition` (T-08, `@paritylens/engine`) — used only for the
-  scaffold's own round-trip self-validation, not to change parsing
-  behavior.
+- `listRecentRuns`, `loadRun`, `RunSummary` (T-31,
+  `packages/extension/src/runHistory/runHistory.ts`) — read-only.
+- `persistRun` (T-31) — called once, additively, per Scope item 5.
+- `showResultsWebview` (T-11/T-16, `packages/extension/src/webview/resultsWebview.ts`).
+- `formatParitySummary`, `createParityStatusBarItem`, `ParityStatusBarItem`
+  (T-11, `packages/extension/src/statusbar/parityStatusBar.ts`) — consumed
+  as-is, not modified.
+- `vscode.workspace.findFiles` — only via an injected dependency, never
+  called directly inside `parityTreeDataProvider.ts`.
 
 ## Interfaces produced
 
-- `paritylens.newComparison` command.
-- A scaffolded `.paritylens` YAML file, written to the workspace.
-- `buildComparisonYaml` (or equivalently named pure builder function) and
-  the wizard-running function, both exported for direct unit testing.
+- A `ParityTreeDataProvider` whose `Comparisons` and `Recent Runs`
+  sections render real children.
+- A live status bar item showing `Parity: N passed | N warnings | N
+  failed` after each successful run.
+- `persistRun` genuinely gets called from the real run-comparison command
+  flow for the first time in this codebase.
 
 ## Prohibited changes
 
-- Do not modify `packages/engine/**` (including `definition.ts`/
-  `parseDefinition` itself) — this task only produces YAML that parser
-  already accepts, it does not change what the parser accepts.
-- Do not modify `packages/extension/src/connections/**` (T-29's owned
+- Do not modify `packages/engine/**`.
+- Do not modify `packages/extension/src/runHistory/**` (T-31's owned
   files) — read-only consumption only.
-- Do not change any existing command registration
-  (`runComparison`/`addConnection`/`editConnection`/`deleteConnection`) or
-  its handler.
-- Do not build the full custom comparison editor/webview — that is
-  explicitly out of scope (see `IMPLEMENTATION-PLAN.md`'s Backlog section).
-- Never write a credential into the scaffolded YAML — connections are
-  referenced by name only, matching every other part of this codebase's
-  no-inline-credentials rule (this falls out naturally from only ever
-  writing a `connection` name string, but call it out explicitly since
-  it's a security-relevant invariant).
+- Do not modify `packages/extension/src/connections/**` or
+  `packages/extension/src/authoring/**` (T-29/T-32's owned files).
+- Do not change `runComparisonCommand`'s existing file-picking,
+  parsing, connector-registry-resolution, or error-handling behavior for
+  the run itself — the only permitted change to that function is the
+  additive persist/status-bar calls described in Scope item 5.
+- Do not implement the "Connections" or "Saved Profiles" tree sections —
+  out of this task's scope per `IMPLEMENTATION-PLAN.md`'s T-33 row (only
+  "Comparisons" and "Recent Runs" are named).
+- Do not build the visual redesign (colors, icons, styled markup) — that
+  is T-34, which explicitly depends on this task's structural wiring
+  existing first.
 
 ## Red-state evidence required
 
-A test invoking the scaffold command (or its wizard/builder functions
-directly) with mocked quick-pick/input-box answers, expecting a written
-file whose contents `parseDefinition` accepts without throwing — fails
-today (module/command does not exist).
+A test opening the tree view in a workspace containing a `.paritylens`
+file, expecting it to appear under "Comparisons" — fails today (section is
+always empty). A second red-state test: after a comparison run,
+`listRecentRuns` shows no persisted record — fails today (nothing ever
+calls `persistRun`).
 
 ## Green-state verification required
 
-The test above passes. Additionally: the scaffolded file round-trips
-through `parseDefinition` without error (assert on the actual parsed
-`ParityDefinition` shape, not just "did not throw"); a second test confirms
-an existing file at the target path is never overwritten (either the wizard
-prompts for an alternative or aborts, verify whichever behavior was
-chosen); a third test confirms cancelling any step of the wizard (a mocked
-callback returning `undefined`) aborts without writing a file. `npm run
-verify` passes in full.
+Both tests above pass. Additionally: a test confirms clicking a listed
+"Recent Runs" item invokes `loadRun` for the correct `id` and passes its
+result to `showResultsWebview` (not just that the tree item renders); a
+test confirms the status bar's text updates to match
+`formatParitySummary(result.summary)` after a run; a test confirms a
+`persistRun` failure does not prevent `showResultsWebview` from being
+called with the run's result. `npm run verify` passes in full.
 
 ## Handoff
 
-Note to reviewer: please adversarially confirm (1) the scaffolded YAML
-never contains a credential-shaped field under any answer combination
-(e.g. what happens if a user free-types a connection "name" containing
-something credential-shaped into an input box — the writer must still only
-ever emit a bare string for `connection`, never structured data), and (2)
-an existing file at the target path is genuinely never silently
-overwritten under any code path, including a wizard interrupted partway
-and re-run.
+Note to reviewer: please adversarially confirm (1) clicking a listed
+comparison or recent-run item genuinely invokes the correct
+command/loads the correct result — not just that tree items render with
+plausible-looking labels, and (2) the Scope-item-5 amendment to
+`runComparisonCommand` is genuinely narrow — diff it against T-30's
+version and confirm no existing behavior (fixture fallback, error
+messages, connector resolution) changed, only the additive persist/status-
+bar calls were added.
