@@ -1,102 +1,138 @@
-# TASK-BRIEF.md — T-46: eslint `dist-bundle` ignore fix
+# TASK-BRIEF.md — T-47: run-history status-colored icons
 
 ## Objective
 
-Resolve finding **T-27-01** (OPEN, accepted non-blocking, recorded in
-`PROGRESS-LEDGER.md`'s Open findings table): add
-`"**/dist-bundle/**"` to `eslint.config.mjs`'s `ignores` array so that
-running `npm run bundle` (or `npm run package`, which runs it first)
-followed by `npm run verify` in the same working tree does not lint the
-generated, gitignored `packages/extension/dist-bundle/extension.js`
-bundle as source.
+Resolve finding **T-34-01** (OPEN, accepted non-blocking, recorded in
+`PROGRESS-LEDGER.md`'s Open findings table): `ParityRecentRunTreeItem`
+(`packages/extension/src/views/parityTreeDataProvider.ts`) currently
+uses a fixed, uncolored `ThemeIcon("circle-outline")` for every "Recent
+Runs" tree entry regardless of the run's actual outcome, because
+`RunSummary` (`packages/extension/src/runHistory/runHistory.ts`) carries
+no status field to key a color off of. T-34's implementer and reviewer
+both confirmed this was a genuine, correctly-flagged scope boundary
+(T-34 did not own `runHistory.ts`), not an avoidable shortcut.
 
-The finding's own recorded text (verbatim, from `PROGRESS-LEDGER.md`):
+The finding's recorded resolution path (verbatim, from
+`PROGRESS-LEDGER.md`):
 
-> `npm run bundle` (and `npm run package`, which now runs it first)
-> produces `packages/extension/dist-bundle/extension.js`, which is
-> `.gitignore`'d but not added to `eslint.config.mjs`'s `ignores` list
-> (only `**/dist/**`/`**/out/**` are excluded, no `**/dist-bundle/**`
-> entry). Reviewer reproduced twice: run `npm run bundle` then `npm run
-> verify` → exit 1, 221 lint problems (the minified bundle linted as
-> source); delete `dist-bundle/` and re-run → exit 0, 404/27/431.
-> ... the gap means `npm run package` followed by `npm run verify` in
-> the same working tree (a plausible release-checklist ordering)
-> produces a false verify failure unrelated to actual code correctness.
+> unblock by additively extending `RunSummary` with an optional
+> `status?: ComparisonStatus` field populated by `persistRun`, which
+> already receives the full `ComparisonResult`, then key
+> `ParityRecentRunTreeItem`'s `ThemeIcon` color off it.
 
-Recorded recommended resolution: add `"**/dist-bundle/**"` to
-`eslint.config.mjs`'s `ignores` array.
+Confirmed directly before writing this brief: `ComparisonResult.status`
+(`packages/shared/src/result.ts`) is typed
+`"passed" | "warning" | "failed" | "error"` (exported as
+`ComparisonStatus`), and `persistRun(result, safeOutputRoot)`
+(`runHistory.ts`) already receives the full `ComparisonResult` as its
+first parameter — the status value is available at the exact point
+`RunRecord`/`RunSummary` are constructed, no new data flow is needed.
 
 ## Scope
 
-1. Edit `eslint.config.mjs`'s existing `ignores` array (currently:
-   `"**/node_modules/**"`, `"**/dist/**"`, `"**/out/**"`, `"**/*.d.ts"`,
-   `"**/coverage/**"`) to add one new entry: `"**/dist-bundle/**"`.
-2. Reproduce the finding's red state first: run `npm run bundle` (from
-   repo root, builds `packages/extension/dist-bundle/extension.js`),
-   then run `npm run lint` (or `npm run verify`) and confirm it fails
-   with lint errors against the generated bundle — this is the
-   red-state evidence the finding itself already describes; capture the
-   actual exit code and problem count you observe (may differ slightly
-   from the finding's originally recorded 221/404/27/431 numbers since
-   the codebase has grown since T-27 — that's expected and fine, record
-   what you actually see).
-3. Apply the one-line `ignores` array edit.
-4. Re-run `npm run lint` (or `npm run verify`) with the bundle still
-   present in the working tree — confirm it now passes cleanly (bundle
-   no longer linted).
-5. Run the full `npm run verify` one more time to confirm no regression
-   elsewhere.
+1. In `packages/extension/src/runHistory/runHistory.ts`:
+   - Add an **optional** `status?: ComparisonStatus` field to the
+     `RunRecord` interface (import `ComparisonStatus` from
+     `@paritylens/shared` alongside the existing `ComparisonResult`
+     import).
+   - `RunSummary` is `Omit<RunRecord, "result">` — the new field is
+     included automatically, no separate edit needed there.
+   - In `persistRun`, populate `status: result.status` when building the
+     `RunRecord` object.
+   - In `listRecentRuns`'s per-entry parse/validate block, additively
+     read `record.status` into the returned summary when present (it is
+     optional, so pre-existing on-disk records written before this
+     change — which have no `status` field — must continue to parse and
+     list successfully with `status` simply `undefined`; do not treat a
+     missing `status` as a malformed/skippable record).
+2. In `packages/extension/src/views/parityTreeDataProvider.ts`, key
+   `ParityRecentRunTreeItem`'s `ThemeIcon` color off `run.status`:
+   - `"passed"` → a green-toned icon (e.g.
+     `new vscode.ThemeIcon("pass", new vscode.ThemeColor("testing.iconPassed"))`
+     or an equivalent recognized codicon id / theme color pairing — your
+     call, document the specific ids chosen and why).
+   - `"warning"` → a yellow/orange-toned icon.
+   - `"failed"` / `"error"` → a red-toned icon (may share one visual
+     treatment for both, or distinguish them — your call, document it).
+   - `status === undefined` (pre-existing records with no recorded
+     status) → keep the current neutral, uncolored
+     `ThemeIcon("circle-outline")` — do not guess an outcome for data
+     that doesn't carry one.
+   - Use `vscode.ThemeColor` with real, existing VS Code theme color ids
+     (e.g. the `testing.iconPassed`/`testing.iconFailed`/
+     `testing.iconQueued` family, or the `charts.*`/`notificationsX`
+     families) rather than inventing new ones — check VS Code's
+     published theme color reference if unsure which ids exist.
+3. Update or add focused tests in `runHistory.test.ts` and
+   `parityTreeDataProvider.test.ts` covering: `persistRun` writing
+   `status` correctly; `listRecentRuns` returning `status` when present
+   and `undefined` when a stored record predates this change (simulate
+   by writing/parsing a record object literal without a `status` key);
+   `ParityRecentRunTreeItem` selecting the correct icon/color per status
+   value, including the `undefined` fallback case.
 
 ## Files owned
 
-- `eslint.config.mjs` (repo root) — the only file this task may edit.
+- `packages/extension/src/runHistory/runHistory.ts`
+- `packages/extension/src/runHistory/runHistory.test.ts`
+- `packages/extension/src/views/parityTreeDataProvider.ts`
+- `packages/extension/src/views/parityTreeDataProvider.test.ts` (exact
+  filename may differ — locate the actual existing test file next to
+  `parityTreeDataProvider.ts` first)
 
 ## Interfaces consumed
 
-- None. This is a standalone lint-config change with no code interface
-  dependency.
+- `ComparisonStatus` (`@paritylens/shared`, read-only — do not modify
+  `packages/shared/**`).
+- `ComparisonResult.status` (already flows into `persistRun` unchanged).
 
 ## Prohibited changes
 
-- Do not touch any other `ignores` entry already present.
-- Do not touch `packages/extension/.vscodeignore`, `package.json`
-  scripts, or any bundling script (`esbuild`/bundle config) — the
-  bundle-generation process itself is out of scope; only the lint
-  config's blindness to its output is being fixed.
-- Do not delete or commit the generated `dist-bundle/` directory itself
-  (it is gitignored and must stay that way — do not add it to git, do
-  not remove it from `.gitignore`).
-- Do not widen the new ignore glob beyond `"**/dist-bundle/**"` (e.g. no
-  bare `"dist-bundle"` or overly broad wildcard that could accidentally
-  exempt unrelated source directories).
+- Do not touch `packages/shared/**` — `ComparisonStatus` already exists
+  and is sufficient; no shared-type change is needed.
+- Do not touch `packages/extension/src/activation/activate.ts` — no call
+  site changes are needed; `persistRun` already receives the full
+  `ComparisonResult` today.
+- Do not widen `RunRecord`/`RunSummary` with any field beyond the one
+  `status?: ComparisonStatus` addition.
+- Do not make `status` required — it must stay optional so pre-existing
+  on-disk run records (written before this change, with no `status`
+  key) continue to parse successfully in `listRecentRuns` rather than
+  being silently skipped as malformed.
+- Do not touch `ParityComparisonTreeItem`'s icon (unrelated to this
+  finding — only `ParityRecentRunTreeItem` is in scope).
 
 ## Red-state evidence required
 
-Actual command output (not paraphrased) showing:
-1. `npm run bundle` succeeding and producing
-   `packages/extension/dist-bundle/extension.js`.
-2. `npm run lint` (or `npm run verify`) failing with lint errors
-   specifically against files under `dist-bundle/`, confirming the
-   currently-unfixed gap is real and reproducible right now, before any
-   edit is made.
+A focused test demonstrating the current gap: construct a `RunSummary`
+(or the tree item directly) with a known status value and confirm
+today's `ParityRecentRunTreeItem` produces the same neutral
+`circle-outline` icon regardless of status — i.e., prove there is
+currently no outcome-based color differentiation, run it, and confirm
+it fails once the real fix's assertions are written against current
+`main` (or write the new assertions first, confirm they fail against
+unmodified code, per this project's standard red/green pattern).
 
 ## Green-state evidence required
 
-1. The one-line `eslint.config.mjs` diff.
-2. `npm run lint` (or `npm run verify`) passing cleanly with
-   `dist-bundle/` still present in the working tree (bundle no longer
-   generates lint errors).
-3. A full fresh `npm run verify` run (typecheck + lint + test) passing
-   with no regression in test counts versus the pre-task baseline.
+1. The scoped diff across the 2-3 owned source files.
+2. Focused tests passing, exercising: `persistRun` status population,
+   `listRecentRuns` backward compatibility with status-less legacy
+   records, and per-status icon/color selection including the
+   `undefined` fallback.
+3. A full fresh `npm run verify` passing with no regression versus the
+   598/27/625 baseline (count will grow by however many new tests this
+   task adds — that's expected).
 
 ## Handoff
 
 - Write `IMPLEMENTATION-REPORT.md` using
   `multi-agent-idea-to-app/templates/IMPLEMENTATION-REPORT.md`.
-- Commit on branch `task/T-46-eslint-dist-bundle-ignore`.
+- Commit on branch `task/T-47-run-history-status-icons`.
 - Recommend independent review as the next step.
-- Reviewer should specifically re-verify: (1) the red-state reproduction
-  is genuine (lint actually fails against the bundle before the fix),
-  (2) the fix is scoped to exactly the one new ignore entry, (3) no
-  other file was touched, (4) a fresh full `npm run verify` is green
-  with the bundle present.
+- Reviewer should specifically re-verify: (1) a pre-existing on-disk run
+  record with no `status` field still lists and renders correctly
+  (neutral icon, no crash/skip); (2) each of the four `ComparisonStatus`
+  values maps to a real, valid VS Code codicon id + `ThemeColor` id pair
+  (not an invented/nonexistent one); (3) no file outside the declared
+  ownership changed; (4) a fresh full `npm run verify` is green.
