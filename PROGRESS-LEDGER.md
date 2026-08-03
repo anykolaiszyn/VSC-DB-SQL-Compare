@@ -44,7 +44,7 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE
+- **Exactly one task may be active:** T-48
 - **Backlog cleanup sweep (owner-directed 2026-08-03):** owner asked to
   complete all open backlog items except T-18 (blocked, no trial account)
   before proceeding to Phase 6. Scope: all 27 `OPEN` rows in this
@@ -59,9 +59,10 @@
   T-20-04 — are explicitly future-task-sized redesigns, not backlog
   cleanup candidates). **T-45 (npm audit fix, M-01), T-46 (eslint
   dist-bundle ignore, T-27-01), and T-47 (run-history status-colored
-  icons, T-34-01) are all COMPLETE and merged.** T-48–T-52 remain.
+  icons, T-34-01) are all COMPLETE and merged.** T-48 (results webview
+  source/target header line, T-34-02) is now active. T-49–T-52 remain.
   Phase 6 (T-40–T-44) remains queued behind this sweep, not started.
-- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — T-47 merged
+- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — T-48 activated
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
 ## Task register
