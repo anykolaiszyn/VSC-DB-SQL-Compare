@@ -1,245 +1,222 @@
-# TASK-BRIEF.md — T-36: Custom comparison editor (Source/Target/Keys/Checks)
+# TASK-BRIEF.md — T-37: Column Mapping tab (SSIS-style)
 
 ## Objective
 
-Give `.paritylens` files a real, interactive authoring UI instead of
-forcing every edit beyond T-32's minimal scaffold into raw YAML text.
-Register a `vscode.CustomTextEditorProvider` for `.paritylens` files with
-four tabs — **Source**, **Target**, **Keys**, **Checks** — backed by the
-real on-disk YAML document (`buildComparisonYaml`/`parseDefinition` stay
-the sole source of truth; this editor is a friendlier *view*, not a
-parallel data model).
+Add a 5th tab, **Column Mapping**, to the custom comparison editor built
+in T-36 (`comparisonEditorProvider.ts`/`comparisonEditorHtml.ts`). This
+is the SSIS-style visual mapping tool from the design spec: source
+columns listed on the left, a target-column dropdown per row on the
+right, writing `ColumnMappingEntry[]` (`column_mapping`) on Apply.
+
+T-36 already reserved a visible-but-unbuilt tab slot for this — read
+`comparisonEditorHtml.ts`'s existing tab-rendering structure before
+starting so your new tab matches its exact layout/CSS conventions rather
+than introducing a divergent style.
 
 See `docs/superpowers/specs/2026-08-02-comparison-authoring-ui-design.md`
-("Custom comparison editor" and "Column Mapping tab" sections — the
-Column Mapping tab itself is T-37's scope, not this task's, but read that
-section too so your tab layout leaves room for it) for the full design
-context this task implements.
-
-**Architecture decision made before this brief, disclosed here**: unlike
-`resultsWebview.ts` (T-11/T-16/T-34), which is read-only and deliberately
-keeps `enableScripts: false` with CSS-only tab switching, this editor is
-genuinely interactive — text inputs, dropdowns, and an Apply action that
-must send collected field values from the webview back to the extension
-host. VS Code's webview API requires `postMessage`/`acquireVsCodeApi` for
-a webview to communicate back to its provider, which requires
-`enableScripts: true`. **This is a new, deliberate, and correct deviation
-specific to this file** — it does not relax or contradict T-34's
-`enableScripts: false` rule for `resultsWebview.ts`, which stays exactly
-as it is. Do not attempt a CSS-only trick to avoid this; it cannot work
-for a form that must report its collected values back to the host.
+("Column Mapping tab" section) for the full design context.
 
 ## Scope
 
-1. **Register the custom editor** (`vscode.window.registerCustomEditorProvider`
-   or an equivalent registration API) for the `.paritylens` file pattern,
-   in `packages/extension/src/activation/activate.ts`, alongside this
-   codebase's existing command-registration pattern. Confirm with VS
-   Code's actual API surface (read `@types/vscode`'s
-   `CustomTextEditorProvider` interface) what registration options are
-   required — this codebase has never registered a custom editor before,
-   so do not assume a shape; verify it.
+1. **Live column-list fetch, Table-mode-only.** When both Source and
+   Target sides are in Table mode (per T-35a's `ParitySide`/T-36's
+   `ComparisonEditorSideDraft` kind field) and each has a resolved
+   connection name + non-empty object name, fetching the tab's data
+   requires calling `getSchema({kind:"table",object})` (existing
+   `DataPlatformConnector` method) against each side's **resolved
+   connector** — not just a connection *name* string.
+   - **This is new capability T-36 did not need**: T-36's
+     `ComparisonEditorProviderDeps` only exposes
+     `listConnectionNames(): string[]` (for the picker dropdown), with no
+     way to resolve a name into an actual connector. Resolving a
+     connector by name requires `ConnectionProfileStore` (find the
+     profile) + `SecretStore` (read the password) + `resolveConnector`
+     (T-29's factory) — read `activate.ts`'s `buildConnectorRegistry`
+     (the existing pattern for exactly this resolution, used for real
+     comparison runs) before designing your own version; mirror its
+     structure rather than reinventing it.
+   - Add a new injected dependency to `ComparisonEditorProviderDeps` (e.g.
+     `resolveConnectorByName: (name: string) => Promise<DataPlatformConnector | undefined>`
+     — exact name/shape your call, document it clearly), implemented in
+     `activate.ts`'s custom-editor registration call site by composing the
+     same `ConnectionProfileStore`/`SecretStore`/`resolveConnector` pieces
+     `buildConnectorRegistry` already uses. Do not have
+     `comparisonEditorProvider.ts` import `SecretStore`/
+     `ConnectionProfileStore` directly and duplicate that resolution logic
+     itself — inject the already-composed capability, matching this
+     codebase's established `deps`-injection discipline throughout
+     `activate.ts`.
+   - If either side is not in Table mode, or has no resolved connection/
+     object yet, skip the live fetch entirely — do not attempt it, do not
+     show a loading spinner that never resolves. Fall back to manual
+     free-text entry for both source and target column names on that row
+     (per the design's explicit non-goal of describing arbitrary query
+     result shapes for `query`/`sqlFile` modes).
+   - A `getSchema` rejection (network/auth failure, object not found) must
+     show an inline error in the Mapping tab specifically — it must not
+     crash the provider or block the other 4 tabs from working normally.
 
-2. **`comparisonEditorProvider.ts`** (new) — the `vscode`-touching glue:
-   - Implements `resolveCustomTextEditor(document, webviewPanel, ...)`:
-     parses the document's current text via `parseDefinition` (T-08) into
-     a draft state; if parsing fails (invalid YAML or a definition that
-     fails validation), show the raw text with a clear "this file has a
-     parse error: {message}" banner rather than crashing or showing a
-     blank/broken form — the user must still be able to see *something*
-     useful.
-   - `webviewPanel.webview.options = { enableScripts: true }`.
-   - Renders the webview HTML via `comparisonEditorHtml.ts`'s pure
-     render function (see item 3), passing the parsed draft state.
-   - Listens for a `postMessage` from the webview carrying "Apply" data
-     (the user's edited field values); on receipt, validates the data
-     (client-side validation in the webview is a UX nicety, not a
-     substitute — this provider-side check is the one that actually
-     matters), builds YAML via `buildComparisonYaml` (T-35b, extended per
-     item 5 below), and applies it via a single `vscode.WorkspaceEdit`
-     replacing the full document range (`document.uri`, full-range
-     `TextEdit.replace`), then `vscode.workspace.applyEdit(edit)`.
-   - **Never write a document that would fail `parseDefinition`** — before
-     calling `applyEdit`, round-trip the freshly-built YAML through
-     `parseDefinition` yourself; if it throws, reject the Apply (send a
-     failure message back to the webview with the validation error) and
-     do not touch the document. This is the single most important
-     correctness property in this task.
-   - If the underlying document changes on disk while the editor is open
-     (VS Code fires a document-change event for this), re-parse and
-     re-render the draft — don't let the webview silently diverge from
-     the file. A minimal, correct handling is acceptable; this doesn't
-     need to be a full conflict-resolution UI.
+2. **`columnMapping.ts`** (new) — pure data-shaping helpers, `vscode`-free,
+   unit-testable directly (same pure-core pattern as `buildComparisonYaml.ts`):
+   functions to build the two-column mapping-row draft state from fetched
+   `ColumnDefinition[]` lists (or manual-entry mode when unavailable), and
+   to convert the tab's draft state back into `ColumnMappingEntry[]` for
+   `buildComparisonYaml`. Keep the exact `ColumnMappingEntry` shape (T-08):
+   support emitting the plain `{source, target}` variant for a simple
+   1:1 mapping row (this task's primary UI shape — a dropdown pick is
+   inherently a plain source→target pairing, not a derived-expression
+   mapping). You do not need to build UI for the derived `{name, target,
+   sourceExpression, targetExpression}` variant — `buildComparisonYaml`
+   already supports emitting it (T-35b), but authoring *that* variant via
+   this visual tool is out of scope; only the plain variant needs a UI
+   path here.
 
-3. **`comparisonEditorHtml.ts`** (new) — a **pure** render function,
-   `renderComparisonEditorHtml(draft: ComparisonEditorDraft): string`
-   (name your own draft-state type; document it clearly), with the exact
-   same purity contract `resultsWebview.ts`'s `renderResultsHtml` has:
-   deterministic output for the same input, no `vscode` API usage beyond
-   a type-only import if any. This function differs from
-   `renderResultsHtml` in one respect: it may legitimately embed a
-   `<script>` block (since `enableScripts: true` here), but that script
-   must be static, deterministic HTML-embedded JS (the same script text
-   every time, just reading/writing DOM state and calling
-   `acquireVsCodeApi().postMessage(...)`) — not itself a source of
-   non-determinism. The four tabs:
-   - **Source** / **Target**: a mode toggle (Table / Query / SQL File,
-     matching `NewComparisonAnswerSide`'s 3-kind union from T-35b) with
-     the appropriate field(s) shown per mode (`object`+optional `where`
-     for Table; `sql` for Query; `filePath` for SQL File); a connection
-     picker listing `ConnectionProfile.name` values (from T-29's
-     `ConnectionProfileStore.list()`, passed in as part of the draft/
-     initial data — do not have the webview call VS Code APIs directly,
-     route everything through the provider).
-   - **Keys**: a simple list editor for one or more key column names
-     (composite keys).
-   - **Checks**: toggles for `checks.schema.enabled` /
-     `checks.rowCount.enabled` / `checks.profile.enabled` /
-     `checks.rowLevel.enabled` (four independent booleans is sufficient
-     for this task — do not build UI for `tolerance`/`strategy`/
-     `maxDifferences`/`topValues` sub-fields; those stay hand-YAML-edited
-     for now, out of this task's scope, since the design's Checks tab
-     description only calls for the enabled toggles).
-   - No Run History or Differences tab (per the design spec's explicit
-     Non-goals).
+3. **Extend `comparisonEditorHtml.ts`'s tab rendering** to add the Column
+   Mapping tab's actual content (replacing T-36's reserved-but-empty
+   slot): a table with one row per source column, a `<select>` per row
+   listing every target column name (plus a "— no mapping / same name —"
+   default option, since `column_mapping` is optional per-column — a
+   column with no explicit mapping falls back to identical-name matching
+   at comparison time, per T-28's existing engine-level precedent). When
+   in manual-entry fallback mode (non-Table-mode side, or a fetch
+   failure), render plain text inputs for source/target column name pairs
+   instead of populated dropdowns, with an "Add row"/"Remove row"
+   affordance (the fetched case doesn't need this since the row set is
+   determined by the fetched column list).
 
-4. **Apply validation UX**: client-side (in the rendered HTML/script),
-   disable the Apply button or show inline errors when a required field
-   is empty (no source object/sql/filePath for the selected mode, no key
-   columns) — this is the nicety layer. The authoritative check remains
-   provider-side (item 2). Document in your implementation report which
-   validations are client-side-only vs. provider-enforced.
+4. **Extend `comparisonEditorProvider.ts`'s message handling**: a new
+   message type from the webview requesting the tab's data be fetched
+   (e.g. `{type: "fetch-columns"}`, sent when the tab is opened or when
+   Source/Target mode/connection/object changes — your call on exact
+   triggering, document it), calling `resolveConnectorByName` +
+   `getSchema` for both sides, and posting the result (or error) back to
+   the webview to re-render the tab. Extend the Apply-message handling
+   (`handleApplyMessage`) to also read and validate a `columnMapping`
+   field from the incoming message, converting it via `columnMapping.ts`'s
+   helpers before passing to `buildComparisonYaml`.
 
-5. **Extend `buildComparisonYaml`/`NewComparisonAnswers`** (T-35b's file,
-   now also owned by this task — see Files owned) to support emitting
-   `checks` (`checks.schema.enabled`/`checks.rowCount.enabled`/
-   `checks.profile.enabled`/`checks.rowLevel.enabled`), since this editor
-   is the first caller that needs it and T-35b's brief explicitly did not
-   include `checks`. Read `parseDefinition`'s `checks`-parsing logic in
-   `definition.ts` (lines ~510-555 per this brief's own grep, confirm
-   exactly) before writing the emitter — YAML keys are snake_case
-   (`row_count`, `row_level`) while the TS/`ParityChecks` fields are
-   camelCase, matching this codebase's established convention elsewhere.
-   Omit a `checks:` block entirely when every check is left at its
-   default (matching this file's existing omit-when-absent convention),
-   or emit only the toggles that differ from `parseDefinition`'s defaults
-   — your call, document which you chose.
+5. **Preserve every established guarantee**: `renderComparisonEditorHtml`
+   stays pure for any given draft input (the live-fetch round trip
+   happens *before* rendering — the fetch result becomes part of the
+   draft state passed in, not a side effect during render itself); Apply
+   still round-trips through `parseDefinition` before ever calling
+   `applyEdit`; every string value flowing into emitted YAML still goes
+   through `buildComparisonYaml`'s existing `yamlQuotedString` escaping.
 
 ## Dependencies
 
-- T-08/T-35a (`parseDefinition`, `ParitySide`, `ParityChecks`) — complete.
-- T-29 (`ConnectionProfileStore`, `ConnectionProfile`) — complete.
-- T-35b (`buildComparisonYaml`, `NewComparisonAnswers`,
-  `NewComparisonAnswerSide`) — complete, this task extends it (item 5).
+- T-08 (`ColumnMappingEntry`, `DataPlatformConnector.getSchema`) — complete.
+- T-29 (`ConnectionProfileStore`, `SecretStore`, `resolveConnector`) — complete.
+- T-36 (`comparisonEditorProvider.ts`, `comparisonEditorHtml.ts`,
+  `ComparisonEditorProviderDeps`, `ComparisonEditorDraft` and its
+  sub-types) — complete, this task extends all of it directly.
 
 ## Files owned
 
-- `packages/extension/src/authoring/comparisonEditorProvider.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorProvider.test.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorHtml.ts` (new)
-- `packages/extension/src/authoring/comparisonEditorHtml.test.ts` (new)
-- `packages/extension/src/authoring/buildComparisonYaml.ts` (extends
-  T-35b — `checks` emission only, per Scope item 5)
-- `packages/extension/src/authoring/buildComparisonYaml.test.ts` (extends
-  T-35b — `checks` emission tests only)
-- `packages/extension/src/activation/activate.ts` (extends
-  T-10/T-22/T-29/T-33, custom-editor registration only — no other change)
-- `packages/extension/package.json` (`contributes.customEditors` entry
-  only, if VS Code's registration model requires a manifest declaration —
-  confirm against the actual API; disclose either way)
+- `packages/extension/src/authoring/columnMapping.ts` (new)
+- `packages/extension/src/authoring/columnMapping.test.ts` (new)
+- `packages/extension/src/authoring/comparisonEditorProvider.ts` (extends
+  T-36 — the `getSchema` round trip, `resolveConnectorByName` dependency,
+  and Mapping-tab message handling only)
+- `packages/extension/src/authoring/comparisonEditorProvider.test.ts`
+  (extends T-36)
+- `packages/extension/src/authoring/comparisonEditorHtml.ts` (extends
+  T-36 — the Mapping tab's render content only, replacing its reserved
+  empty slot)
+- `packages/extension/src/authoring/comparisonEditorHtml.test.ts`
+  (extends T-36)
+- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/
+  T-29/T-33/T-36 — wiring the new `resolveConnectorByName` dependency
+  into the custom-editor registration call site only)
 
 ## Prohibited changes
 
-- Do not implement the Column Mapping tab (T-37's scope) — leave visible
-  room for a 5th tab in your layout/CSS, but do not build it.
-- Do not touch `packages/extension/src/webview/resultsWebview.ts` — its
-  `enableScripts: false` contract is unrelated to and unaffected by this
-  task's different (correctly different, see Objective) choice for the
-  editor.
-- Do not touch `packages/extension/src/authoring/newComparisonWizard.ts`
-  or its test file — the scaffold wizard (T-32) stays as the initial
-  file-creation path; this task only adds a richer *editing* surface for
-  files that already exist.
-- Do not touch `packages/engine/**` — `parseDefinition`/`ParitySide`/
-  `ParityChecks` are pre-existing, approved shapes consumed read-only.
-- Do not add the SQL preview / pre-execution confirmation (T-38's scope)
-  or CodeLens (T-39's scope).
-- Do not widen `ColumnMappingEntry`, `SchemaDifference`,
-  `ProfileDifference`, or `AggregateDifference`.
+- Do not touch `packages/extension/src/authoring/buildComparisonYaml.ts`
+  — its `column_mapping` emission (T-35b) already supports both
+  `ColumnMappingEntry` variants; this task only needs to *produce* plain-
+  variant entries from the UI, not change how they're serialized.
+- Do not touch `packages/extension/src/webview/resultsWebview.ts` or
+  `packages/extension/src/authoring/newComparisonWizard.ts`.
+- Do not touch `packages/engine/**`.
+- Do not build UI for the derived `{name, target, sourceExpression,
+  targetExpression}` `ColumnMappingEntry` variant (Scope item 2).
+- Do not attempt live column fetch for Query/SQL-File-mode sides — this
+  is the design's explicit, deliberate boundary, not an oversight to
+  route around.
+- Do not have `comparisonEditorProvider.ts` read `SecretStore`/
+  `ConnectionProfileStore` directly — inject the composed
+  `resolveConnectorByName` capability instead (Scope item 1).
 
 ## Interfaces consumed / produced
 
-- Consumed (read-only): `parseDefinition`, `ParityDefinition`,
-  `ParityChecks` (`@paritylens/engine`); `ConnectionProfileStore.list()`
-  (T-29); `buildComparisonYaml`/`NewComparisonAnswers`/
-  `NewComparisonAnswerSide` (T-35b, extended by this task per item 5).
-- Produced: registered `CustomTextEditorProvider` for `.paritylens`;
-  `renderComparisonEditorHtml(draft): string` (pure, exported); extended
-  `buildComparisonYaml`/`NewComparisonAnswers` supporting `checks`.
-  Document the exact draft-state type shape in your implementation report
-  — T-37 will need to extend it with column-mapping state next.
+- Consumed (read-only): `ColumnMappingEntry`, `ColumnDefinition`,
+  `DataPlatformConnector.getSchema` (`@paritylens/shared`/
+  `@paritylens/engine`); `ConnectionProfileStore`, `SecretStore`,
+  `resolveConnector` (T-29, composed into the new dependency at the
+  `activate.ts` call site, not imported directly by the provider).
+- Produced: extended `ComparisonEditorProviderDeps` (new
+  `resolveConnectorByName` field); extended `ComparisonEditorDraft`
+  (a `columnMapping` sub-state — name/shape your call, document it
+  clearly since no later task currently depends on it, but keep it
+  consistent with this file's existing draft-type conventions); pure
+  helpers in `columnMapping.ts` (exported, name your own — document them
+  for future reference).
 
 ## Red/Green/Full verification evidence required
 
-- **Red**: a test opening a `.paritylens` file via the custom editor,
-  editing a draft field (e.g. changing the source object name or toggling
-  a check), sending an Apply message, and expecting the underlying
-  document text to change accordingly, fails today (the provider doesn't
-  exist). A separate red-state test for `checks` emission: calling
-  `buildComparisonYaml` with `checks` answers today either fails to
-  compile (no such field) or the emitted YAML has no `checks:` block even
-  when checks were specified.
+- **Red**: a test opening the Mapping tab with both sides in Table mode
+  against a mocked `resolveConnectorByName`/connector (mocked `getSchema`
+  returning column lists), expecting both dropdowns to be populated from
+  the fetch, fails today (the tab is currently an empty reserved slot per
+  T-36).
 - **Green**:
   - The above test passes.
-  - A test confirming Apply is rejected (document unchanged) when the
-    built YAML would fail `parseDefinition` (e.g. simulate an internal
-    validation bypass to prove the provider-side round-trip guard
-    actually fires, not just that client-side validation prevented
-    sending bad data in the first place).
-  - A test confirming `renderComparisonEditorHtml` is pure (same draft
-    input twice → identical output).
-  - A test confirming `webviewPanel.webview.options.enableScripts` is
-    `true` for this editor specifically (a positive-assertion mirror of
-    T-34's negative `enableScripts: false` guard test for
-    `resultsWebview.ts` — confirms the deliberate choice, not an
-    accident).
-  - `checks` round-trip tests through `parseDefinition` for at least 2
-    of the 4 toggles (e.g. schema+rowCount enabled, profile+rowLevel
-    disabled or absent).
-  - A test confirming opening a file with invalid/unparseable YAML shows
-    the disclosed fallback (error banner), not a crash.
+  - A test confirming a Query/SQL-File-mode side shows manual free-text
+    entry instead of attempting a live fetch.
+  - A test confirming a `getSchema` rejection shows an inline tab error
+    without crashing the provider or affecting the other 4 tabs (e.g. a
+    subsequent Apply on Source/Target/Keys/Checks still works normally
+    even if the Mapping tab's fetch failed).
+  - A test confirming `columnMapping` entries selected via the dropdown
+    round-trip correctly through Apply → `buildComparisonYaml` →
+    `parseDefinition`, producing the expected `ColumnMappingEntry[]`.
+  - A test confirming `renderComparisonEditorHtml` purity is preserved
+    (same draft input, including a populated `columnMapping` sub-state,
+    twice → identical output).
 - **Full**: `npm run verify` (typecheck + lint + test) green.
 
 ## Handoff note for the reviewer
 
 Please adversarially confirm, independent of the implementation report:
 
-1. **Apply-blocking validation is real, not just client-side**: construct
-   a scenario that bypasses whatever client-side checks exist (e.g. call
-   the provider's Apply-handling logic directly with data that would
-   produce invalid YAML) and confirm the document is genuinely left
-   unchanged, not just that the UI discouraged sending it.
-2. **`enableScripts: true` is correctly scoped**: confirm
-   `resultsWebview.ts`'s `showResultsWebview` call site is byte-for-byte
-   unchanged (diff against `main`) — this task's different choice must
-   not leak into that file.
-3. **No credential-shaped field reachable**: confirm the connection
-   picker only ever emits a bare connection *name* string (never
-   host/port/user/password fields) into the document, mirroring T-32's
-   original review depth.
-4. **Purity of `renderComparisonEditorHtml`**: confirm same input twice
-   produces identical output, and that any embedded `<script>` is static
-   text (not built from live interpolated data in a way that could break
-   determinism or introduce an XSS surface — walk every interpolation
-   into the HTML for `escapeHtml` coverage, same as T-34's review did).
-5. **`checks` round-trip fidelity**: confirm emitted `checks` YAML,
-   parsed back through the real `parseDefinition`, produces the exact
-   `ParityChecks` object expected — not just "no error was thrown."
+1. **Table-mode-only gating is genuine**: construct a scenario with a
+   Query-mode source and confirm no `getSchema` call is ever attempted
+   for that side — grep/trace the actual code path, don't just trust a
+   passing test.
+2. **`resolveConnectorByName` composition mirrors `buildConnectorRegistry`
+   correctly**: confirm the new dependency's `activate.ts` implementation
+   genuinely reuses `ConnectionProfileStore`/`SecretStore`/
+   `resolveConnector` (T-29) rather than reimplementing credential
+   resolution with subtly different logic — diff the approach against
+   `buildConnectorRegistry`'s existing pattern.
+3. **No credential ever reaches the webview**: confirm `getSchema`
+   results (column names/types) are the only data that crosses back to
+   the webview from a fetch — never a password, connection string, or
+   any other credential-shaped value.
+4. **Failure isolation**: confirm a `getSchema` failure genuinely doesn't
+   affect the other 4 tabs' Apply behavior — construct the failure
+   scenario yourself, don't just read the implementer's test.
+5. **Purity and escaping**: confirm `renderComparisonEditorHtml` purity
+   holds with a populated Mapping-tab draft, and that every
+   fetched/manual column name flowing into the rendered HTML is
+   `escapeHtml`-covered (a malicious/unusual column name from a live
+   database is untrusted-enough data to require this, same standard as
+   every other `ComparisonResult`-derived field in this codebase).
 6. **File-ownership diff**: confirm via `git diff --stat main..<branch>`
-   that only the declared files changed, especially confirming
-   `resultsWebview.ts`, `newComparisonWizard.ts`, and everything under
-   `packages/engine/**` are untouched.
+   that only the declared files changed — `buildComparisonYaml.ts`,
+   `resultsWebview.ts`, `newComparisonWizard.ts`, and `packages/engine/**`
+   untouched.
 
 ## Branch
 
-`task/T-36-comparison-custom-editor`
+`task/T-37-column-mapping-tab`
