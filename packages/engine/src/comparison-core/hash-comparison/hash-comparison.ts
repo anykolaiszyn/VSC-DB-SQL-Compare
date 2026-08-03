@@ -118,6 +118,33 @@
 // fidelity should use `compareRows` (T-14) directly rather than
 // `compareByHash`.
 //
+// Known limitation disclosure (T-50, resolving finding T-20-03, recorded
+// OPEN/accepted-non-blocking in PROGRESS-LEDGER.md's Open findings table):
+// `compareByHash` reads the same `options.columns`/`options.keyColumns`/
+// `options.partitionColumn` name list against both the source and target
+// fetches (`fetchNormalizedRows` is called once per side with the identical
+// `fetchColumns` array) -- there is no per-side column-name mapping. Source
+// and target must use the same column names for every field named in this
+// option set (e.g. this cannot compare `sqlserver-customer`'s `IsActive`
+// against `IS_ACTIVE` directly). A caller with differently-named columns
+// must alias them at the query/view level before calling `compareByHash`,
+// or wait for a future task if column-name mapping is ever added -- adding
+// that mapping capability is explicitly OUT OF SCOPE for this disclosure
+// task (the finding's own recorded text: "Not a brief violation... Recommend
+// disclosing as a known limitation," not "add mapping support"). What this
+// task DOES do: `fetchNormalizedRows` now validates, immediately after each
+// side's `RecordBatch` is fetched and before any column lookup, that every
+// name in `fetchColumns` actually appears in that batch's `columns` array.
+// A genuine mismatch throws a clear, actionable `Error` naming the missing
+// column(s), which side (source/target) was missing them, and a pointer
+// back to this limitation -- instead of letting the lookup fail later as a
+// silent `undefined` (a silently wrong hash) or surfacing as whatever raw,
+// unhelpful driver/binder error the underlying connector happens to produce
+// (confirmed via probe: a DuckDB "referenced column ... not found" binder
+// error). No new connector round trip is added -- this check runs purely
+// against the `RecordBatch.columns` already returned by the fetch each side
+// already performs.
+//
 // Design tradeoff disclosed per TASK-BRIEF.md's explicit instruction ("if a
 // truly platform-neutral hash expression isn't achievable without
 // per-dialect branching, disclose that explicitly... rather than silently
@@ -167,6 +194,20 @@ export type HashComparisonLevel = "table" | "partition" | "key-range" | "row" | 
  * table name between source and target -- e.g. `orders_source` vs
  * `orders_target`), defaulting to `table` when omitted (same-name source
  * and target, the common case for a same-platform dev-vs-prod comparison).
+ *
+ * Known limitation (T-50, resolving finding T-20-03 -- disclosed, not
+ * fixed): `columns`, `keyColumns`, and `partitionColumn` are each a single
+ * name list read identically against BOTH the source and target fetches --
+ * there is no per-side name mapping. Source and target must therefore use
+ * the *same* column names for every field named in this option set (e.g.
+ * they cannot be `IsActive` on one side and `IS_ACTIVE` on the other). A
+ * caller with differently-named columns must alias them at the query/view
+ * level before calling `compareByHash`, or wait for a future task if
+ * column-name mapping is ever added (out of scope here -- see T-20-03's
+ * recorded resolution in PROGRESS-LEDGER.md). A genuine name mismatch is
+ * detected in `fetchNormalizedRows` and raises a clear, actionable `Error`
+ * naming the missing column(s) and which side lacked them, rather than
+ * surfacing as an opaque connector/driver error.
  */
 export interface HashComparisonOptions {
   /** Source-side table/object name. */
@@ -264,8 +305,8 @@ export async function compareByHash(
   const fetchColumns = [...new Set([...keyColumns, ...options.columns, ...partitionColumnList(options)])];
 
   const [sourceRows, targetRows] = await Promise.all([
-    fetchNormalizedRows(source, options.table, fetchColumns, options, rules),
-    fetchNormalizedRows(target, targetTable, fetchColumns, options, rules),
+    fetchNormalizedRows(source, options.table, fetchColumns, options, rules, "source"),
+    fetchNormalizedRows(target, targetTable, fetchColumns, options, rules, "target"),
   ]);
 
   const sourceHash = hashRowSet(sourceRows, options.columns);
@@ -313,18 +354,40 @@ function partitionColumnList(options: HashComparisonOptions): string[] {
   return options.partitionColumn ? [options.partitionColumn] : [];
 }
 
-/** Fetches every row of `table` via `executeQuery` (matching T-13/T-14/T-15's SQL-building pattern: `quoteIdentifier` + a bare `SELECT <columns> FROM <object>`), then applies `applyNormalization` to every non-key column value per `rules`, per this file's header-comment design rationale. Key columns and the partition column are fetched but never normalized -- a key/partition value is a lookup discriminator, not compared for equality-with-tolerance, matching `row-level.ts`'s own precedent of resolving key values directly off the fetched row rather than through `applyNormalization`. */
+/**
+ * Fetches every row of `table` via `executeQuery`, then applies
+ * `applyNormalization` to every non-key column value per `rules`, per this
+ * file's header-comment design rationale. Key columns and the partition
+ * column are fetched but never normalized -- a key/partition value is a
+ * lookup discriminator, not compared for equality-with-tolerance, matching
+ * `row-level.ts`'s own precedent of resolving key values directly off the
+ * fetched row rather than through `applyNormalization`.
+ *
+ * T-50 (resolving finding T-20-03): the fetch query is `SELECT * FROM
+ * <object>` rather than naming `fetchColumns` explicitly in the SQL. This is
+ * a deliberate, scoped change from the query this module used before T-50 --
+ * naming a column that doesn't exist on one side directly in a `SELECT`
+ * list makes the *query itself* fail with a raw connector/binder error
+ * (e.g. DuckDB's "referenced column ... not found in from clause") before
+ * this module ever sees a `RecordBatch`, which is exactly the opaque
+ * failure mode T-50 disclosure is meant to replace. Fetching `*` guarantees
+ * a `RecordBatch` with the object's *real* column list comes back
+ * regardless of what `fetchColumns` asked for, so `assertFetchColumnsPresent`
+ * below can do its check purely against already-fetched data (no new
+ * connector round trip -- still a single `executeQuery` call) and raise
+ * this module's own clear, actionable error instead.
+ */
 async function fetchNormalizedRows(
   connector: DataPlatformConnector,
   table: string,
   fetchColumns: string[],
   options: HashComparisonOptions,
-  rules: Record<string, NormalizationRule>
+  rules: Record<string, NormalizationRule>,
+  side: "source" | "target"
 ): Promise<NormalizedRow[]> {
   const keyColumns = options.keyColumns ?? [];
   const objectRef = connector.quoteIdentifier(table);
-  const quotedColumns = fetchColumns.map((c) => connector.quoteIdentifier(c)).join(", ");
-  const sql = `SELECT ${quotedColumns} FROM ${objectRef}`;
+  const sql = `SELECT * FROM ${objectRef}`;
 
   const executionOptions: ExecutionOptions = {
     maxRows: options.maxRows ?? DEFAULT_MAX_ROWS,
@@ -332,6 +395,8 @@ async function fetchNormalizedRows(
   };
 
   const batch = await consumeQuery(connector, { kind: "query", sql }, executionOptions);
+
+  assertFetchColumnsPresent(batch, fetchColumns, side);
 
   return batch.rows.map((row) => {
     const rawByColumn = new Map<string, unknown>();
@@ -357,6 +422,35 @@ async function fetchNormalizedRows(
       partitionValue: options.partitionColumn ? rawByColumn.get(options.partitionColumn) : undefined,
     };
   });
+}
+
+/**
+ * T-50 (resolving finding T-20-03): validates that every name in
+ * `fetchColumns` (the union of `options.columns`/`keyColumns`/
+ * `partitionColumn` this call needs) actually appears in `batch.columns` --
+ * the real column names the connector returned for this side -- before any
+ * lookup in `fetchNormalizedRows` that would otherwise silently resolve to
+ * `undefined` (a silently wrong hash) for a name that doesn't exist on this
+ * side. Pure check against the already-fetched `RecordBatch`; no new
+ * connector call. Throws a single `Error` naming every missing column,
+ * which side was missing them, and a pointer back to
+ * `HashComparisonOptions`'s doc comment describing the underlying
+ * limitation (no per-side column-name mapping is supported).
+ */
+function assertFetchColumnsPresent(batch: RecordBatch, fetchColumns: string[], side: "source" | "target"): void {
+  const actualColumns = new Set(batch.columns);
+  const missing = fetchColumns.filter((name) => !actualColumns.has(name));
+  if (missing.length === 0) {
+    return;
+  }
+
+  const missingList = missing.map((name) => `"${name}"`).join(", ");
+  throw new Error(
+    `compareByHash: column(s) ${missingList} not found on the ${side} side ` +
+      `(actual ${side} columns: ${batch.columns.map((name) => `"${name}"`).join(", ") || "<none>"}). ` +
+      `compareByHash requires identical column names on both sides; no per-side mapping is supported -- ` +
+      `see HashComparisonOptions's doc comment.`
+  );
 }
 
 /**
