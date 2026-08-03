@@ -387,6 +387,143 @@ describe("compareByHash: numericTolerance (T-20-01 regression)", () => {
   });
 });
 
+describe("compareByHash: column-name mismatch disclosure (T-50 / finding T-20-03)", () => {
+  // Reproduces the finding's own probe: a fixture/connector pair where one
+  // side's real column name differs from the configured
+  // columns/keyColumns/partitionColumn name list (e.g. sqlserver-customer's
+  // IsActive vs IS_ACTIVE). Per TASK-BRIEF.md's Red-state evidence section:
+  // "Run it against today's unmodified code and confirm it currently throws
+  // *some* error, but not the new clear one" -- captured in
+  // IMPLEMENTATION-REPORT.md. Uses fixtureWithStringVariant's pattern
+  // directly (via a small dedicated builder below) so the target side's
+  // real column name genuinely differs from the name configured in
+  // `columns`, rather than simulating the mismatch.
+  it("throws a clear, actionable error naming the missing column and side, instead of an opaque connector error", async () => {
+    const { source, target } = await fixtureWithMismatchedColumnName();
+
+    await expect(
+      compareByHash(source, target, "row", {
+        table: "mismatch_source",
+        targetTable: "mismatch_target",
+        keyColumns: ["ID"],
+        columns: ["IS_ACTIVE"],
+      })
+    ).rejects.toThrow(/IS_ACTIVE/);
+
+    // The error must specifically identify the target side as the one
+    // missing the column, and point at the limitation, not just say
+    // "column not found".
+    try {
+      await compareByHash(source, target, "row", {
+        table: "mismatch_source",
+        targetTable: "mismatch_target",
+        keyColumns: ["ID"],
+        columns: ["IS_ACTIVE"],
+      });
+      expect.unreachable("expected compareByHash to throw");
+    } catch (error) {
+      const message = (error as Error).message;
+      expect(message).toContain("IS_ACTIVE");
+      expect(message).toContain("target");
+      expect(message.toLowerCase()).toContain("no per-side mapping");
+    }
+  });
+
+  it("still works exactly as before when both sides use identical column names (no regression)", async () => {
+    const { source, target } = await fixtureWithMismatchedColumnName();
+
+    const result = await compareByHash(source, target, "row", {
+      table: "mismatch_source",
+      targetTable: "mismatch_target",
+      keyColumns: ["ID"],
+      columns: ["NAME"],
+    });
+
+    expect(result.matched).toBe(true);
+  });
+});
+
+/** Builds a one-row-per-side DuckDB fixture pair where the target side's
+ * real column is named `IS_ACTIVE_TARGET` instead of `IS_ACTIVE` (mirroring
+ * the finding's own sqlserver-customer IsActive/IS_ACTIVE example), plus a
+ * genuinely shared `NAME` column so the no-regression case has something
+ * valid to compare. Follows the same minimal DataPlatformConnector-adapter
+ * pattern as `fixtureWithCasingVariant`/`fixtureWithStringVariant` above. */
+async function fixtureWithMismatchedColumnName(): Promise<{
+  source: import("@paritylens/shared").DataPlatformConnector;
+  target: import("@paritylens/shared").DataPlatformConnector;
+}> {
+  const { DuckDBInstance } = await import("@duckdb/node-api");
+
+  async function buildConnector(
+    tableName: string,
+    booleanColumnName: string
+  ): Promise<import("@paritylens/shared").DataPlatformConnector> {
+    const instance = await DuckDBInstance.create(":memory:");
+    const connection = await instance.connect();
+    await connection.run(
+      `CREATE TABLE ${tableName} (ID INTEGER NOT NULL, NAME VARCHAR(100) NOT NULL, ${booleanColumnName} BOOLEAN NOT NULL)`
+    );
+    await connection.run(`INSERT INTO ${tableName} VALUES (1, 'Alice', true)`);
+
+    return {
+      async testConnection() {
+        return { success: true };
+      },
+      async getCatalogs() {
+        return [{ name: "memory" }];
+      },
+      async getSchemas() {
+        return [{ name: "main", catalog: "memory" }];
+      },
+      async getObjects() {
+        return [{ name: tableName, kind: "table" as const, catalog: "memory", schema: "main" }];
+      },
+      async getSchema() {
+        return [];
+      },
+      async *executeQuery(input, options) {
+        if (input.kind !== "query") {
+          throw new Error("test adapter only supports { kind: 'query' }");
+        }
+        const capped = `SELECT * FROM (${input.sql}) AS t LIMIT ${options.maxRows}`;
+        const reader = await connection.runAndReadAll(capped);
+        yield {
+          columns: reader.columnNames(),
+          rows: reader.getRowsJS() as unknown[][],
+          rowCount: reader.getRowsJS().length,
+        };
+      },
+      getCapabilities() {
+        return {
+          supportsApproximateDistinct: false,
+          supportsNativeHashing: true,
+          supportsTableSampling: false,
+          supportsQueryCancellation: false,
+          supportsArrowResults: false,
+          supportsInformationSchema: false,
+          supportsTemporaryTables: false,
+          supportsServerSideProfiling: false,
+        };
+      },
+      quoteIdentifier(identifier: string) {
+        return `"${identifier.replace(/"/g, '""')}"`;
+      },
+      buildProfileQuery() {
+        return { sql: "", parameters: [] };
+      },
+    };
+  }
+
+  return {
+    // Source's real column is IS_ACTIVE (matches options.columns); target's
+    // real column is IS_ACTIVE_TARGET, so the configured "IS_ACTIVE" name
+    // does not exist on the target's fetched RecordBatch.columns.
+    source: await buildConnector("mismatch_source", "IS_ACTIVE"),
+    target: await buildConnector("mismatch_target", "IS_ACTIVE_TARGET"),
+  };
+}
+
 /** Builds a minimal, dedicated one-row-per-side DuckDB fixture pair (two
  * fresh FixtureConnector-compatible connectors backed by their own
  * in-memory DuckDB instance, reusing FixtureConnector's public constructor
