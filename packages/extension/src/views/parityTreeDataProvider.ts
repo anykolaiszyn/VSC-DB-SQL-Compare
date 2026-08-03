@@ -67,6 +67,12 @@ export class ParityComparisonTreeItem extends vscode.TreeItem {
     super(uri.path.split("/").pop() ?? uri.path, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "paritylens.comparisonFile";
     this.resourceUri = uri;
+    // T-34: file-type codicon per the design handoff's "file icon"
+    // description for Comparisons rows. `"file"` is a valid built-in
+    // codicon id (VS Code codicon reference); no color argument, since the
+    // handoff doesn't call for comparison-row icon coloring (only Recent
+    // Runs rows carry an outcome-colored dot).
+    this.iconPath = new vscode.ThemeIcon("file");
     this.command = {
       command: runComparisonCommandId,
       title: "Run Comparison",
@@ -93,6 +99,24 @@ export class ParityRecentRunTreeItem extends vscode.TreeItem {
   ) {
     super(`${run.name} — ${run.timestamp}`, vscode.TreeItemCollapsibleState.None);
     this.contextValue = "paritylens.recentRun";
+    // T-34: the design handoff calls for a status-colored dot (pass/warn/
+    // fail) per run, driven by the run's outcome. `RunSummary`
+    // (packages/extension/src/runHistory/runHistory.ts) is intentionally
+    // minimal -- `{ id, name, timestamp }` only, per that file's own doc
+    // comment -- and carries no outcome/status field to key an outcome
+    // color off of. Per TASK-BRIEF.md Scope item 2 ("if it doesn't carry
+    // anything sufficient, that's a scope boundary to flag and stop at,
+    // not silently work around"), this task does not invent a status
+    // (e.g. by re-reading the full ComparisonResult body, which
+    // `listRecentRuns`'s own doc comment says is deliberately avoided for
+    // a listing operation, or by widening RunSummary, which is out of this
+    // task's file ownership and belongs to whichever future task extends
+    // runHistory.ts). A neutral, uncolored codicon is used instead so
+    // every run still gets an icon (satisfying "add iconPath/ThemeIcon"),
+    // without fabricating an outcome-based color this task cannot
+    // correctly compute. See IMPLEMENTATION-REPORT.md for the full
+    // disclosure of this decision.
+    this.iconPath = new vscode.ThemeIcon("circle-outline");
     this.command = {
       command: reopenRunCommandId,
       title: "Reopen Run",

@@ -1,15 +1,18 @@
 import type * as vscode from "vscode";
 import type {
   ComparisonResult,
+  ComparisonStatus,
+  RowDifferenceCategory,
   SchemaDifference,
   ProfileDifference,
   AggregateDifference,
-  RowDifference
+  RowDifference,
+  Severity
 } from "@paritylens/shared";
 
 /**
  * Results webview panel (TASK-BRIEF.md T-11, extended by T-16, extended
- * again by T-16b).
+ * again by T-16b, restyled by T-34).
  *
  * `renderResultsHtml` is deliberately a pure function: its only input is a
  * `ComparisonResult` object. It never reads `vscode.workspace`,
@@ -33,6 +36,26 @@ import type {
  * rendered here, and never reconstructs SQL from a `QueryInput`/
  * `ColumnDefinition` itself (the exact drift risk the original T-16 SQL-
  * preview deferral decision was written to avoid).
+ *
+ * T-34 (this task) restyles the markup produced here using VS Code webview
+ * theme CSS variables (`--vscode-*`), per the owner-approved design handoff
+ * at `multi-agent-idea-to-app/design_handoff_paritylens_results_webview/`.
+ * The handoff's prototype uses a fixed dark "Nocturne" design system and
+ * live JS-driven tab/row state; neither is copied verbatim (per the
+ * handoff's own "not production code to copy directly" instruction and
+ * this task's Prohibited Changes). Instead:
+ *  - colors/spacing map onto `--vscode-*` theme tokens so the panel follows
+ *    the user's active VS Code theme rather than a hardcoded palette;
+ *  - tab switching is implemented with a CSS-only radio-button + `:checked`
+ *    sibling-selector technique (five hidden `<input type="radio">`
+ *    elements plus `<label>` "tabs"), since `enableScripts` must stay
+ *    `false` on this panel (see `showResultsWebview` below and this file's
+ *    purity contract) and JS-driven tab state is therefore not an option;
+ *  - the row-level expand/collapse interaction uses native
+ *    `<details>`/`<summary>`, the simplest script-free way to get a
+ *    click-to-toggle disclosure widget, per the brief's explicit
+ *    preference for `<details>`/`<summary>` over a second radio/checkbox
+ *    hack unless it conflicts with the visual spec (it doesn't here).
  */
 
 /** Escapes a value for safe inclusion in the webview's HTML body. */
@@ -45,15 +68,321 @@ function escapeHtml(value: unknown): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Maps a `Severity` value to a CSS class for the colored severity tag, per
+ * the handoff's Design Tokens note: prefer VS Code semantic-color variables
+ * over the prototype's raw Nocturne token mapping. `severity-tag--ok` uses
+ * `--vscode-testing-iconPassed`-style green, `severity-tag--warn` uses
+ * `--vscode-editorWarning-foreground`-style amber, and `severity-tag--bad`
+ * uses `--vscode-testing-iconFailed`-style red; `Skipped`/`Informational`
+ * get a neutral tag since they are not pass/warn/fail outcomes.
+ */
+function severityTagClass(severity: Severity): string {
+  switch (severity) {
+    case "Pass":
+      return "severity-tag severity-tag--ok";
+    case "Warning":
+      return "severity-tag severity-tag--warn";
+    case "Failure":
+    case "Error":
+      return "severity-tag severity-tag--bad";
+    case "Informational":
+    case "Skipped":
+    default:
+      return "severity-tag severity-tag--neutral";
+  }
+}
+
+/** Maps overall `ComparisonStatus` to the header status tag's CSS class + label. */
+function statusTag(status: ComparisonStatus): { className: string; label: string } {
+  switch (status) {
+    case "passed":
+      return { className: "status-tag status-tag--ok", label: "Passed" };
+    case "warning":
+      return { className: "status-tag status-tag--warn", label: "Warning" };
+    case "failed":
+      return { className: "status-tag status-tag--bad", label: "Failed" };
+    case "error":
+      return { className: "status-tag status-tag--bad", label: "Error" };
+    default:
+      return { className: "status-tag status-tag--neutral", label: escapeHtml(status) };
+  }
+}
+
+/** Human-readable labels for `RowDifferenceCategory`, per the handoff's Row-Level panel spec. */
+const CATEGORY_LABELS: Record<RowDifferenceCategory, string> = {
+  matching: "Matching",
+  "missing-from-source": "Missing from source",
+  "missing-from-target": "Missing from target",
+  "duplicate-in-source": "Duplicate in source",
+  "duplicate-in-target": "Duplicate in target",
+  "matched-key-differing-values": "Matched key, differing values",
+  "unable-to-compare": "Unable to compare",
+  "ignored-by-rule": "Ignored by rule"
+};
+
+/**
+ * The webview-wide `<style>` block, using VS Code webview theme CSS
+ * variables (documented at
+ * https://code.visualstudio.com/api/references/theme-color) instead of the
+ * handoff prototype's raw Nocturne hex/token values, per this task's
+ * Objective and the Design Tokens section's own preference for
+ * `--vscode-*` semantic tokens when going fully native. This function
+ * returns a fixed string (no `ComparisonResult` input), so it introduces no
+ * risk to `renderResultsHtml`'s purity contract.
+ */
+function renderStyles(): string {
+  return `<style>
+    :root { color-scheme: light dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      padding: 28px 36px 60px;
+      background: var(--vscode-editor-background);
+      color: var(--vscode-foreground);
+      font-family: var(--vscode-font-family, sans-serif);
+      font-size: 13px;
+    }
+    .content { max-width: 980px; }
+    .eyebrow {
+      font-size: 11px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+      margin-bottom: 6px;
+    }
+    h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 500;
+    }
+    .header-row {
+      display: flex;
+      align-items: flex-start;
+      justify-content: space-between;
+      gap: 20px;
+      flex-wrap: wrap;
+    }
+    .meta-line {
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      flex-wrap: wrap;
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+    }
+    .meta-sep { color: var(--vscode-panel-border, currentColor); opacity: 0.6; }
+    .status-tag, .severity-tag, .tab-badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 500;
+      line-height: 1.6;
+      white-space: nowrap;
+    }
+    .status-tag--ok, .severity-tag--ok {
+      color: var(--vscode-testing-iconPassed, #2e8b57);
+      background: color-mix(in srgb, var(--vscode-testing-iconPassed, #2e8b57) 16%, transparent);
+    }
+    .status-tag--warn, .severity-tag--warn {
+      color: var(--vscode-editorWarning-foreground, #cca700);
+      background: color-mix(in srgb, var(--vscode-editorWarning-foreground, #cca700) 16%, transparent);
+    }
+    .status-tag--bad, .severity-tag--bad {
+      color: var(--vscode-testing-iconFailed, #f14c4c);
+      background: color-mix(in srgb, var(--vscode-testing-iconFailed, #f14c4c) 16%, transparent);
+    }
+    .status-tag--neutral, .severity-tag--neutral {
+      color: var(--vscode-descriptionForeground);
+      background: var(--vscode-badge-background, rgba(128,128,128,0.2));
+    }
+    .stat-band {
+      margin-top: 22px;
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 12px;
+    }
+    .card {
+      border: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+      border-radius: 6px;
+      background: var(--vscode-editorWidget-background, transparent);
+    }
+    .stat-tile { padding: 14px 16px; }
+    .stat-tile-kicker {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+    }
+    .stat-tile-value {
+      font-size: 26px;
+      font-weight: 500;
+      margin-top: 4px;
+    }
+    .stat-tile--warn .stat-tile-value { color: var(--vscode-editorWarning-foreground, #cca700); }
+    .stat-tile--bad .stat-tile-value { color: var(--vscode-testing-iconFailed, #f14c4c); }
+    .row-counts-card {
+      margin-top: 14px;
+      padding: 14px 18px;
+      display: flex;
+      align-items: center;
+      gap: 28px;
+      flex-wrap: wrap;
+    }
+    .row-counts-note {
+      color: var(--vscode-descriptionForeground);
+      font-size: 12px;
+    }
+    .row-counts-value { font-size: 15px; font-weight: 500; margin-top: 2px; }
+    .row-counts-value--accent { color: var(--vscode-textLink-foreground); }
+    .tab-strip {
+      margin-top: 26px;
+      display: flex;
+      gap: 6px;
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+    }
+    .tab-strip input[type="radio"] {
+      position: absolute;
+      opacity: 0;
+      pointer-events: none;
+    }
+    .tab-strip label {
+      padding: 9px 14px;
+      font-size: 12.5px;
+      font-weight: 500;
+      cursor: pointer;
+      color: var(--vscode-descriptionForeground);
+      border-bottom: 2px solid transparent;
+      display: flex;
+      align-items: center;
+      gap: 7px;
+      user-select: none;
+    }
+    .tab-badge {
+      background: var(--vscode-badge-background, rgba(128,128,128,0.2));
+      color: var(--vscode-badge-foreground, inherit);
+      font-size: 10px;
+      padding: 1px 6px;
+    }
+    .tab-panels { margin-top: 18px; }
+    .tab-panel { display: none; }
+    .panel-heading {
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+      color: var(--vscode-descriptionForeground);
+      font-weight: 500;
+      margin: 0 0 10px;
+    }
+    #tab-schema:checked ~ .tab-panels .tab-panel--schema,
+    #tab-profile:checked ~ .tab-panels .tab-panel--profile,
+    #tab-volume:checked ~ .tab-panels .tab-panel--volume,
+    #tab-rows:checked ~ .tab-panels .tab-panel--rows,
+    #tab-sql:checked ~ .tab-panels .tab-panel--sql {
+      display: block;
+    }
+    #tab-schema:checked ~ .tab-strip label[for="tab-schema"],
+    #tab-profile:checked ~ .tab-strip label[for="tab-profile"],
+    #tab-volume:checked ~ .tab-strip label[for="tab-volume"],
+    #tab-rows:checked ~ .tab-strip label[for="tab-rows"],
+    #tab-sql:checked ~ .tab-strip label[for="tab-sql"] {
+      color: var(--vscode-foreground);
+      border-bottom-color: var(--vscode-focusBorder, var(--vscode-textLink-foreground));
+    }
+    table.data-table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12.5px;
+    }
+    table.data-table th, table.data-table td {
+      text-align: left;
+      padding: 6px 10px;
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.25));
+    }
+    table.data-table th {
+      font-weight: 500;
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.03em;
+    }
+    table.column-differences {
+      margin: 6px 0 12px 24px;
+      width: calc(100% - 24px);
+    }
+    details.row-detail summary {
+      cursor: pointer;
+      list-style: none;
+    }
+    details.row-detail summary::-webkit-details-marker { display: none; }
+    details.row-detail summary .row-caret {
+      display: inline-block;
+      margin-right: 6px;
+      transition: transform 0.12s;
+    }
+    details.row-detail[open] summary .row-caret { transform: rotate(90deg); }
+    .empty-state { color: var(--vscode-descriptionForeground); }
+    .sql-card { padding: 0; overflow: hidden; margin-bottom: 12px; }
+    .sql-card-header {
+      padding: 8px 14px;
+      border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,0.35));
+      color: var(--vscode-descriptionForeground);
+      font-size: 11px;
+      letter-spacing: 0.05em;
+      text-transform: uppercase;
+    }
+    .sql-card pre {
+      margin: 0;
+      padding: 14px;
+      font-family: var(--vscode-editor-font-family, monospace);
+      font-size: 12.5px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      overflow-x: auto;
+    }
+  </style>`;
+}
+
+function renderStatBand(result: ComparisonResult): string {
+  const rowDelta = result.rowCounts.difference;
+  return `<div class="stat-band">
+    <div class="card stat-tile">
+      <div class="stat-tile-kicker">Passed</div>
+      <div class="stat-tile-value">${escapeHtml(result.summary.passed)}</div>
+    </div>
+    <div class="card stat-tile stat-tile--warn">
+      <div class="stat-tile-kicker">Warnings</div>
+      <div class="stat-tile-value">${escapeHtml(result.summary.warnings)}</div>
+    </div>
+    <div class="card stat-tile stat-tile--bad">
+      <div class="stat-tile-kicker">Failed</div>
+      <div class="stat-tile-value">${escapeHtml(result.summary.failed)}</div>
+    </div>
+    <div class="card stat-tile">
+      <div class="stat-tile-kicker">Row count delta</div>
+      <div class="stat-tile-value">${escapeHtml(rowDelta)}</div>
+    </div>
+  </div>
+  <div class="card row-counts-card">
+    <div><div class="stat-tile-kicker">Source rows</div><div class="row-counts-value">${escapeHtml(result.rowCounts.source)}</div></div>
+    <div><div class="stat-tile-kicker">Target rows</div><div class="row-counts-value">${escapeHtml(result.rowCounts.target)}</div></div>
+    <div><div class="stat-tile-kicker">Difference</div><div class="row-counts-value row-counts-value--accent">${escapeHtml(result.rowCounts.difference)}</div></div>
+    <div style="flex:1"></div>
+    <div class="row-counts-note">Comparison run at read-only isolation</div>
+  </div>`;
+}
+
 function renderSchemaDifferencesTable(differences: SchemaDifference[]): string {
   if (differences.length === 0) {
-    return "<p>No schema differences.</p>";
+    return '<p class="empty-state">No schema differences.</p>';
   }
 
   const rows = differences
     .map(
       (d) => `<tr>
-        <td>${escapeHtml(d.severity)}</td>
+        <td><span class="${severityTagClass(d.severity)}">${escapeHtml(d.severity)}</span></td>
         <td>${escapeHtml(d.columnName)}</td>
         <td>${escapeHtml(d.kind)}</td>
         <td>${escapeHtml(d.sourceType ?? "")}</td>
@@ -63,7 +392,7 @@ function renderSchemaDifferencesTable(differences: SchemaDifference[]): string {
     )
     .join("\n");
 
-  return `<table>
+  return `<table class="data-table">
     <thead>
       <tr><th>Severity</th><th>Column</th><th>Kind</th><th>Source Type</th><th>Target Type</th><th>Message</th></tr>
     </thead>
@@ -75,13 +404,13 @@ function renderSchemaDifferencesTable(differences: SchemaDifference[]): string {
 
 function renderProfileDifferencesTable(differences: ProfileDifference[]): string {
   if (differences.length === 0) {
-    return "<p>No profile differences.</p>";
+    return '<p class="empty-state">No profile differences.</p>';
   }
 
   const rows = differences
     .map(
       (d) => `<tr>
-        <td>${escapeHtml(d.severity)}</td>
+        <td><span class="${severityTagClass(d.severity)}">${escapeHtml(d.severity)}</span></td>
         <td>${escapeHtml(d.columnName)}</td>
         <td>${escapeHtml(d.metric)}</td>
         <td>${escapeHtml(d.sourceValue !== undefined ? String(d.sourceValue) : "")}</td>
@@ -91,7 +420,7 @@ function renderProfileDifferencesTable(differences: ProfileDifference[]): string
     )
     .join("\n");
 
-  return `<table>
+  return `<table class="data-table">
     <thead>
       <tr><th>Severity</th><th>Column</th><th>Metric</th><th>Source Value</th><th>Target Value</th><th>Message</th></tr>
     </thead>
@@ -103,13 +432,13 @@ function renderProfileDifferencesTable(differences: ProfileDifference[]): string
 
 function renderAggregateDifferencesTable(differences: AggregateDifference[]): string {
   if (differences.length === 0) {
-    return "<p>No volume differences.</p>";
+    return '<p class="empty-state">No volume differences.</p>';
   }
 
   const rows = differences
     .map(
       (d) => `<tr>
-        <td>${escapeHtml(d.severity)}</td>
+        <td><span class="${severityTagClass(d.severity)}">${escapeHtml(d.severity)}</span></td>
         <td>${escapeHtml(d.sourceCount)}</td>
         <td>${escapeHtml(d.targetCount)}</td>
         <td>${escapeHtml(d.difference)}</td>
@@ -119,7 +448,7 @@ function renderAggregateDifferencesTable(differences: AggregateDifference[]): st
     )
     .join("\n");
 
-  return `<table>
+  return `<table class="data-table">
     <thead>
       <tr><th>Severity</th><th>Source Count</th><th>Target Count</th><th>Difference</th><th>Difference Rate</th><th>Message</th></tr>
     </thead>
@@ -146,7 +475,7 @@ function renderColumnDifferencesSubTable(columnDifferences: NonNullable<RowDiffe
     )
     .join("\n");
 
-  return `<table class="column-differences">
+  return `<table class="data-table column-differences">
         <thead>
           <tr><th>Column</th><th>Source Value</th><th>Target Value</th></tr>
         </thead>
@@ -156,26 +485,88 @@ function renderColumnDifferencesSubTable(columnDifferences: NonNullable<RowDiffe
       </table>`;
 }
 
-function renderRowDifferencesTable(differences: RowDifference[]): string {
-  if (differences.length === 0) {
-    return "<p>No row-level differences.</p>";
+/**
+ * Renders one `RowDifference` as a table row. Rows whose category is
+ * `"matched-key-differing-values"` (i.e. carry a non-empty
+ * `columnDifferences`) get the expand/collapse affordance via a native
+ * `<details>`/`<summary>` pair wrapped around the row's caret + message
+ * cell, per the brief's CSS/native-only requirement for this interaction
+ * (`enableScripts` stays `false`). All other categories render a plain row
+ * with no caret, matching the handoff's "only rows with columnDifferences
+ * are clickable" spec.
+ *
+ * `index` is used only to key the id-scoped `id="row-detail-N"` anchor for
+ * a stable per-render DOM id — see this file's Row Id Judgment Call note
+ * near `renderRowDifferencesTable` for why an index key (not a new
+ * `RowDifference` field) is sufficient here.
+ */
+function renderRowDifferenceRow(d: RowDifference, index: number): string {
+  const severityCell = `<span class="${severityTagClass(d.severity)}">${escapeHtml(d.severity)}</span>`;
+  const categoryLabel = CATEGORY_LABELS[d.category] ?? d.category;
+  const keyValuesLabel = d.keyValues.map((k) => String(k)).join(", ");
+  const hasColumnDifferences = d.columnDifferences !== undefined && d.columnDifferences.length > 0;
+
+  if (!hasColumnDifferences) {
+    return `<tr data-category="${escapeHtml(d.category)}">
+        <td></td>
+        <td>${severityCell}</td>
+        <td>${escapeHtml(categoryLabel)}</td>
+        <td>${escapeHtml(keyValuesLabel)}</td>
+        <td>${escapeHtml(d.message)}</td>
+      </tr>`;
   }
 
-  const rows = differences
-    .map(
-      (d) => `<tr>
-        <td>${escapeHtml(d.severity)}</td>
-        <td>${escapeHtml(d.category)}</td>
-        <td>${escapeHtml(d.keyValues.map((k) => String(k)).join(", "))}</td>
-        <td>${escapeHtml(d.message)}</td>
-        <td>${d.columnDifferences && d.columnDifferences.length > 0 ? renderColumnDifferencesSubTable(d.columnDifferences) : ""}</td>
-      </tr>`
-    )
-    .join("\n");
+  return `<tr class="row-detail-row" data-category="${escapeHtml(d.category)}">
+      <td colspan="5" style="padding:0">
+        <details class="row-detail" id="row-detail-${index}">
+          <summary>
+            <table class="data-table" style="width:100%">
+              <tbody>
+                <tr>
+                  <td style="width:18px"><span class="row-caret">&#9656;</span></td>
+                  <td>${severityCell}</td>
+                  <td>${escapeHtml(categoryLabel)}</td>
+                  <td>${escapeHtml(keyValuesLabel)}</td>
+                  <td>${escapeHtml(d.message)}</td>
+                </tr>
+              </tbody>
+            </table>
+          </summary>
+          ${renderColumnDifferencesSubTable(d.columnDifferences!)}
+        </details>
+      </td>
+    </tr>`;
+}
 
-  return `<table>
+/**
+ * Judgment call (TASK-BRIEF.md Scope item 1's last bullet): the expand/
+ * collapse markup above keys each row's `<details id="row-detail-N">` by
+ * its index within `differences`, not by a new field added to
+ * `RowDifference` in `packages/shared/src/result.ts`. This is sufficient
+ * because `renderResultsHtml` is a pure function of its `ComparisonResult`
+ * argument and `rowDifferences` is a plain array — the same
+ * `ComparisonResult` object always produces `rowDifferences` in the same
+ * order, so the same row always gets the same index-derived id across
+ * repeated renders of that result (verified by this file's own purity
+ * test: "the same input rendered twice produces identical output"). Since
+ * each `<details>` only needs a *locally unique, stable-for-this-render*
+ * id (there is no cross-render client-side state to persist — scripts are
+ * disabled, so "expanded" state lives only in the browser's native
+ * `<details open>` DOM state for the lifetime of that one rendered
+ * document), an index key never needs to survive a *different* result
+ * being rendered into the same id space. `packages/shared/src/result.ts`
+ * is therefore left untouched by this task.
+ */
+function renderRowDifferencesTable(differences: RowDifference[]): string {
+  if (differences.length === 0) {
+    return '<p class="empty-state">No row-level differences.</p>';
+  }
+
+  const rows = differences.map((d, index) => renderRowDifferenceRow(d, index)).join("\n");
+
+  return `<table class="data-table">
     <thead>
-      <tr><th>Severity</th><th>Category</th><th>Key Values</th><th>Message</th><th>Column Differences</th></tr>
+      <tr><th></th><th>Severity</th><th>Category</th><th>Key Values</th><th>Message</th></tr>
     </thead>
     <tbody>
       ${rows}
@@ -186,57 +577,103 @@ function renderRowDifferencesTable(differences: RowDifference[]): string {
 /**
  * Renders `queriesUsed` (T-16b) as a "Query Preview" section: an ordered
  * list of the SQL strings actually issued for this run, each shown in its
- * own escaped `<pre>` block. Absent/empty `queriesUsed` (no check that
- * issues SQL ran, e.g. a Layer-1 connectivity failure) renders an
- * empty-state message, matching every other difference-array section's
- * empty-state pattern in this file.
+ * own escaped `<pre>` block, restyled (T-34) as one card per query with a
+ * "Query N" header, preserving the existing escaping and one-`<pre>`-per-
+ * query structure. Absent/empty `queriesUsed` (no check that issues SQL
+ * ran, e.g. a Layer-1 connectivity failure) renders an empty-state
+ * message, matching every other difference-array section's empty-state
+ * pattern in this file.
  */
 function renderQueryPreviewSection(queriesUsed: string[] | undefined): string {
   if (!queriesUsed || queriesUsed.length === 0) {
-    return "<p>No queries recorded for this run.</p>";
+    return '<p class="empty-state">No queries recorded for this run.</p>';
   }
 
-  const items = queriesUsed.map((sql) => `<li><pre>${escapeHtml(sql)}</pre></li>`).join("\n");
+  const cards = queriesUsed
+    .map(
+      (sql, index) => `<div class="card sql-card">
+        <div class="sql-card-header">Query ${index + 1}</div>
+        <pre>${escapeHtml(sql)}</pre>
+      </div>`
+    )
+    .join("\n");
 
-  return `<ol>
-    ${items}
-  </ol>`;
+  return `<div class="sql-cards">${cards}</div>`;
 }
 
 /**
- * Renders a `ComparisonResult` as the results webview's HTML content,
- * showing `schemaDifferences` and `profileDifferences` each as a table
- * (one row per item). Pure presentation: no side effects, no I/O beyond
- * building a string.
+ * Renders a `ComparisonResult` as the results webview's HTML content:
+ * header (eyebrow/title/meta/status tag), a summary stat band, a CSS-only
+ * tab strip (Schema/Profile/Volume/Row-Level/SQL Preview), and each tab's
+ * panel content. Pure presentation: no side effects, no I/O beyond
+ * building a string, no `vscode` runtime API usage.
  */
 export function renderResultsHtml(result: ComparisonResult): string {
+  const status = statusTag(result.status);
+  const schemaCount = result.schemaDifferences.length;
+  const profileCount = result.profileDifferences.length;
+  const volumeCount = result.aggregateDifferences.length;
+  const rowCount = result.rowDifferences.length;
+
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
   <title>Parity Results: ${escapeHtml(result.comparison)}</title>
+  ${renderStyles()}
 </head>
 <body>
-  <h1>Parity Results: ${escapeHtml(result.comparison)}</h1>
-  <p>Run ${escapeHtml(result.runId)} — status: ${escapeHtml(result.status)}</p>
-  <p>Summary: ${escapeHtml(result.summary.passed)} passed | ${escapeHtml(
-    result.summary.warnings
-  )} warnings | ${escapeHtml(result.summary.failed)} failed</p>
+  <div class="content">
+    <div class="header-row">
+      <div>
+        <div class="eyebrow">Parity Results</div>
+        <h1>${escapeHtml(result.comparison)}</h1>
+        <div class="meta-line">
+          <span>Run ${escapeHtml(result.runId)}</span>
+          <span class="meta-sep">&middot;</span>
+          <span>${escapeHtml(result.execution.sourceDurationMs)}ms source / ${escapeHtml(result.execution.targetDurationMs)}ms target</span>
+        </div>
+      </div>
+      <div>
+        <span class="${status.className}">${status.label}</span>
+      </div>
+    </div>
 
-  <h2>Schema Differences</h2>
-  ${renderSchemaDifferencesTable(result.schemaDifferences)}
+    ${renderStatBand(result)}
 
-  <h2>Profile Differences</h2>
-  ${renderProfileDifferencesTable(result.profileDifferences)}
+    <input type="radio" name="paritylens-tab" id="tab-schema" class="tab-strip-input" checked />
+    <input type="radio" name="paritylens-tab" id="tab-profile" class="tab-strip-input" />
+    <input type="radio" name="paritylens-tab" id="tab-volume" class="tab-strip-input" />
+    <input type="radio" name="paritylens-tab" id="tab-rows" class="tab-strip-input" />
+    <input type="radio" name="paritylens-tab" id="tab-sql" class="tab-strip-input" />
 
-  <h2>Volume Parity</h2>
-  ${renderAggregateDifferencesTable(result.aggregateDifferences)}
+    <div class="tab-strip">
+      <label for="tab-schema">Schema <span class="tab-badge">${escapeHtml(schemaCount)}</span></label>
+      <label for="tab-profile">Profile <span class="tab-badge">${escapeHtml(profileCount)}</span></label>
+      <label for="tab-volume">Volume <span class="tab-badge">${escapeHtml(volumeCount)}</span></label>
+      <label for="tab-rows">Row-Level <span class="tab-badge">${escapeHtml(rowCount)}</span></label>
+      <label for="tab-sql">SQL Preview</label>
+    </div>
 
-  <h2>Row-Level Differences</h2>
-  ${renderRowDifferencesTable(result.rowDifferences)}
-
-  <h2>Query Preview</h2>
-  ${renderQueryPreviewSection(result.queriesUsed)}
+    <div class="tab-panels">
+      <div class="tab-panel tab-panel--schema">
+        ${renderSchemaDifferencesTable(result.schemaDifferences)}
+      </div>
+      <div class="tab-panel tab-panel--profile">
+        ${renderProfileDifferencesTable(result.profileDifferences)}
+      </div>
+      <div class="tab-panel tab-panel--volume">
+        ${renderAggregateDifferencesTable(result.aggregateDifferences)}
+      </div>
+      <div class="tab-panel tab-panel--rows">
+        ${renderRowDifferencesTable(result.rowDifferences)}
+      </div>
+      <div class="tab-panel tab-panel--sql">
+        <h2 class="panel-heading">Query Preview</h2>
+        ${renderQueryPreviewSection(result.queriesUsed)}
+      </div>
+    </div>
+  </div>
 </body>
 </html>`;
 }

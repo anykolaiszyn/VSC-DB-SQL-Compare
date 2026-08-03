@@ -13,10 +13,23 @@ vi.mock("vscode", () => {
     collapsibleState: number | undefined;
     contextValue: string | undefined;
     id: string | undefined;
+    iconPath: unknown;
+    description: string | boolean | undefined;
     constructor(label: string, collapsibleState?: number) {
       this.label = label;
       this.collapsibleState = collapsibleState;
     }
+  }
+
+  class ThemeIcon {
+    constructor(
+      public readonly id: string,
+      public readonly color?: unknown
+    ) {}
+  }
+
+  class ThemeColor {
+    constructor(public readonly id: string) {}
   }
 
   class EventEmitter<T> {
@@ -41,7 +54,7 @@ vi.mock("vscode", () => {
     }
   }
 
-  return { TreeItem, EventEmitter, TreeItemCollapsibleState, Uri };
+  return { TreeItem, EventEmitter, TreeItemCollapsibleState, Uri, ThemeIcon, ThemeColor };
 });
 
 import {
@@ -212,6 +225,24 @@ describe("ParityTreeDataProvider", () => {
 
       expect(first?.command?.command).toBe("paritylens.reopenRun");
       expect(first?.command?.arguments).toEqual(["run-b"]);
+    });
+  });
+
+  // T-34: visual redesign — red-state assertions for iconPath/ThemeIcon
+  // presentation that does not exist on pre-T-34 tree items.
+  describe("T-34 visual redesign: icons", () => {
+    it("ParityComparisonTreeItem constructs a ThemeIcon iconPath (file-type icon)", () => {
+      const uri = vscode.Uri.file("/workspace/customer-migration.paritylens");
+      const item = new ParityComparisonTreeItem(uri, "paritylens.runComparison");
+
+      expect(item.iconPath).toBeInstanceOf(vscode.ThemeIcon);
+    });
+
+    it("ParityRecentRunTreeItem constructs a ThemeIcon iconPath", () => {
+      const run: RunSummary = { id: "run-a", name: "first-run", timestamp: "2026-08-01T09:00:00.000Z" };
+      const item = new ParityRecentRunTreeItem(run, "paritylens.reopenRun");
+
+      expect(item.iconPath).toBeInstanceOf(vscode.ThemeIcon);
     });
   });
 });
