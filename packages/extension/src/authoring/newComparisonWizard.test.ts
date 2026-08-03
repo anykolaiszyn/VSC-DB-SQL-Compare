@@ -208,8 +208,8 @@ describe("runNewComparisonCommand", () => {
     const parsed = parseDefinition(writtenYaml!);
     expect(parsed.version).toBe(1);
     expect(parsed.name).toBe("Customer Parity");
-    expect(parsed.source).toEqual({ connection: "sqlserver-customer", object: "dbo.Customer" });
-    expect(parsed.target).toEqual({ connection: "postgres-products", object: "public.customer" });
+    expect(parsed.source).toEqual({ kind: "table", connection: "sqlserver-customer", object: "dbo.Customer" });
+    expect(parsed.target).toEqual({ kind: "table", connection: "postgres-products", object: "public.customer" });
     expect(parsed.keys).toEqual(["customer_id"]);
 
     expect(deps.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("scaffolded new comparison"));
