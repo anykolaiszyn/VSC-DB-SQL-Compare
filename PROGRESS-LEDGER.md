@@ -44,7 +44,22 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE
+- **Exactly one task may be active:** T-45 (npm audit fix for M-01's
+  remaining `brace-expansion` advisories)
+- **Backlog cleanup sweep (owner-directed 2026-08-03):** owner asked to
+  complete all open backlog items except T-18 (blocked, no trial account)
+  before proceeding to Phase 6. Scope: all 27 `OPEN` rows in this
+  ledger's Open findings table, plus the 4 open items in
+  `multi-agent-idea-to-app/BACKLOG.md` (kit-level, doc-only). Sized as: 8
+  bounded task-loop cycles for findings needing real code/config changes
+  (T-45–T-52, IDs assigned sequentially as each is scoped), a direct
+  orchestrator edit pass for the 4 kit-level doc items (no task-loop
+  ceremony — not ParityLens product code under task-brief governance),
+  and a final reconfirmation that the remaining ~15 findings stay
+  intentionally accepted, non-blocking debt (several — M-04, T-20-02,
+  T-20-04 — are explicitly future-task-sized redesigns, not backlog
+  cleanup candidates). Phase 6 (T-40–T-44) remains queued behind this
+  sweep, not started.
 - **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
