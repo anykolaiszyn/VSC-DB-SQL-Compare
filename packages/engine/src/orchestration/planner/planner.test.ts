@@ -20,10 +20,20 @@
 //      fetching full row data via executeQuery) and populates
 //      rowDifferences; disabling either check leaves its corresponding
 //      field(s) at the Phase-1 empty/default value -- no silent execution.
-import { describe, expect, it } from "vitest";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join, sep } from "node:path";
+import { describe, expect, it, afterEach } from "vitest";
 import { parseDefinition } from "../definition/definition.js";
+import type { ParitySide } from "../definition/definition.js";
 import { FixtureConnector } from "../../connector-sdk/fixture/fixture-connector.js";
-import { runComparison, type ConnectorRegistry } from "./planner.js";
+import {
+  runComparison,
+  resolveSideInput,
+  buildFetchAllRowsSql,
+  SqlFilePathEscapesBaseDirError,
+  type ConnectorRegistry,
+} from "./planner.js";
 
 const SCHEMA_ONLY_YAML = `
 version: 1
@@ -349,5 +359,212 @@ checks:
         expect(dup.keyValues).toEqual([5]);
       }
     });
+  });
+});
+
+// T-35a: ParitySide/planner support for query & sqlFile kinds.
+describe("T-35a: resolveSideInput", () => {
+  let tempDirs: string[] = [];
+
+  afterEach(async () => {
+    await Promise.all(tempDirs.map((dir) => rm(dir, { recursive: true, force: true })));
+    tempDirs = [];
+  });
+
+  async function makeTempDir(): Promise<string> {
+    const dir = await mkdtemp(join(tmpdir(), "paritylens-t35a-"));
+    tempDirs.push(dir);
+    return dir;
+  }
+
+  it("resolves a table-kind side unchanged", async () => {
+    const side: ParitySide = { kind: "table", connection: "c", object: "dbo.Customer" };
+    const input = await resolveSideInput(side, process.cwd());
+    expect(input).toEqual({ kind: "table", object: "dbo.Customer" });
+  });
+
+  it("resolves a query-kind side by passing sql through as-is", async () => {
+    const side: ParitySide = { kind: "query", connection: "c", sql: "SELECT * FROM foo" };
+    const input = await resolveSideInput(side, process.cwd());
+    expect(input).toEqual({ kind: "query", sql: "SELECT * FROM foo" });
+  });
+
+  it("resolves a sqlFile-kind side by reading the file's contents and converting to kind: query", async () => {
+    const baseDir = await makeTempDir();
+    await mkdir(join(baseDir, "queries"), { recursive: true });
+    const filePath = "queries/source.sql";
+    await writeFile(join(baseDir, "queries", "source.sql"), "SELECT * FROM foo WHERE x > 1", "utf8");
+
+    const side: ParitySide = { kind: "sqlFile", connection: "c", filePath };
+    const input = await resolveSideInput(side, baseDir);
+    expect(input).toEqual({ kind: "query", sql: "SELECT * FROM foo WHERE x > 1" });
+  });
+
+  it("rejects a sqlFile filePath that escapes baseDir via ../ traversal", async () => {
+    const baseDir = await makeTempDir();
+    const side: ParitySide = { kind: "sqlFile", connection: "c", filePath: "../outside.sql" };
+    await expect(resolveSideInput(side, baseDir)).rejects.toThrow(SqlFilePathEscapesBaseDirError);
+  });
+
+  it("rejects a sqlFile filePath that is an absolute path outside baseDir", async () => {
+    const baseDir = await makeTempDir();
+    const outsideDir = await makeTempDir();
+    const outsideAbsolutePath = join(outsideDir, "outside.sql");
+    const side: ParitySide = { kind: "sqlFile", connection: "c", filePath: outsideAbsolutePath };
+    await expect(resolveSideInput(side, baseDir)).rejects.toThrow(SqlFilePathEscapesBaseDirError);
+  });
+
+  it("rejects a sibling-directory-prefix bypass (baseDir 'foo' vs resolved 'foo-evil')", async () => {
+    const baseDir = await makeTempDir();
+    // baseDir is e.g. /tmp/paritylens-t35a-XXXX -- construct a sibling whose
+    // name has baseDir's basename as a *prefix* (not a real subdirectory),
+    // which a naive `resolvedTarget.startsWith(baseDir)` string check would
+    // incorrectly treat as contained.
+    const side: ParitySide = { kind: "sqlFile", connection: "c", filePath: `..${sep}${baseDir.split(sep).pop()}-evil${sep}x.sql` };
+    await expect(resolveSideInput(side, baseDir)).rejects.toThrow(SqlFilePathEscapesBaseDirError);
+  });
+});
+
+describe("T-35a: buildFetchAllRowsSql", () => {
+  function fixtureConnector(): FixtureConnector {
+    return new FixtureConnector("sqlserver-customer", "source");
+  }
+
+  it("is byte-for-byte unchanged for table-kind with no where", async () => {
+    const connector = fixtureConnector();
+    const side: ParitySide = { kind: "table", connection: "c", object: "customer_source" };
+    const sql = await buildFetchAllRowsSql(connector, side);
+    expect(sql).toBe(`SELECT * FROM ${connector.quoteIdentifier("customer_source")}`);
+  });
+
+  it("is byte-for-byte unchanged for table-kind with a where clause", async () => {
+    const connector = fixtureConnector();
+    const side: ParitySide = { kind: "table", connection: "c", object: "customer_source", where: "CustomerID > 1" };
+    const sql = await buildFetchAllRowsSql(connector, side);
+    expect(sql).toBe(`SELECT * FROM ${connector.quoteIdentifier("customer_source")} WHERE CustomerID > 1`);
+  });
+
+  it("subquery-wraps query-kind SQL", async () => {
+    const connector = fixtureConnector();
+    const side: ParitySide = { kind: "query", connection: "c", sql: "SELECT * FROM customer_source" };
+    const sql = await buildFetchAllRowsSql(connector, side);
+    expect(sql).toBe("SELECT * FROM (SELECT * FROM customer_source) AS row_level_subquery");
+  });
+
+  it("subquery-wraps sqlFile-kind SQL after reading the file", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paritylens-t35a-fars-"));
+    try {
+      await writeFile(join(dir, "q.sql"), "SELECT * FROM customer_source;", "utf8");
+      const connector = fixtureConnector();
+      const side: ParitySide = { kind: "sqlFile", connection: "c", filePath: "q.sql" };
+      const sql = await buildFetchAllRowsSql(connector, side, dir);
+      expect(sql).toBe("SELECT * FROM (SELECT * FROM customer_source) AS row_level_subquery");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
+describe("T-35a: runComparison end-to-end with query-kind and sqlFile-kind sides", () => {
+  function fixtureRegistryForT35a(): ConnectorRegistry {
+    const registry = new Map();
+    registry.set("legacy-sql-prod", new FixtureConnector("sqlserver-customer", "source"));
+    registry.set("snowflake-analytics", new FixtureConnector("sqlserver-customer", "target"));
+    return registry;
+  }
+
+  it("runs schema + row-count checks end-to-end against a query-kind source and target", async () => {
+    const yaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  kind: query
+  sql: "SELECT * FROM customer_source"
+target:
+  connection: snowflake-analytics
+  kind: query
+  sql: "SELECT * FROM customer_target"
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+  row_count:
+    enabled: true
+`;
+    const definition = parseDefinition(yaml);
+    const result = await runComparison(definition, fixtureRegistryForT35a());
+
+    // Same known fixture facts as the acceptance-criterion-1 / row-count
+    // tests above, now reached via query-kind input instead of table-kind.
+    const creditLimitFinding = result.schemaDifferences.find(
+      (f) => f.columnName === "CreditLimit" && f.kind === "missing-in-target"
+    );
+    expect(creditLimitFinding).toBeDefined();
+    expect(result.rowCounts).toEqual({ source: 6, target: 7, difference: 1 });
+  });
+
+  it("runs schema checks end-to-end against a sqlFile-kind source and target", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paritylens-t35a-e2e-"));
+    try {
+      await writeFile(join(dir, "source.sql"), "SELECT * FROM customer_source", "utf8");
+      await writeFile(join(dir, "target.sql"), "SELECT * FROM customer_target", "utf8");
+
+      const yaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  kind: sqlFile
+  filePath: source.sql
+target:
+  connection: snowflake-analytics
+  kind: sqlFile
+  filePath: target.sql
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+      const definition = parseDefinition(yaml);
+      const result = await runComparison(definition, fixtureRegistryForT35a(), dir);
+
+      const creditLimitFinding = result.schemaDifferences.find(
+        (f) => f.columnName === "CreditLimit" && f.kind === "missing-in-target"
+      );
+      expect(creditLimitFinding).toBeDefined();
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a sqlFile-kind source whose filePath escapes the supplied baseDir, before any connector call", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "paritylens-t35a-escape-"));
+    try {
+      const yaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  kind: sqlFile
+  filePath: "../../etc/passwd"
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+      const definition = parseDefinition(yaml);
+      await expect(runComparison(definition, fixtureRegistryForT35a(), dir)).rejects.toThrow(
+        SqlFilePathEscapesBaseDirError
+      );
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

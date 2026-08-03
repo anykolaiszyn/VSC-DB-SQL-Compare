@@ -35,15 +35,49 @@ export class InvalidDefinitionError extends Error {
  * object/query/SQL-file to read from that connection, per Idea Prompt.md
  * section 7's `source`/`target` shape. `connection` is always a bare
  * string naming a connection profile -- never an inline object with
- * connection details -- per DESIGN-SPEC.md's security model. */
-export interface ParitySide {
-  /** Named connection profile reference (never inline connection details). */
-  connection: string;
-  /** Table/view/object reference, e.g. "dbo.Customer". */
-  object: string;
-  /** Optional row filter applied on this side only. */
-  where?: string;
-}
+ * connection details -- per DESIGN-SPEC.md's security model.
+ *
+ * T-35a: extended to a discriminated union mirroring `QueryInput`'s three
+ * kinds (`@paritylens/shared`'s `table`/`query`/`sqlFile`), since
+ * `ParitySide` had only ever supported `table`-kind input even though
+ * `QueryInput` has always had all three. `where` is only meaningful for
+ * `table`-kind input -- `query`/`sqlFile`-kind input has no separate WHERE
+ * clause; a row filter for those kinds belongs inside the `sql`/file
+ * contents itself (T-35b's already-settled design, per TASK-BRIEF.md).
+ *
+ * Backward compatibility: an **absent** `kind` field on a parsed
+ * `source`/`target` YAML block defaults to `table`-kind (see `parseSide`
+ * below) -- every pre-T-35a `.paritylens` document and test fixture has no
+ * `kind` field at all, and must keep parsing to an identical `ParitySide`
+ * value (now carrying an explicit `kind: "table"`) as it did before this
+ * union existed. */
+export type ParitySide =
+  | {
+      kind: "table";
+      /** Named connection profile reference (never inline connection details). */
+      connection: string;
+      /** Table/view/object reference, e.g. "dbo.Customer". */
+      object: string;
+      /** Optional row filter applied on this side only. */
+      where?: string;
+    }
+  | {
+      kind: "query";
+      /** Named connection profile reference (never inline connection details). */
+      connection: string;
+      /** Raw SQL executed as this side's input. */
+      sql: string;
+    }
+  | {
+      kind: "sqlFile";
+      /** Named connection profile reference (never inline connection details). */
+      connection: string;
+      /** Path to a `.sql` file whose contents become this side's input,
+       * resolved relative to a caller-supplied base directory by the
+       * planner (`resolveSideInput`, T-35a) -- never read directly by
+       * `parseDefinition`, which only records the path string. */
+      filePath: string;
+    };
 
 /** A single column mapping entry. A plain `source` -> `target` name
  * mapping (Idea Prompt.md section 3's basic case), or a derived mapping
@@ -197,7 +231,15 @@ function assertNoCredentialFields(value: unknown, path: string): void {
 
 /** Validates that a `source`/`target` value is a well-formed `ParitySide`:
  * a plain object whose `connection` is a bare string (never an inline
- * connection object) and whose `object` is a non-empty string. */
+ * connection object), dispatching on an optional `kind` field to one of
+ * `table`/`query`/`sqlFile` (T-35a). An **absent** `kind` field defaults to
+ * `table`-kind -- the only kind that existed before T-35a -- so every
+ * pre-T-35a definition (no `kind` field at all) parses to an identical
+ * `ParitySide` shape as before (now carrying an explicit `kind: "table"`).
+ * Each kind's required fields are validated strictly: a field that belongs
+ * to a different kind (e.g. `object` on a `kind: "query"` side) is rejected
+ * rather than silently ignored, so a definition author's mistake surfaces
+ * immediately instead of being dropped. */
 function parseSide(value: unknown, label: "source" | "target"): ParitySide {
   if (value === null || typeof value !== "object" || Array.isArray(value)) {
     throw new InvalidDefinitionError(`"${label}" must be an object with "connection" and "object" fields.`);
@@ -214,6 +256,63 @@ function parseSide(value: unknown, label: "source" | "target"): ParitySide {
     );
   }
 
+  const rawKind = obj["kind"];
+  if (rawKind !== undefined && rawKind !== "table" && rawKind !== "query" && rawKind !== "sqlFile") {
+    throw new InvalidDefinitionError(
+      `"${label}.kind" must be one of "table", "query", "sqlFile" when present -- got ${JSON.stringify(rawKind)}.`
+    );
+  }
+  // Backward compatibility (T-35a): an absent `kind` field means table-kind,
+  // matching every definition parsed before this union existed.
+  const kind = rawKind ?? "table";
+
+  if (kind === "query") {
+    if (obj["object"] !== undefined) {
+      throw new InvalidDefinitionError(`"${label}.object" is not allowed when "${label}.kind" is "query".`);
+    }
+    if (obj["where"] !== undefined) {
+      throw new InvalidDefinitionError(
+        `"${label}.where" is not allowed when "${label}.kind" is "query" -- put the row filter inside "${label}.sql" instead.`
+      );
+    }
+    if (obj["filePath"] !== undefined) {
+      throw new InvalidDefinitionError(`"${label}.filePath" is not allowed when "${label}.kind" is "query".`);
+    }
+    const sql = obj["sql"];
+    if (typeof sql !== "string" || sql.trim() === "") {
+      throw new InvalidDefinitionError(`"${label}.sql" is required and must be a non-empty string when "${label}.kind" is "query".`);
+    }
+    return { kind: "query", connection, sql };
+  }
+
+  if (kind === "sqlFile") {
+    if (obj["object"] !== undefined) {
+      throw new InvalidDefinitionError(`"${label}.object" is not allowed when "${label}.kind" is "sqlFile".`);
+    }
+    if (obj["where"] !== undefined) {
+      throw new InvalidDefinitionError(
+        `"${label}.where" is not allowed when "${label}.kind" is "sqlFile" -- put the row filter inside the SQL file's contents instead.`
+      );
+    }
+    if (obj["sql"] !== undefined) {
+      throw new InvalidDefinitionError(`"${label}.sql" is not allowed when "${label}.kind" is "sqlFile".`);
+    }
+    const filePath = obj["filePath"];
+    if (typeof filePath !== "string" || filePath.trim() === "") {
+      throw new InvalidDefinitionError(
+        `"${label}.filePath" is required and must be a non-empty string when "${label}.kind" is "sqlFile".`
+      );
+    }
+    return { kind: "sqlFile", connection, filePath };
+  }
+
+  // kind === "table" (explicit or defaulted).
+  if (obj["sql"] !== undefined) {
+    throw new InvalidDefinitionError(`"${label}.sql" is not allowed when "${label}.kind" is "table".`);
+  }
+  if (obj["filePath"] !== undefined) {
+    throw new InvalidDefinitionError(`"${label}.filePath" is not allowed when "${label}.kind" is "table".`);
+  }
   const object = obj["object"];
   if (typeof object !== "string" || object.trim() === "") {
     throw new InvalidDefinitionError(`"${label}.object" is required and must be a non-empty string.`);
@@ -224,7 +323,7 @@ function parseSide(value: unknown, label: "source" | "target"): ParitySide {
     throw new InvalidDefinitionError(`"${label}.where" must be a string when present.`);
   }
 
-  return where === undefined ? { connection, object } : { connection, object, where };
+  return where === undefined ? { kind: "table", connection, object } : { kind: "table", connection, object, where };
 }
 
 function parseKeys(value: unknown): string[] {
