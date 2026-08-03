@@ -34,15 +34,26 @@ vi.mock("vscode", () => {
 
   const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
 
-  return { TreeItem, EventEmitter, TreeItemCollapsibleState };
+  class Uri {
+    private constructor(public readonly fsPath: string, public readonly path: string) {}
+    static file(fsPath: string): Uri {
+      return new Uri(fsPath, fsPath.replace(/\\/g, "/"));
+    }
+  }
+
+  return { TreeItem, EventEmitter, TreeItemCollapsibleState, Uri };
 });
 
 import {
   ParityTreeDataProvider,
   ParityTreeItem,
+  ParityComparisonTreeItem,
+  ParityRecentRunTreeItem,
   PARITY_SECTIONS,
   type ParitySectionDefinition
 } from "./parityTreeDataProvider";
+import type { RunSummary } from "../runHistory/runHistory";
+import * as vscode from "vscode";
 
 describe("ParityTreeDataProvider", () => {
   it("exposes exactly the three top-level sections from Idea Prompt.md section 6", () => {
@@ -60,7 +71,7 @@ describe("ParityTreeDataProvider", () => {
 
   it("getChildren() with no element returns the three top-level section nodes", () => {
     const provider = new ParityTreeDataProvider();
-    const children = provider.getChildren();
+    const children = provider.getChildren() as ParityTreeItem[];
 
     expect(children).toHaveLength(3);
     expect(children.every((c: ParityTreeItem) => c instanceof ParityTreeItem)).toBe(true);
@@ -73,7 +84,7 @@ describe("ParityTreeDataProvider", () => {
 
   it("getChildren() under a section node returns no children (empty-state provider)", () => {
     const provider = new ParityTreeDataProvider();
-    const [connectionsSection] = provider.getChildren();
+    const [connectionsSection] = provider.getChildren() as ParityTreeItem[];
     expect(connectionsSection).toBeDefined();
 
     const grandchildren = provider.getChildren(connectionsSection);
@@ -82,7 +93,7 @@ describe("ParityTreeDataProvider", () => {
 
   it("getTreeItem() returns the element itself", () => {
     const provider = new ParityTreeDataProvider();
-    const [section] = provider.getChildren();
+    const [section] = provider.getChildren() as ParityTreeItem[];
     expect(section).toBeDefined();
     expect(provider.getTreeItem(section as InstanceType<typeof ParityTreeItem>)).toBe(section);
   });
@@ -95,5 +106,112 @@ describe("ParityTreeDataProvider", () => {
     provider.refresh();
 
     expect(handler).toHaveBeenCalledTimes(1);
+  });
+
+  it("getChildren() under 'connections' still returns no children when deps are supplied (out of T-33 scope)", async () => {
+    const provider = new ParityTreeDataProvider({
+      findComparisonFiles: vi.fn(async () => []),
+      listRecentRuns: vi.fn(async () => []),
+      runComparisonCommandId: "paritylens.runComparison",
+      reopenRunCommandId: "paritylens.reopenRun"
+    });
+    const [connectionsSection] = provider.getChildren() as ParityTreeItem[];
+    expect(connectionsSection?.section.id).toBe("connections");
+
+    const grandchildren = await provider.getChildren(connectionsSection);
+    expect(grandchildren).toEqual([]);
+  });
+
+  describe("Comparisons section (T-33)", () => {
+    it("returns one ParityComparisonTreeItem per .paritylens file the injected findComparisonFiles dependency discovers", async () => {
+      const uris = [vscode.Uri.file("/workspace/customer-migration.paritylens"), vscode.Uri.file("/workspace/orders.paritylens")];
+      const findComparisonFiles = vi.fn(async () => uris);
+      const provider = new ParityTreeDataProvider({
+        findComparisonFiles,
+        listRecentRuns: vi.fn(async () => []),
+        runComparisonCommandId: "paritylens.runComparison",
+        reopenRunCommandId: "paritylens.reopenRun"
+      });
+
+      const [, comparisonsSection] = provider.getChildren() as ParityTreeItem[];
+      expect(comparisonsSection?.section.id).toBe("comparisons");
+
+      const children = (await provider.getChildren(comparisonsSection)) as ParityComparisonTreeItem[];
+
+      expect(findComparisonFiles).toHaveBeenCalledTimes(1);
+      expect(children).toHaveLength(2);
+      expect(children.every((c) => c instanceof ParityComparisonTreeItem)).toBe(true);
+      expect(children.map((c) => c.uri.path)).toEqual([
+        "/workspace/customer-migration.paritylens",
+        "/workspace/orders.paritylens"
+      ]);
+    });
+
+    it("each comparison node's command invokes paritylens.runComparison with the file's URI as an argument", async () => {
+      const uri = vscode.Uri.file("/workspace/customer-migration.paritylens");
+      const provider = new ParityTreeDataProvider({
+        findComparisonFiles: vi.fn(async () => [uri]),
+        listRecentRuns: vi.fn(async () => []),
+        runComparisonCommandId: "paritylens.runComparison",
+        reopenRunCommandId: "paritylens.reopenRun"
+      });
+
+      const [, comparisonsSection] = provider.getChildren() as ParityTreeItem[];
+      const [node] = (await provider.getChildren(comparisonsSection)) as ParityComparisonTreeItem[];
+
+      expect(node?.command?.command).toBe("paritylens.runComparison");
+      expect(node?.command?.arguments).toEqual([uri]);
+    });
+
+    it("without injected deps (empty-state provider), the Comparisons section still returns no children", async () => {
+      const provider = new ParityTreeDataProvider();
+      const [, comparisonsSection] = provider.getChildren() as ParityTreeItem[];
+      const children = await provider.getChildren(comparisonsSection);
+      expect(children).toEqual([]);
+    });
+  });
+
+  describe("Recent Runs section (T-33)", () => {
+    const RUNS: RunSummary[] = [
+      { id: "run-b", name: "second-run", timestamp: "2026-08-02T10:00:00.000Z" },
+      { id: "run-a", name: "first-run", timestamp: "2026-08-01T09:00:00.000Z" }
+    ];
+
+    it("returns one ParityRecentRunTreeItem per RunSummary from the injected listRecentRuns dependency, in the order given", async () => {
+      const listRecentRuns = vi.fn(async () => RUNS);
+      const provider = new ParityTreeDataProvider({
+        findComparisonFiles: vi.fn(async () => []),
+        listRecentRuns,
+        runComparisonCommandId: "paritylens.runComparison",
+        reopenRunCommandId: "paritylens.reopenRun"
+      });
+
+      const [, , recentRunsSection] = provider.getChildren() as ParityTreeItem[];
+      expect(recentRunsSection?.section.id).toBe("recentRuns");
+
+      const children = (await provider.getChildren(recentRunsSection)) as ParityRecentRunTreeItem[];
+
+      expect(listRecentRuns).toHaveBeenCalledTimes(1);
+      expect(children).toHaveLength(2);
+      expect(children.every((c) => c instanceof ParityRecentRunTreeItem)).toBe(true);
+      expect(children.map((c) => c.run.id)).toEqual(["run-b", "run-a"]);
+      expect(children[0]?.label).toContain("second-run");
+      expect(children[0]?.label).toContain("2026-08-02T10:00:00.000Z");
+    });
+
+    it("each recent-run node's command invokes the reopen-run command with the run's id as the sole argument (not just plausible-looking label rendering)", async () => {
+      const provider = new ParityTreeDataProvider({
+        findComparisonFiles: vi.fn(async () => []),
+        listRecentRuns: vi.fn(async () => RUNS),
+        runComparisonCommandId: "paritylens.runComparison",
+        reopenRunCommandId: "paritylens.reopenRun"
+      });
+
+      const [, , recentRunsSection] = provider.getChildren() as ParityTreeItem[];
+      const [first] = (await provider.getChildren(recentRunsSection)) as ParityRecentRunTreeItem[];
+
+      expect(first?.command?.command).toBe("paritylens.reopenRun");
+      expect(first?.command?.arguments).toEqual(["run-b"]);
+    });
   });
 });

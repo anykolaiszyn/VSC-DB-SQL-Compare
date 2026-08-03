@@ -32,6 +32,7 @@ vi.mock("vscode", () => {
 
   const TreeItemCollapsibleState = { None: 0, Collapsed: 1, Expanded: 2 };
   const ViewColumn = { Active: -1 };
+  const StatusBarAlignment = { Left: 1, Right: 2 };
 
   const createTreeView = (viewId: string, options: unknown) => ({
     viewId,
@@ -60,14 +61,29 @@ vi.mock("vscode", () => {
   const showInformationMessage = vi.fn();
   const showErrorMessage = vi.fn();
 
+  // T-33: activate() now also constructs a status bar item
+  // (createParityStatusBarItem, T-11) and calls
+  // vscode.workspace.findFiles for the tree data provider's Comparisons
+  // section -- both need a mock surface for activate()'s own construction
+  // to succeed under plain Vitest (mirrors parityStatusBar.test.ts's own
+  // vscode mock for createStatusBarItem/StatusBarAlignment).
+  const createStatusBarItem = vi.fn(() => ({
+    text: "",
+    show: vi.fn(),
+    hide: vi.fn(),
+    dispose: vi.fn()
+  }));
+  const findFiles = vi.fn(async () => []);
+
   return {
     TreeItem,
     EventEmitter,
     TreeItemCollapsibleState,
     ViewColumn,
-    window: { createTreeView, createWebviewPanel, showInformationMessage, showErrorMessage },
+    StatusBarAlignment,
+    window: { createTreeView, createWebviewPanel, showInformationMessage, showErrorMessage, createStatusBarItem },
     commands: { registerCommand },
-    workspace: { workspaceFolders: undefined }
+    workspace: { workspaceFolders: undefined, findFiles }
   };
 });
 
@@ -112,7 +128,7 @@ describe("activate", () => {
     const context = createMockExtensionContext();
 
     const { treeDataProvider } = activate(context as never);
-    const children = treeDataProvider.getChildren();
+    const children = treeDataProvider.getChildren() as ParityTreeItem[];
 
     expect(children.map((c: ParityTreeItem) => c.section.label)).toEqual([
       "Connections",
@@ -128,6 +144,33 @@ describe("activate", () => {
 
     expect(secretStore).toBeInstanceOf(SecretStore);
     expect(context.subscriptions).toContain(treeView);
+  });
+
+  it("constructs a status bar item once via createParityStatusBarItem and registers it for disposal (T-33 Scope item 6)", () => {
+    const context = createMockExtensionContext();
+    const createStatusBarItemSpy = vi.spyOn(vscode.window, "createStatusBarItem");
+
+    activate(context as never);
+
+    expect(createStatusBarItemSpy).toHaveBeenCalledTimes(1);
+    // The status bar item's own dispose() must be reachable through one of
+    // context.subscriptions' disposables, per "add it to
+    // context.subscriptions for disposal — the same wiring pattern already
+    // used for connectionProfileStore/secretStore."
+    const createdStatusBarItem = createStatusBarItemSpy.mock.results[0]?.value as { dispose: ReturnType<typeof vi.fn> };
+    for (const subscription of context.subscriptions) {
+      subscription.dispose();
+    }
+    expect(createdStatusBarItem.dispose).toHaveBeenCalled();
+  });
+
+  it("registers the paritylens.reopenRun command (T-33)", () => {
+    const context = createMockExtensionContext();
+    const registerCommandSpy = vi.spyOn(vscode.commands, "registerCommand");
+
+    activate(context as never);
+
+    expect(registerCommandSpy).toHaveBeenCalledWith("paritylens.reopenRun", expect.any(Function));
   });
 });
 
