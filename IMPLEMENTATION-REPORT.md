@@ -1,71 +1,166 @@
-# ParityLens — Implementation Report T-32
+# ParityLens — Implementation Report T-33
 
 ## Status and objective
 
-- **Status:** COMPLETE (implementation only — pending independent review, per `AGENTS.md`: "No agent may substitute its own approval for the human approval gates.")
-- **Objective:** Comparison-authoring scaffold: a `paritylens.newComparison` command that walks the user through picking source/target connections, an object name and `where` per side, key column(s), and writes a valid, minimal `.paritylens` YAML file into the current workspace — so users stop hand-writing YAML from a blank file, per `TASK-BRIEF.md`. Explicitly not the full custom editor/webview from `DESIGN-SPEC.md`'s Extension Layer row — a scaffolding wizard only, per `TASK-BRIEF.md`'s own wording.
+- **Status:** COMPLETE (implementation and evidence only — not
+  reviewed/approved; see Recommended next step)
+- **Objective:** Wire the "DATA PARITY" sidebar's `Comparisons` and
+  `Recent Runs` tree sections to real data, wire `parityStatusBar.ts` to
+  show `Parity: N passed | N warnings | N failed` after a run, and (per
+  the brief's explicitly authorized narrow amendment) make
+  `runComparisonCommand` actually call T-31's `persistRun` so `Recent
+  Runs` is genuinely populatable — quoting `TASK-BRIEF.md`'s Objective:
+  "`Recent Runs` is meaningless while nothing ever calls T-31's
+  `persistRun`... Making `Recent Runs` genuinely populatable therefore
+  requires one narrow, additive call to `persistRun` inside that existing
+  command flow."
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/src/authoring/buildComparisonYaml.ts` | New | Pure, `vscode`-free `buildComparisonYaml(answers)` builder producing a minimal `.paritylens` YAML document (`version`, `name`, `source`, `target`, `keys` only), per Scope item 1. |
-| `packages/extension/src/authoring/buildComparisonYaml.test.ts` | New | Direct unit tests of the pure builder: round-trip through `parseDefinition`, optional `where` inclusion/omission, composite keys, YAML-significant-character quoting, and the credential-shaped-connection-name adversarial case the brief's Handoff note calls out. |
-| `packages/extension/src/authoring/newComparisonWizard.ts` | New | `runNewComparisonWizard(deps)` (interactive collection, injected `showQuickPick`/`showInputBox`-style callbacks) and `runNewComparisonCommand(deps)` (wizard + file-name prompt + never-overwrite check + round-trip self-validation + write), per Scope items 2, 4, 5. |
-| `packages/extension/src/authoring/newComparisonWizard.test.ts` | New | Red/green evidence: full successful wizard run with round-trip assertion on the parsed shape, cancel-at-every-step coverage, never-overwrite-existing-file coverage, and the credential-shaped-input adversarial case. |
-| `packages/extension/src/activation/activate.ts` | Modified (additive only) | Adds `NEW_COMPARISON_COMMAND_ID` constant, `registerNewComparisonCommand` (wires `runNewComparisonCommand` against the live `vscode`/`node:fs` APIs), and one new `context.subscriptions.push(...)` call in `activate()`. No existing command handler (`runComparisonCommand`/`addConnectionCommand`/`editConnectionCommand`/`deleteConnectionCommand`) or its registration was touched. |
-| `packages/extension/package.json` | Modified (additive only) | One new entry appended to `contributes.commands` for `paritylens.newComparison`; no existing entry touched. |
-| `IMPLEMENTATION-REPORT.md` | Overwritten | This report, per this kit's per-task pattern (previous content was T-31's report, already reconciled). |
+| `packages/extension/src/views/parityTreeDataProvider.ts` | `ParityTreeDataProvider` now takes an optional `ParityTreeDataProviderDeps` constructor argument (`findComparisonFiles`, `listRecentRuns`, `runComparisonCommandId`, `reopenRunCommandId`). `getChildren` populates `Comparisons` with one `ParityComparisonTreeItem` per discovered `.paritylens` file (command = `paritylens.runComparison`, arg = file URI) and `Recent Runs` with one `ParityRecentRunTreeItem` per `RunSummary` (command = reopen-run command id, arg = run id). `getChildren` return type widened to `TreeItem[] \| Promise<TreeItem[]>` (sync for the top-level call, async for section children) — `TreeDataProvider<T>.getChildren`'s own contract (`ProviderResult<T>`) permits this. | Brief Scope items 1–3 |
+| `packages/extension/src/views/parityTreeDataProvider.test.ts` | Added `Uri` to the mocked `vscode` module; added test coverage for both new sections (file discovery → tree items, run summaries → tree items, command/argument correctness on click, empty-state behavior with no deps); updated 3 pre-existing synchronous `getChildren()` call sites to cast `as ParityTreeItem[]` since the return type is now a union. | Red/green evidence for Scope items 1–3 |
+| `packages/extension/src/activation/activate.ts` | **Amendment** (brief-authorized, Objective section): `runComparisonCommand`'s `deps` gained two new **typed-optional** fields, `resolveRunHistoryRoot` and `statusBarItem`, following the existing `connectionProfileStore`/`secretStore` optional-with-no-op-absent-state pattern. After a successful `runComparison` call and before `showResultsWebview`, the function now (a) resolves a safe output root and calls `persistRun`, catching and surfacing any failure via `showErrorMessage` without throwing, and (b) calls `statusBarItem.updateFromResult(result)` + `.show()` if supplied. Added `registerReopenRunCommand` (`paritylens.reopenRun`) which loads a run via `loadRun` and reopens it via `showResultsWebview`. Added `resolveRunHistoryRoot` helper (first workspace folder + `.paritylens/runs` convention). `activate()` now constructs the status bar item once via `createParityStatusBarItem`, registers it for disposal, builds `ParityTreeDataProvider`'s real deps (backed by `vscode.workspace.findFiles`/`listRecentRuns`), passes the status bar item into `registerRunComparisonCommand`, and registers `paritylens.reopenRun`. No change to parse/registry-resolution/error-handling logic in `runComparisonCommand` itself. | Brief Scope items 5–6 |
+| `packages/extension/src/activation/activate.test.ts` | Extended the mocked `vscode` module with `StatusBarAlignment`, `window.createStatusBarItem`, `workspace.findFiles` (needed because `activate()` now constructs these at call time). Added tests: status bar constructed once and disposed via `context.subscriptions`; `paritylens.reopenRun` registered. Updated 1 pre-existing synchronous `getChildren()` call site to cast `as ParityTreeItem[]`. | Companion test file for the owned `activate.ts`; needed for green-state evidence of Scope item 6 |
+| `packages/extension/src/activation/runComparisonCommand.test.ts` | Added a new `describe` block covering: `persistRun` is actually called (verified via `listRecentRuns` reading the same temp root back, red-state-first — see below); status bar `updateFromResult`/`.show()` called with the run's real result, text matches `formatParitySummary`; `showResultsWebview`/`createWebviewPanel` still called when `resolveRunHistoryRoot` returns `undefined` (no workspace open) or `persistRun` itself throws (unwritable root) — i.e. persistence failure never blocks the results webview. | Green-state evidence required by the brief |
 
-No files outside this list were touched. `packages/engine/**` (including `definition.ts`/`parseDefinition`) and `packages/extension/src/connections/**` are untouched, per the brief's Prohibited Changes section.
+No changes to `packages/engine/**`, `packages/extension/src/runHistory/**`,
+`packages/extension/src/connections/**`, `packages/extension/src/authoring/**`,
+or `packages/extension/src/statusbar/parityStatusBar.ts` (confirmed via
+`git diff --stat` — zero diff on that file).
 
 ## Behavior and interfaces
 
 - **Behavior delivered:**
-  - `buildComparisonYaml(answers: NewComparisonAnswers): string` renders a minimal `.paritylens` document: `version: 1`, `name`, `source.connection`/`source.object`/`source.where?`, `target.connection`/`target.object`/`target.where?`, `keys` (one or more). Every user-supplied string value is emitted as an explicit double-quoted YAML scalar (backslash/quote/CR/LF-escaped) rather than left unquoted, so arbitrary input (including embedded `:`, `#`, or newlines) round-trips safely and a connection "name" can never be interpreted as a nested mapping.
-  - `runNewComparisonWizard(deps)` prompts in order: comparison name → source connection (quick pick: saved `ConnectionProfile` names first, then the three fixture pair names `sqlserver-customer`/`snowflake-orders`/`postgres-products`, de-duplicated) → source object/where → target connection → target object/where → key column(s) (comma-separated, split/trimmed, empty entries dropped). Any step's callback resolving `undefined` aborts the whole flow immediately, returning `undefined` — no later step runs.
-  - `runNewComparisonCommand(deps)` runs the wizard, then prompts for a target file name, resolves it to an absolute path via injected `resolveTargetPath`, checks `deps.fileExists` (aborts with an error message if a file is already there — no auto-numbering/rename, per the brief's stated acceptable minimum), builds the YAML, validates it round-trips through `parseDefinition` (uncaught — a throw here is the builder's own bug per the brief, not a user-facing error path), writes it via `deps.writeFile`, and reports success.
-  - `registerNewComparisonCommand` in `activate.ts` wires the above against real `vscode.window.showInputBox`/`showQuickPick`/`showInformationMessage`/`showErrorMessage`, the real `ConnectionProfileStore`, and `node:fs/promises` (`stat` for existence, `writeFile` for the write) with `resolveTargetPath` joining the entered file name against the first open workspace folder (mirroring `registerRunComparisonCommand`'s existing `defaultUri` fallback pattern), falling back to the bare file name if no workspace folder is open.
-- **Interfaces consumed:**
-  - `ConnectionProfile`, `ConnectionProfileStore` (T-29) — read-only (`.list()` only; no `.add`/`.update`/`.delete` call anywhere in the new code).
-  - `parseDefinition` (T-08, `@paritylens/engine`) — used only for the scaffold's own round-trip self-validation before writing; parsing behavior itself untouched.
-- **Interfaces produced:**
-  - `paritylens.newComparison` command (registered in `activate.ts`, declared in `package.json`'s `contributes.commands`).
-  - `buildComparisonYaml(answers: NewComparisonAnswers): string` and `NewComparisonAnswers` (exported from `buildComparisonYaml.ts`).
-  - `runNewComparisonWizard(deps: NewComparisonWizardDeps): Promise<NewComparisonAnswers | undefined>` and `runNewComparisonCommand(deps: NewComparisonWizardDeps): Promise<string | undefined>` (exported from `newComparisonWizard.ts`), both directly unit-testable without `@vscode/test-electron`.
+  - Opening the "Comparisons" tree section in a workspace with
+    `.paritylens` files now lists one node per file; clicking it invokes
+    `paritylens.runComparison` with the file's URI as a command argument
+    (the existing open-dialog flow is unmodified and still runs if the
+    command doesn't consume the argument — per the brief's explicit
+    fallback allowance).
+  - Opening "Recent Runs" lists one node per persisted run
+    (`name — timestamp`, most-recent-first, as `listRecentRuns` already
+    sorts); clicking it invokes the new `paritylens.reopenRun` command
+    with the run's `id`, which loads the full result via `loadRun` and
+    reopens it via `showResultsWebview`.
+  - After every successful `paritylens.runComparison` run, the run is
+    persisted (`persistRun`) under `<first workspace folder>/.paritylens/runs`,
+    and the status bar updates to `Parity: N passed | N warnings | N failed`
+    and becomes visible.
+  - A persistence failure (no workspace open, or an I/O error) is reported
+    via a distinct `showErrorMessage` call but never prevents the run's
+    results from displaying — the outer `catch` (which reports parse/
+    connection failures as `undefined`) is untouched and not triggered by
+    a persistence failure.
+- **Interfaces consumed:** `listRecentRuns`, `loadRun`, `RunSummary`,
+  `persistRun` (`packages/extension/src/runHistory/runHistory.ts`, T-31,
+  read-only except for the one additive `persistRun` call point);
+  `showResultsWebview` (T-11/T-16); `formatParitySummary`,
+  `createParityStatusBarItem`, `ParityStatusBarItem` (T-11, consumed
+  as-is, unmodified); `vscode.workspace.findFiles` (only via the injected
+  `findComparisonFiles` dependency, never called directly inside
+  `parityTreeDataProvider.ts`).
+- **Interfaces produced:** `ParityTreeDataProviderDeps`,
+  `ParityComparisonTreeItem`, `ParityRecentRunTreeItem` (all in
+  `parityTreeDataProvider.ts`); `REOPEN_RUN_COMMAND_ID` and
+  `resolveRunHistoryRoot`'s underlying `.paritylens/runs` convention
+  (`activate.ts`); two new optional fields on `runComparisonCommand`'s
+  `deps` parameter (`resolveRunHistoryRoot`, `statusBarItem`).
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0. `Test Files 26 passed \| 2 skipped (28)`, `Tests 432 passed \| 27 skipped (459)`. | Captured in this session before any edit. |
-| Red state | `npx vitest run packages/extension/src/authoring` (test files present, `buildComparisonYaml.ts`/`newComparisonWizard.ts` temporarily removed after full implementation, to capture genuine red-state evidence against the final test files) | Exit 1. Both suites fail: `Error: Cannot find module './buildComparisonYaml' imported from '.../buildComparisonYaml.test.ts'` and `Error: Cannot find module './newComparisonWizard' imported from '.../newComparisonWizard.test.ts'` — fails for the exact reason the brief predicts ("module/command does not exist"). | Captured in this session; source files restored immediately after via file copy, confirmed identical by re-running the focused suite green (below). |
-| Focused green state | `npx vitest run packages/extension/src/authoring` | Exit 0. `buildComparisonYaml.test.ts (5 tests)`, `newComparisonWizard.test.ts (13 tests)` — `Test Files 2 passed (2)`, `Tests 18 passed (18)`. | Captured in this session after restoring/finalizing the implementation files. |
-| Full verification | `npm run verify` | Exit 0. typecheck clean, lint clean, `Test Files 28 passed \| 2 skipped (30)`, `Tests 450 passed \| 27 skipped (477)` — 18 more passing tests than baseline (exactly this task's new tests), same 2 skipped files (Postgres/SQL Server integration tests requiring env vars not set here), no regressions. | Captured in this session after full implementation. |
-
-Each of the brief's Green-state requirements is covered by a specific test in `newComparisonWizard.test.ts`:
-1. *"the test above passes"* — `runNewComparisonCommand > writes a scaffolded file whose contents parseDefinition accepts (round-trips with the actual answers)`, asserting on the actual parsed `ParityDefinition` shape (`version`, `name`, `source`, `target`, `keys` fields individually), not just "did not throw".
-2. *"a second test confirms an existing file at the target path is never overwritten"* — `runNewComparisonCommand > never overwrites an existing file at the target path -- aborts without writing`, seeding `existingFiles` with the target path and asserting `writeFile` was never called and an error message was shown.
-3. *"a third test confirms cancelling any step of the wizard ... aborts without writing a file"* — six dedicated cancel-path tests across `runNewComparisonWizard` (cancel at comparison name, source connection pick, source object, target connection pick, keys prompt, blank-keys validation) plus two more in `runNewComparisonCommand` (cancel partway through the wizard itself; cancel at the file-name prompt after a full wizard answer set) — all asserting `writeFile`/`answers` is `undefined`/never called.
+| Baseline green (pre-change) | `npm run verify` | Exit 0 — 450 passed, 27 skipped (30 files, 28 run) | captured in this session before any edits |
+| Red state 1 (tree sections) | `git stash push -- packages/extension/src/views/parityTreeDataProvider.ts && npx vitest run packages/extension/src/views/parityTreeDataProvider.test.ts` | 4 tests failed against the reverted (T-10 empty-state) provider: `expected undefined to be 'paritylens.runComparison'`, `expected "spy" to be called 1 times, but got 0 times`, `expected undefined to be 'paritylens.reopenRun'` — i.e. the old provider returns no children/commands for either section, exactly the brief's predicted red state | this session's transcript; `git stash pop` restored the implementation immediately after |
+| Red state 2 (persist/status-bar) | `git stash push -- packages/extension/src/activation/activate.ts && npx vitest run packages/extension/src/activation/runComparisonCommand.test.ts` | 3 of 8 tests failed against the reverted (T-30) `runComparisonCommand`: `expected [] to have a length of 1 but got +0` (persistRun never called, so `listRecentRuns` stays empty), and two `expected "spy" to be called ... Number of calls: 0` (status bar / persistence-failure message never sent) — exactly the brief's predicted red state ("nothing ever calls `persistRun`") | this session's transcript; `git stash pop` restored the implementation immediately after |
+| Focused green state (tree provider) | `npx vitest run packages/extension/src/views/parityTreeDataProvider.test.ts` | Exit 0 — 11 tests passed (was 5 before this task) | this session's transcript |
+| Focused green state (persist/status-bar) | `npx vitest run packages/extension/src/activation/runComparisonCommand.test.ts` | Exit 0 — 8 tests passed (was 4 before this task) | this session's transcript |
+| Focused green state (activate wiring) | `npx vitest run packages/extension/src/activation/activate.test.ts` | Exit 0 — 8 tests passed (was 6 before this task) | this session's transcript |
+| Full verification | `npm run verify` (`tsc -b --force` → `eslint .` → `vitest run`) | Exit 0 — typecheck clean, lint clean, **462 passed, 27 skipped** (30 files, 28 run; the 27 skipped are the pre-existing SQL Server/PostgreSQL integration tests requiring a docker container, unrelated to this task) | this session's transcript |
 
 ## Assumptions and risks
 
-- **Assumptions:**
-  - Fixture pair names (`sqlserver-customer`, `snowflake-orders`, `postgres-products`) are hardcoded as string literals in `newComparisonWizard.ts` rather than imported from `packages/engine/fixtures/index.ts`'s `FIXTURE_SET_IDS`. That module is not re-exported through `@paritylens/engine`'s public entry point (`packages/engine/src/index.ts`), and importing it directly would require either widening that public entry point (an engine-layer change explicitly prohibited by this brief: "Do not modify `packages/engine/**`") or a deep cross-package import (a pattern this codebase does not use anywhere, per `packages/engine/src/index.ts`'s own header comment: "no file in this monorepo deep-imports across the @paritylens/engine package boundary"). `activate.ts`'s own pre-existing `buildFixtureRegistry`/`buildConnectorRegistry` already establish the identical hardcoded-literal precedent for the one fixture pair name they reference (`"sqlserver-customer"`). I extended this to list all three known fixture-set IDs (documented in `CLAUDE.md`'s Architecture section) rather than just the one `activate.ts` currently wires connectors for, since the brief's own wording ("the existing fixture pair names," plural) and `IMPLEMENTATION-PLAN.md`'s T-32 row wording ("or fixture names") both suggest the full set of named pairs, not just the one connector-registry currently resolves against. This is a judgment call flagged for reviewer confirmation: a connection name picked from `snowflake-orders`/`postgres-products` here would not currently resolve to a working connector if the resulting file were run via `paritylens.runComparison` (T-22/T-30's registry still only wires up `sqlserver-customer`) — the scaffold produces a syntactically/semantically valid `.paritylens` file either way (that's all `parseDefinition` checks), but a user picking one of the other two fixture names as a "fallback option" would hit a runtime surprise on `runComparison`, not on `newComparison` itself. Flagging this rather than silently narrowing the offered list to just `sqlserver-customer`.
-  - Key columns are collected via a single comma-separated input-box prompt (`"customer_id, region"` → `["customer_id", "region"]`) rather than one input box per key or a multi-select quick pick. The brief specifies "key column(s)" without dictating the UI shape for composite keys; a single delimited input box is the smallest reasonable mechanism that supports both the single-key and composite-key cases without an unbounded "add another key?" loop. Documented here as a judgment call.
-  - An empty/whitespace-only `where` answer (user pressed Enter without typing anything, as opposed to pressing Escape) is treated as "no where clause" and omitted from the built YAML, matching `ParitySide.where`'s optional-field shape. This mirrors `buildComparisonYaml`'s own blank-string handling and was judged more useful than writing a literal empty-string `where` field (which `parseDefinition` would accept as a valid but useless empty filter).
-  - A blank/comma-only keys answer (e.g. `" , , "`) is treated as a validation failure (`showErrorMessage`, abort) rather than silently producing an empty `keys` array — since `parseDefinition` itself requires `keys` to be a non-empty array, letting an empty array through to `buildComparisonYaml` would produce a file that fails the round-trip self-validation step, which per the brief's own framing ("this is a bug in the scaffold builder, not a user-facing error path") should never happen from a normal user flow; catching it earlier, as a user-facing validation error, was judged the correct place for this specific failure mode.
+- **Assumptions (judgment calls):**
+  - **Safe output root convention:** `<first open workspace folder>/.paritylens/runs`.
+    The brief explicitly invited "pick a straightforward convention and
+    document it" since nothing previously wired a concrete value. Chosen
+    to nest under a dedicated hidden subdirectory (matching `AGENTS.md`'s
+    "isolated output paths under a safe output root (e.g. a project-local
+    `work/` or `.paritylens/` directory)" language) rather than writing
+    JSON run records into the workspace root directly.
+  - **`paritylens.reopenRun` not added to `package.json`'s
+    `contributes.commands`:** `package.json` is outside this task's
+    declared "Files owned" list. A manifest entry is only required for
+    command-palette visibility/activation events, not for
+    `vscode.commands.registerCommand`/tree-item-triggered `command`
+    bindings to function — `paritylens.reopenRun` is only ever invoked
+    programmatically via a tree item click, never from the command
+    palette, so this omission does not affect the described behavior.
+    Flagged explicitly rather than silently expanding scope into
+    `package.json`; a reviewer/future task should confirm this is
+    acceptable or route a manifest update through its own brief.
+  - **Comparison tree item command argument:** `ParityComparisonTreeItem`
+    passes the file's `vscode.Uri` as a command argument to
+    `paritylens.runComparison`. Per the brief, `runComparisonCommand`'s
+    existing file-picking flow was *not* modified to consume this
+    argument (that would have exceeded the narrow persist-only
+    amendment) — today, clicking a comparison node still opens the
+    existing file-picker dialog rather than pre-selecting the clicked
+    file. This is the brief's own explicitly-allowed fallback ("if
+    ... does not accept a pre-selected URI ... it is acceptable for the
+    click to just invoke the command and let the existing open-dialog
+    flow run"). A future task could wire the argument through without
+    touching this task's files.
+  - **`getChildren`'s return type widened to a union
+    (`TreeItem[] | Promise<TreeItem[]>`)** rather than making it uniformly
+    `async`: this preserves the pre-existing synchronous contract for the
+    top-level (no-`element`) call, so the original "getChildren() with no
+    element returns the three top-level section nodes" test needed only a
+    type-level cast, not a behavioral change. `vscode.TreeDataProvider<T>.getChildren`'s
+    own declared return type (`ProviderResult<T>` = `T[] | undefined |
+    Thenable<T[] | undefined>`) explicitly permits either shape per call.
 - **Risks or limitations:**
-  - `registerNewComparisonCommand`'s deps object is cast `as never` at the `runNewComparisonCommand(...)` call site in `activate.ts`, matching the exact same pattern `buildConnectionCommandDeps()`'s callers already use for `addConnectionCommand`/`editConnectionCommand`/`deleteConnectionCommand` (`connectionCommands.ts`'s deps also use `Promise<string | undefined>`-shaped callbacks against `vscode.window.showInputBox`'s real `Thenable`-returning signature, which doesn't structurally satisfy `Promise` without an escape hatch). This is disclosed as a pre-existing codebase pattern being followed, not a new one introduced by this task.
-  - `runNewComparisonCommand`'s never-overwrite check (`deps.fileExists`) and the actual `deps.writeFile` call are not atomic — a theoretical TOCTOU race exists if another process creates the target file between the check and the write. This is the same class of limitation any check-then-write flow without OS-level exclusive-create has; the brief's own stated acceptable minimum ("aborting cleanly is an acceptable minimum," no auto-numbering/rename scheme required) does not call for `O_EXCL`-style atomic creation, and no other file-writing code in this codebase (e.g. `writeExport.ts`) uses one either, so this was not introduced as a gap specific to this task.
-  - The `NewComparisonWizardDeps.showQuickPick`/`showInputBox` signatures are narrower than `vscode.window`'s real overloaded signatures (no `canPickMany`, no `ignoreFocusOut`, etc.) — sufficient for this task's scope, matching `ConnectionCommandDeps`'s existing precedent of a deliberately narrowed injected-dependency surface.
+  - The `resolveRunHistoryRoot`/`persistRun` failure path is currently
+    always surfaced via `showErrorMessage` (never silently skipped) — the
+    brief left this as "your call, document whichever." A user running
+    many comparisons with no workspace open will see a
+    `showErrorMessage` every time; this was judged more honest than
+    silent failure, but a reviewer may prefer a quieter default (e.g.
+    silent skip, or a single one-time notice).
+  - `ParityComparisonTreeItem`'s label is derived from `uri.path.split("/").pop()`
+    rather than a VS Code-native basename helper — this is a plain-string
+    operation matching the mocked-`vscode.Uri` test surface (no
+    `@vscode/test-electron` in this codebase's test setup, per every
+    existing test file's own header comment) rather than using
+    `vscode.workspace.asRelativePath` or similar, which would need a
+    richer mock. Functionally correct for both POSIX and (via `Uri.path`,
+    always forward-slash-normalized in real VS Code) Windows paths.
+  - `findComparisonFiles`'s glob (`"**/*.paritylens"`) is unbounded
+    workspace-wide; no exclude pattern (e.g. `node_modules`) was added,
+    matching the brief's silence on this detail. Unlikely to matter in
+    practice (`.paritylens` is this project's own extension) but flagged
+    for completeness.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** `f3388cc`
-- **Branch or workspace:** `task/T-32-comparison-authoring-scaffold`
+- **Commit:** `7cb46a312d9cd202076c28f6673ccdd54ac68df0` —
+  "T-33: wire tree view Comparisons/Recent Runs sections and status bar"
+- **Branch:** `task/T-33-tree-status-bar-wiring`
 
 ## Recommended next step
 
-Recommend independent review by a separate reviewer agent (not this implementer), per `AGENTS.md`'s "Every implementation task receives an independent review by a reviewer who did not author the task's change" and the brief's Handoff note, which specifically asks the reviewer to adversarially confirm: (1) the scaffolded YAML never contains a credential-shaped field under any answer combination — see `buildComparisonYaml.test.ts`'s and `newComparisonWizard.test.ts`'s dedicated tests feeding a deliberately credential-shaped string (`'password: hunter2\nsecret'` / `"password: hunter2"`) as a free-typed connection name and asserting the parsed `source.connection` is the literal string, not a nested mapping — but the reviewer should still independently verify `yamlQuotedString`'s escaping (`buildComparisonYaml.ts`) covers every YAML-significant character a real user could type; (2) an existing file at the target path is genuinely never silently overwritten under any code path, including a wizard interrupted partway and re-run — see the disclosed TOCTOU limitation above, and confirm the check-then-write ordering in `runNewComparisonCommand` is correct as written. Also worth independent judgment: the fixture-pair-name assumption disclosed above (all three names offered vs. only the one `activate.ts` currently resolves a real connector for). This report and its evidence do not constitute review or release approval.
+Independent review by a separate reviewer agent, per this project's
+operating contract (`AGENTS.md`: "Every implementation task receives an
+independent review by a reviewer who did not author the task's change").
+Per the brief's own Handoff note, the reviewer should adversarially
+confirm (1) clicking a listed comparison/recent-run item genuinely
+invokes the correct command and loads the correct result — not just that
+tree items render with plausible labels, and (2) the Scope-item-5
+amendment to `runComparisonCommand` is genuinely narrow (the diff above
+shows only the persist/status-bar block was inserted; no existing
+parse/registry/error-handling logic changed). This report does not
+constitute review or approval — no task in this codebase may be marked
+complete/approved by the agent that implemented it.
