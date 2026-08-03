@@ -9,7 +9,8 @@ import {
   FixtureConnector,
   InvalidDefinitionError,
   UnresolvedConnectionError,
-  type ConnectorRegistry
+  type ConnectorRegistry,
+  type ParityChecks
 } from "@paritylens/engine";
 import { ParityTreeDataProvider } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
@@ -23,6 +24,7 @@ import { runNewComparisonCommand } from "../authoring/newComparisonWizard";
 import { persistRun, loadRun, listRecentRuns } from "../runHistory/runHistory";
 import { createParityStatusBarItem, type ParityStatusBarItem } from "../statusbar/parityStatusBar";
 import { ComparisonEditorProvider, COMPARISON_EDITOR_VIEW_TYPE } from "../authoring/comparisonEditorProvider";
+import { ComparisonCodeLensProvider, NO_RUNS_YET_COMMAND_ID } from "../codelens/comparisonCodeLensProvider";
 
 /** View ID the tree data provider registers against (matches `package.json`'s `contributes.views`). */
 export const PARITY_TREE_VIEW_ID = "paritylens.dataParityView";
@@ -310,10 +312,37 @@ export async function runComparisonCommand(
      * holds for every actual caller this task controls.
      */
     confirmRun?: (queries: string[]) => Promise<boolean>;
+    /**
+     * T-39: an optional check-subset override for this single invocation
+     * only. When supplied (from a CodeLens "Run Profile"/"Run Schema
+     * Check" click — see `comparisonCodeLensProvider.ts`), it replaces
+     * the parsed `definition`'s `checks` **in memory only** before
+     * `planQueries`/`runComparison` are ever called: a shallow copy of
+     * `definition` is made with `checks` replaced by this value, so the
+     * original `definition` object (and, more importantly, `yamlText`/the
+     * on-disk `.paritylens` file) is never touched or written back. Both
+     * `planQueries` and `runComparison` already read `definition.checks.*`
+     * (see `planner.ts`/`planQueries.ts`), so passing the shallow-copied
+     * definition through requires no change to either engine function —
+     * per TASK-BRIEF.md T-39's "Prohibited changes" ("Do not modify
+     * planQueries or runComparison"). When absent (every existing caller,
+     * including command-palette invocation and this function's own
+     * pre-existing test files), the parsed definition's own `checks` are
+     * used exactly as before this parameter existed.
+     */
+    checksOverride?: ParityChecks;
   }
 ): Promise<ComparisonResult | undefined> {
   try {
-    const definition = parseDefinition(yamlText);
+    const parsedDefinition = parseDefinition(yamlText);
+    // T-39: apply the in-memory-only check-subset override, if supplied.
+    // A shallow copy is sufficient -- only the top-level `checks` field is
+    // ever replaced, every other field (source/target/keys/columnMapping/
+    // etc.) is reused unchanged by reference from `parsedDefinition`. This
+    // new `definition` object is what flows into `planQueries`/
+    // `runComparison` below; `yamlText`/`parsedDefinition` themselves are
+    // never mutated, and nothing here ever writes back to disk.
+    const definition = deps.checksOverride !== undefined ? { ...parsedDefinition, checks: deps.checksOverride } : parsedDefinition;
 
     const sourceProfile =
       deps.connectionProfileStore !== undefined
@@ -408,32 +437,57 @@ export async function runComparisonCommand(
  *
  * T-38: also passes `confirmRun` (see `createWebviewConfirmRun` below),
  * a real blocking confirmation callback backed by a new webview panel.
+ *
+ * T-39: the registered command handler now accepts an optional
+ * `vscode.Uri` argument. When supplied (e.g. a CodeLens click on an
+ * already-open `.paritylens` document — see `comparisonCodeLensProvider.ts`
+ * — or `ParityComparisonTreeItem`'s existing `arguments: [uri]`, which
+ * previously went unused by this zero-arg handler), `showOpenDialog` is
+ * skipped entirely and that file is read directly; when absent (e.g.
+ * command-palette invocation), behavior is byte-for-byte identical to
+ * before this change — same dialog, same filters, same fallback
+ * `defaultUri`. This is purely additive: no existing call path that
+ * invokes `paritylens.runComparison` with no arguments is affected.
+ * `checksOverride` is a second, independent optional argument (position 2)
+ * for the same reason — a CodeLens "Run Profile"/"Run Schema Check" click
+ * needs both a specific file *and* a check-subset override; passing
+ * `undefined` for either preserves this handler's exact prior behavior for
+ * that argument.
  */
 function registerRunComparisonCommand(
   connectionProfileStore: ConnectionProfileStore,
   secretStore: SecretStore,
   statusBarItem: ParityStatusBarItem
 ): vscode.Disposable {
-  return vscode.commands.registerCommand(RUN_COMPARISON_COMMAND_ID, async () => {
-    const workspaceFolders = vscode.workspace.workspaceFolders;
-    const defaultUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0]?.uri : undefined;
+  return vscode.commands.registerCommand(RUN_COMPARISON_COMMAND_ID, async (uri?: vscode.Uri, checksOverride?: ParityChecks) => {
+    let fileUri: vscode.Uri;
 
-    const picked = await vscode.window.showOpenDialog({
-      canSelectFiles: true,
-      canSelectFolders: false,
-      canSelectMany: false,
-      ...(defaultUri !== undefined ? { defaultUri } : {}),
-      filters: { "ParityLens definition": ["paritylens", "yaml", "yml"] },
-      openLabel: "Run Comparison"
-    });
+    if (uri !== undefined) {
+      // T-39: a specific file was supplied (CodeLens/tree-item click) --
+      // skip the file-picker dialog entirely and use it directly.
+      fileUri = uri;
+    } else {
+      const workspaceFolders = vscode.workspace.workspaceFolders;
+      const defaultUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0]?.uri : undefined;
 
-    if (!picked || picked.length === 0) {
-      return;
-    }
+      const picked = await vscode.window.showOpenDialog({
+        canSelectFiles: true,
+        canSelectFolders: false,
+        canSelectMany: false,
+        ...(defaultUri !== undefined ? { defaultUri } : {}),
+        filters: { "ParityLens definition": ["paritylens", "yaml", "yml"] },
+        openLabel: "Run Comparison"
+      });
 
-    const fileUri = picked[0];
-    if (!fileUri) {
-      return;
+      if (!picked || picked.length === 0) {
+        return;
+      }
+
+      const pickedUri = picked[0];
+      if (!pickedUri) {
+        return;
+      }
+      fileUri = pickedUri;
     }
 
     let yamlText: string;
@@ -454,7 +508,8 @@ function registerRunComparisonCommand(
       secretStore,
       resolveRunHistoryRoot: () => resolveRunHistoryRoot(vscode.workspace.workspaceFolders),
       statusBarItem,
-      confirmRun: createWebviewConfirmRun()
+      confirmRun: createWebviewConfirmRun(),
+      ...(checksOverride !== undefined ? { checksOverride } : {})
     });
   });
 }
@@ -729,6 +784,50 @@ function registerReopenRunCommand(): vscode.Disposable {
 }
 
 /**
+ * Registers `paritylens.noRunsYetForComparison` (T-39): the command the
+ * "Open Last Result" CodeLens invokes when `listRecentRuns` has no record
+ * matching the document's comparison `name` yet -- see
+ * `comparisonCodeLensProvider.ts`'s `NO_RUNS_YET_COMMAND_ID` doc comment
+ * for the judgment call (always show the lens; surface a clear message on
+ * click rather than omitting the lens or silently no-opping).
+ */
+function registerNoRunsYetCommand(): vscode.Disposable {
+  return vscode.commands.registerCommand(NO_RUNS_YET_COMMAND_ID, () => {
+    vscode.window.showInformationMessage("ParityLens: no runs yet for this comparison. Run it first, then Open Last Result will find it.");
+  });
+}
+
+/**
+ * Registers `ComparisonCodeLensProvider` (T-39) against the live `vscode`
+ * API for `.paritylens` files. Uses a `{ pattern: "**\/*.paritylens" }`
+ * `DocumentFilter` (`vscode.DocumentSelector`) -- the same
+ * `*.paritylens`-filename convention `package.json`'s `contributes.
+ * customEditors[0].selector` already uses for T-36's custom editor
+ * (`filenamePattern: "*.paritylens"`), translated to the glob-`pattern`
+ * shape `registerCodeLensProvider`'s `DocumentSelector` actually accepts
+ * (`DocumentFilter.pattern`, per `@types/vscode`'s own interface -- checked
+ * directly rather than guessed, since `DocumentFilter` has no
+ * `filenamePattern` field, only `language`/`notebookType`/`scheme`/
+ * `pattern`). A `CodeLensProvider` is a document-level feature independent
+ * of which editor (if any) has the document open, so it applies whether
+ * the file is open via T-36's custom editor or as plain text, per
+ * TASK-BRIEF.md T-39's Objective.
+ *
+ * `listRecentRuns` is bound to the live `resolveRunHistoryRoot` the same
+ * way `activate()`'s tree data provider construction below already binds
+ * it (same "no workspace folder open -> empty list" fallback).
+ */
+function registerComparisonCodeLensProvider(): vscode.Disposable {
+  const provider = new ComparisonCodeLensProvider({
+    listRecentRuns: async () => {
+      const safeOutputRoot = resolveRunHistoryRoot(vscode.workspace.workspaceFolders);
+      return safeOutputRoot !== undefined ? listRecentRuns(safeOutputRoot) : [];
+    }
+  });
+  return vscode.languages.registerCodeLensProvider({ pattern: "**/*.paritylens" }, provider);
+}
+
+/**
  * Extension activation entry point. Registers the "DATA PARITY" tree view,
  * constructs the `SecretStore` wrapper around `context.secrets`, and (T-22)
  * registers the `paritylens.runComparison` command, (T-29) registers the
@@ -786,6 +885,8 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(registerNewComparisonCommand(connectionProfileStore));
   context.subscriptions.push(registerReopenRunCommand());
   context.subscriptions.push(registerComparisonEditorProvider(connectionProfileStore, secretStore));
+  context.subscriptions.push(registerNoRunsYetCommand());
+  context.subscriptions.push(registerComparisonCodeLensProvider());
 
   return { treeDataProvider, treeView, secretStore };
 }

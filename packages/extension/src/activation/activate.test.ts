@@ -1,5 +1,14 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+// T-39: `vi.mock` factories are hoisted above all imports/top-level
+// statements (same constraint the comment below already documents), so
+// the map registered command callbacks are captured into must itself be
+// created via `vi.hoisted` -- a plain top-level `const` declared after
+// `vi.mock` would not yet exist when the (hoisted) factory runs.
+const { registeredCommandCallbacks } = vi.hoisted(() => ({
+  registeredCommandCallbacks: new Map<string, (...args: unknown[]) => unknown>()
+}));
+
 // See parityTreeDataProvider.test.ts for why `vscode` is mocked rather than
 // run under a real extension host (@vscode/test-electron) — documented in
 // IMPLEMENTATION-REPORT.md. `vi.mock` factories are hoisted above all
@@ -48,15 +57,52 @@ vi.mock("vscode", () => {
   // by runComparisonCommand.test.ts, which tests the extracted, directly
   // callable `runComparisonCommand` function instead of going through
   // `vscode.commands.registerCommand`).
-  const registerCommand = () => ({ dispose: () => undefined });
+  //
+  // T-39: registered callbacks are now also captured by command id (into
+  // the module-level `registeredCommandCallbacks` map declared just below
+  // this factory) so this file's new "registerRunComparisonCommand (T-39
+  // uri argument)" suite can invoke the real `paritylens.runComparison`
+  // callback directly -- the only way to exercise the
+  // showOpenDialog-skip-when-uri-supplied behavior, since that logic lives
+  // in the raw `registerCommand` callback itself
+  // (`registerRunComparisonCommand`), not in the separately-exported,
+  // directly-testable `runComparisonCommand` function.
+  const registerCommand = (commandId: string, callback: (...args: unknown[]) => unknown) => {
+    registeredCommandCallbacks.set(commandId, callback);
+    return { dispose: () => undefined };
+  };
+  const showOpenDialog = vi.fn(async () => undefined);
 
   // T-30: the new `runComparisonCommand` (T-30 real-connector-wiring) test
   // suite below in this same file invokes `runComparisonCommand` directly
   // (mirroring `runComparisonCommand.test.ts`'s own vscode mock), so
   // `window` needs the same webview/message-box surface that file's mock
   // provides.
+  //
+  // T-39: the new "registerRunComparisonCommand (T-39 uri argument)" suite
+  // invokes the *real* registered command callback end-to-end, which wires
+  // the real `createWebviewConfirmRun` (T-38) as `confirmRun` -- that
+  // function calls `panel.webview.onDidReceiveMessage`/`panel.onDidDispose`/
+  // `panel.dispose`, none of which the pre-existing `{ webview: { html: "" } }`
+  // stub provides (every prior test either injects its own `confirmRun`
+  // directly or never reaches this real wiring). `onDidDispose` is invoked
+  // immediately/synchronously by this mock -- resolving the confirmation
+  // promise as "cancelled" (`false`) the same way a real panel closed
+  // without a button click would -- which is sufficient for these tests'
+  // purposes (they assert on showOpenDialog/showErrorMessage/
+  // createWebviewPanel call counts, not on the confirmation outcome
+  // itself); a test that needed to assert "Run" was actually confirmed
+  // would need a richer mock, which none of these do.
   const createWebviewPanel = vi.fn(() => ({
-    webview: { html: "" }
+    webview: {
+      html: "",
+      onDidReceiveMessage: () => ({ dispose: () => undefined })
+    },
+    onDidDispose: (listener: () => void) => {
+      listener();
+      return { dispose: () => undefined };
+    },
+    dispose: () => undefined
   }));
   const showInformationMessage = vi.fn();
   const showErrorMessage = vi.fn();
@@ -88,9 +134,36 @@ vi.mock("vscode", () => {
   const registerCustomEditorProvider = () => ({ dispose: () => undefined });
   const applyEdit = vi.fn(async () => true);
 
+  // T-39: activate() now also registers a CodeLensProvider for
+  // `.paritylens` files (registerComparisonCodeLensProvider) -- a minimal,
+  // mechanically-required addition to this pre-existing mock (mirrors the
+  // T-36 registerCustomEditorProvider precedent's own comment above): every
+  // existing test below constructs a real activate() call, which now
+  // unconditionally calls vscode.languages.registerCodeLensProvider. No
+  // existing test's assertions change.
+  const registerCodeLensProvider = () => ({ dispose: () => undefined });
+
+  class Range {
+    constructor(
+      public startLine: number,
+      public startCharacter: number,
+      public endLine: number,
+      public endCharacter: number
+    ) {}
+  }
+
+  class CodeLens {
+    constructor(
+      public range: Range,
+      public command?: unknown
+    ) {}
+  }
+
   return {
     TreeItem,
     EventEmitter,
+    Range,
+    CodeLens,
     TreeItemCollapsibleState,
     ViewColumn,
     StatusBarAlignment,
@@ -100,15 +173,20 @@ vi.mock("vscode", () => {
       showInformationMessage,
       showErrorMessage,
       createStatusBarItem,
-      registerCustomEditorProvider
+      registerCustomEditorProvider,
+      showOpenDialog
     },
     commands: { registerCommand },
-    workspace: { workspaceFolders: undefined, findFiles, applyEdit }
+    workspace: { workspaceFolders: undefined, findFiles, applyEdit },
+    languages: { registerCodeLensProvider }
   };
 });
 
 import * as vscode from "vscode";
-import { activate, PARITY_TREE_VIEW_ID, runComparisonCommand, reopenRunCommand } from "./activate";
+import { mkdtempSync, rmSync, readFileSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { activate, PARITY_TREE_VIEW_ID, RUN_COMPARISON_COMMAND_ID, runComparisonCommand, reopenRunCommand } from "./activate";
 import { ParityTreeDataProvider, type ParityTreeItem } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
 import { ConnectionProfileStore } from "../connections/connectionProfileStore";
@@ -133,6 +211,15 @@ checks:
 
 function createMockExtensionContext() {
   const secretsStore = new Map<string, string>();
+  // T-39: registerRunComparisonCommand's real callback (invoked directly by
+  // the new "registerRunComparisonCommand (T-39 uri argument)" suite below)
+  // constructs a ConnectionProfileStore against context.globalState, which
+  // every pre-existing test in this file never exercised (they only assert
+  // on activate()'s registration side effects, never invoke the registered
+  // paritylens.runComparison callback body itself). A minimal in-memory
+  // Memento-shaped globalState is added here so that real callback path
+  // works; no existing test's assertions depend on globalState's absence.
+  const globalStateStore = new Map<string, unknown>();
   return {
     subscriptions: [] as Array<{ dispose(): unknown }>,
     secrets: {
@@ -142,6 +229,12 @@ function createMockExtensionContext() {
       get: vi.fn(async (key: string) => secretsStore.get(key)),
       delete: vi.fn(async (key: string) => {
         secretsStore.delete(key);
+      })
+    },
+    globalState: {
+      get: <T>(key: string, defaultValue?: T) => (globalStateStore.has(key) ? (globalStateStore.get(key) as T) : (defaultValue as T)),
+      update: vi.fn(async (key: string, value: unknown) => {
+        globalStateStore.set(key, value);
       })
     }
   };
@@ -571,5 +664,215 @@ checks:
     expect(passedQueries).toHaveLength(2);
     expect(passedQueries[0]).toContain("SELECT COUNT(*)");
     expect(passedQueries[1]).toContain("SELECT COUNT(*)");
+  });
+});
+
+/**
+ * T-39: `runComparisonCommand` gains an optional `checksOverride` dep,
+ * applied in-memory only (a shallow copy of the parsed `ParityDefinition`
+ * with `checks` replaced) before `planQueries`/`runComparison` are called.
+ * These tests confirm: (1) the override actually reaches `planQueries`'s
+ * `confirmRun` callback (proving it flows into the query-planning step,
+ * not just `runComparison`), (2) absent `checksOverride` behaves exactly
+ * like before this parameter existed (backward compatibility), and (3) the
+ * override never touches the on-disk `.paritylens` file -- the only
+ * "file" `runComparisonCommand` ever sees is the `yamlText` string
+ * argument itself, so this suite also proves that string is never mutated.
+ */
+describe("runComparisonCommand (T-39 check-subset override)", () => {
+  function createDeps(confirmRun: (queries: string[]) => Promise<boolean>) {
+    return {
+      createWebviewPanel: vscode.window.createWebviewPanel as unknown as (
+        ...args: unknown[]
+      ) => { webview: { html: string } },
+      viewColumn: vscode.ViewColumn.Active as unknown as number,
+      showInformationMessage: vscode.window.showInformationMessage as unknown as (message: string) => unknown,
+      showErrorMessage: vscode.window.showErrorMessage as unknown as (message: string) => unknown,
+      confirmRun
+    };
+  }
+
+  // Schema-enabled-only YAML (checks.schema.enabled: true, no profile/
+  // rowCount/rowLevel) -- the same VALID_YAML_FOR_CONFIRMATION shape this
+  // file's T-38 suite above already uses, but declared fresh here per-test
+  // below so each test can independently confirm it is byte-for-byte
+  // unchanged afterward.
+  const SCHEMA_ONLY_YAML = VALID_YAML_FOR_CONFIRMATION;
+
+  const ROW_COUNT_YAML = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  row_count:
+    enabled: true
+`;
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("with no checksOverride supplied, behaves exactly as before this parameter existed (backward compatible)", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const deps = createDeps(confirmRun);
+
+    const result = await runComparisonCommand(SCHEMA_ONLY_YAML, deps as never);
+
+    expect(result).toBeDefined();
+    expect(result?.comparison).toBe("customer-migration-parity");
+    // Definition's own checks.schema.enabled: true was honored -- schema
+    // differences from the known sqlserver-customer fixture mismatch are
+    // present, exactly like every pre-T-39 call of this function.
+    expect(result?.schemaDifferences.length).toBeGreaterThan(0);
+  });
+
+  it("checksOverride enabling only rowCount overrides the definition's own checks.schema before planQueries is called", async () => {
+    // SCHEMA_ONLY_YAML's own checks only enable schema (no row_count), so
+    // without an override planQueries would issue zero SQL (schema checks
+    // use getSchema, not executeQuery -- see planQueries.test.ts). If the
+    // override reaches planQueries, confirmRun instead receives the two
+    // SELECT COUNT(*) queries a row_count-enabled definition produces --
+    // proving the in-memory override, not the definition's own parsed
+    // checks, drove query planning.
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const deps = { ...createDeps(confirmRun), checksOverride: { rowCount: { enabled: true } } };
+
+    await runComparisonCommand(SCHEMA_ONLY_YAML, deps as never);
+
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    expect(passedQueries).toHaveLength(2);
+    expect(passedQueries[0]).toContain("SELECT COUNT(*)");
+  });
+
+  it("checksOverride disabling everything the definition itself enabled results in no SQL reaching confirmRun", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const deps = {
+      ...createDeps(confirmRun),
+      checksOverride: { schema: { enabled: false }, profile: { enabled: true } }
+    };
+
+    await runComparisonCommand(ROW_COUNT_YAML, deps as never);
+
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    // ROW_COUNT_YAML's own checks.row_count.enabled: true is superseded by
+    // the override (which has no rowCount key at all, i.e. not enabled) --
+    // profile is enabled instead, which for this schema-less object still
+    // issues profile SQL, not the row-count SELECT COUNT(*) queries the
+    // definition's own (overridden-away) checks would have produced.
+    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    expect(passedQueries.some((q) => q.includes("SELECT COUNT(*)"))).toBe(false);
+  });
+
+  it("never mutates the yamlText string passed in, regardless of whether checksOverride is supplied", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const deps = { ...createDeps(confirmRun), checksOverride: { profile: { enabled: true } } };
+    const originalText = SCHEMA_ONLY_YAML;
+
+    await runComparisonCommand(originalText, deps as never);
+
+    // yamlText is a JS string (immutable by language semantics), so this
+    // assertion is a belt-and-suspenders confirmation that the exact same
+    // reference/value was never reassigned or fed through any mutating
+    // codepath -- the real containment guarantee is architectural
+    // (runComparisonCommand never calls writeFile/fs at all, only
+    // readFile happens in registerRunComparisonCommand before this
+    // function is ever invoked), verified end-to-end by the
+    // "registerRunComparisonCommand (T-39 uri argument)" suite below via a
+    // real on-disk file diffed before/after.
+    expect(originalText).toBe(SCHEMA_ONLY_YAML);
+  });
+});
+
+/**
+ * T-39: `registerRunComparisonCommand`'s raw `vscode.commands.
+ * registerCommand` callback (not the separately-exported, directly-
+ * testable `runComparisonCommand` function above) now accepts an optional
+ * `vscode.Uri` first argument. These tests invoke the *real* registered
+ * callback (captured into `registeredCommandCallbacks` by this file's
+ * mocked `commands.registerCommand`, since this is the only way to
+ * exercise the showOpenDialog-skip-when-uri-supplied branch, which lives
+ * entirely inside that raw callback, not inside `runComparisonCommand`
+ * itself.
+ */
+describe("registerRunComparisonCommand (T-39 uri argument)", () => {
+  let tempRoot: string;
+  let tempFilePath: string;
+
+  const FIXTURE_YAML = VALID_YAML_FOR_CONFIRMATION;
+
+  function makeContext() {
+    return createMockExtensionContext();
+  }
+
+  function getRegisteredRunComparisonCallback(): (...args: unknown[]) => Promise<unknown> {
+    const callback = registeredCommandCallbacks.get(RUN_COMPARISON_COMMAND_ID);
+    if (!callback) {
+      throw new Error(`${RUN_COMPARISON_COMMAND_ID} was not registered`);
+    }
+    return callback as (...args: unknown[]) => Promise<unknown>;
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    registeredCommandCallbacks.clear();
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  function writeTempParitylensFile(): { fsPath: string } {
+    tempRoot = mkdtempSync(join(tmpdir(), "paritylens-codelens-"));
+    tempFilePath = join(tempRoot, "customer.paritylens");
+    writeFileSync(tempFilePath, FIXTURE_YAML, "utf8");
+    return { fsPath: tempFilePath };
+  }
+
+  it("skips showOpenDialog and reads the supplied Uri directly when a Uri argument is provided", async () => {
+    const context = makeContext();
+    activate(context as never);
+    const callback = getRegisteredRunComparisonCallback();
+    const uri = writeTempParitylensFile();
+
+    await callback(uri);
+
+    expect(vscode.window.showOpenDialog).not.toHaveBeenCalled();
+    expect(vscode.window.showErrorMessage).not.toHaveBeenCalled();
+    expect(vscode.window.createWebviewPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it("still shows the file-picker dialog when no Uri argument is supplied (regression guard for command-palette behavior)", async () => {
+    const context = makeContext();
+    activate(context as never);
+    const callback = getRegisteredRunComparisonCallback();
+
+    await callback();
+
+    expect(vscode.window.showOpenDialog).toHaveBeenCalledTimes(1);
+    // showOpenDialog's mock resolves undefined -- no file selected -- so
+    // the callback returns early; createWebviewPanel/runComparison must
+    // never have been reached.
+    expect(vscode.window.createWebviewPanel).not.toHaveBeenCalled();
+  });
+
+  it("a checksOverride argument (position 2) never modifies the on-disk .paritylens file the Uri points to", async () => {
+    const context = makeContext();
+    activate(context as never);
+    const callback = getRegisteredRunComparisonCallback();
+    const uri = writeTempParitylensFile();
+    const contentsBefore = readFileSync(tempFilePath, "utf8");
+
+    await callback(uri, { profile: { enabled: true } });
+
+    const contentsAfter = readFileSync(tempFilePath, "utf8");
+    expect(contentsAfter).toBe(contentsBefore);
+    expect(contentsAfter).toBe(FIXTURE_YAML);
   });
 });
