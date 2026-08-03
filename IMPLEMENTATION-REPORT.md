@@ -61,7 +61,7 @@ The four focused tests, each mapped to the brief's Green-state requirements:
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see below)
+- **Patch or commit:** `db169fcad4f31d6d91a8fc8577b763c8a0270b62`
 - **Branch or workspace:** `task/T-31-result-store`
 
 ## Recommended next step
