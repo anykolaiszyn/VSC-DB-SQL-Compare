@@ -157,8 +157,8 @@ decreased.
 
 ## Patch or commit identity
 
-- **Commit:** recorded immediately after this report was written — see
-  `git log -1` on the branch below for the exact hash.
+- **Commit:** `7a3d083a6aed2dbebf3ba12fad01282e4f1667ae` on branch
+  `task/T-37-column-mapping-tab`
 - **Branch:** `task/T-37-column-mapping-tab` (matches TASK-BRIEF.md's
   Branch section)
 
