@@ -100,6 +100,19 @@ worth adversarially probing.
    findings this task was meant to resolve, and a final approval status:
    APPROVED, CHANGES REQUIRED, or BLOCKED.
 
+## When the implementer requests a human-driven check
+
+If the implementation report discloses a criterion it could not verify
+programmatically (a genuinely visual/interactive property) and requests a
+bounded human-driven check, do not treat this as a gap to penalize on its
+own — confirm the disclosure is honest (the criterion really is the kind
+of thing automated tests can't establish) and that everything else
+verifiable was in fact verified. Surface the specific bounded interaction
+that needs a human operator's direct observation in your report rather
+than guessing at the outcome yourself; this does not block your review of
+everything else, but the disclosed criterion itself stays open until that
+check happens.
+
 ## Hard rules
 
 - Never edit implementation-owned files, `TASK-BRIEF.md`, or

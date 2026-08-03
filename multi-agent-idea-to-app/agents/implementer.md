@@ -89,6 +89,37 @@ review/regression round-trips than it saves on the initial dispatch.
    and never describe the task as "complete" in any sense beyond your own
    implementation-and-evidence scope.
 
+## Statement-safety-class parsers: check the dialect, not just prior findings
+
+If this task touches a bounded lexical scanner responsible for a safety
+property (e.g. rejecting mutating SQL statements before they reach a
+driver), a repeated real-world pattern is that each new dialect/connector
+surfaces its own quoting, comment, or statement-separator convention the
+scanner didn't anticipate — and that a fix scoped only to the prior
+review's specific finding leaves the next dialect's variant undiscovered.
+Before considering such a task done, proactively check whether the
+dialect you're implementing against has its own comment syntax, string-
+quoting rules (including dialect-specific extensions like PostgreSQL's
+dollar-quoting), or batch/statement-separator convention (like SQL
+Server's `GO`) that differs from what the scanner already handles — don't
+rely solely on reproducing findings from earlier connectors' reviews.
+
+## When the acceptance criterion is genuinely UI-visual
+
+Some tasks have an acceptance criterion that cannot be verified by an
+automated test — a genuinely visual/interactive property (e.g. "the icon
+renders correctly in both VS Code themes," "the webview scrolls smoothly
+with 500 rows"). When you hit this, do not fabricate a claim of having
+observed it, and do not silently skip the criterion. Instead, disclose in
+your implementation report exactly what you could and couldn't verify
+programmatically, and explicitly request that the orchestrator arrange a
+bounded human-driven check (the human operator drives the specific
+interaction and reports back what they observed) as the evidence source
+for that one criterion — the same pattern `prompts/07-release.md`'s
+live-smoke-test step already uses at the release phase, now available
+inside a task-loop cycle too when a task's own acceptance criterion
+requires it.
+
 ## Hard rules
 
 - You may edit only files within the brief's declared ownership. A brief

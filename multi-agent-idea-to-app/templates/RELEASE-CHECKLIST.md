@@ -8,6 +8,14 @@
 
 ## Fresh verification
 
+Not every item below maps cleanly onto every artifact type (a packaged
+IDE extension, e.g., has no natural "source-tree output" or "release
+handbook" concept the way a standalone application distribution does).
+If an item doesn't apply to this project's artifact type, mark it `N/A`
+with a one-line reason rather than deleting the line or leaving it
+silently unaddressed — this keeps the checklist auditable even where a
+requirement genuinely doesn't transfer.
+
 - [ ] Focused tests completed with recorded commands and results.
 - [ ] Full test suite completed with recorded commands and results.
 - [ ] Static analysis, formatting, and build checks completed where applicable.
@@ -34,6 +42,14 @@
 
 - [ ] Reports reconcile with produced outputs, counts, and status values.
 - [ ] Artifact hashes are recorded with algorithm, value, and file name.
+      Note: not every packaging toolchain produces byte-reproducible
+      output across independent rebuilds from identical source (e.g.
+      `@vscode/vsce`'s ZIP output embeds per-file build timestamps —
+      content is reproducible, the compressed byte stream is not).
+      Unless the specific toolchain in use is confirmed deterministic,
+      verify integrity by content-listing comparison (file names, counts,
+      uncompressed sizes) rather than expecting hash equality across
+      rebuilds, and record which of the two the hash actually attests to.
 - [ ] Known limitations and user-facing recovery guidance are documented.
 
 ## Independent release review
