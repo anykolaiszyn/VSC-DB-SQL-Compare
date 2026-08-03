@@ -18,6 +18,8 @@ import { addConnectionCommand, editConnectionCommand, deleteConnectionCommand } 
 import { resolveConnector } from "../connections/resolveConnector";
 import type { ConnectionProfile } from "../connections/connectionProfile";
 import { runNewComparisonCommand } from "../authoring/newComparisonWizard";
+import { persistRun, loadRun, listRecentRuns } from "../runHistory/runHistory";
+import { createParityStatusBarItem, type ParityStatusBarItem } from "../statusbar/parityStatusBar";
 
 /** View ID the tree data provider registers against (matches `package.json`'s `contributes.views`). */
 export const PARITY_TREE_VIEW_ID = "paritylens.dataParityView";
@@ -35,6 +37,34 @@ export const DELETE_CONNECTION_COMMAND_ID = "paritylens.deleteConnection";
 /** Command ID for the new comparison-authoring scaffold command (T-32),
  * matching `package.json`'s `contributes.commands` entry. */
 export const NEW_COMPARISON_COMMAND_ID = "paritylens.newComparison";
+
+/**
+ * Command ID (T-33) the "Recent Runs" tree section's nodes
+ * (`ParityRecentRunTreeItem`, `parityTreeDataProvider.ts`) invoke on click
+ * to reopen a past persisted run. Not added to `package.json`'s
+ * `contributes.commands` — that file is outside this task's declared
+ * ownership (see TASK-BRIEF.md's "Files owned" list), and a manifest entry
+ * is only needed for command-palette visibility, not for
+ * `vscode.commands.registerCommand`/`executeCommand` to work for a
+ * tree-item-triggered command. Judgment call, documented here rather than
+ * silently expanding scope into `package.json`.
+ */
+export const REOPEN_RUN_COMMAND_ID = "paritylens.reopenRun";
+
+/**
+ * Run-history safe output root convention (T-33 Scope item 5): the first
+ * open workspace folder's path, joined with a fixed `.paritylens/runs`
+ * subdirectory. No existing command wires a concrete `safeOutputRoot`
+ * value yet (`writeExport.ts` only defines the containment check) — this
+ * mirrors `registerRunComparisonCommand`'s own `defaultUri` fallback
+ * pattern (first workspace folder) a few lines below, and nests run
+ * records under a dedicated hidden subdirectory (matching this project's
+ * "isolated output paths under a safe output root (e.g. a project-local
+ * `work/` or `.paritylens/` directory)" convention from `AGENTS.md`'s
+ * Safety boundaries) rather than writing JSON run records directly into
+ * the workspace root.
+ */
+const RUN_HISTORY_SUBDIRECTORY = ".paritylens/runs";
 
 export interface ActivationResult {
   treeDataProvider: ParityTreeDataProvider;
@@ -164,6 +194,19 @@ async function buildConnectorRegistry(
 }
 
 /**
+ * Resolves the concrete `safeOutputRoot` path `persistRun`/`listRecentRuns`
+ * need, per the `RUN_HISTORY_SUBDIRECTORY` convention documented above.
+ * Returns `undefined` when no workspace folder is open — `persistRun`
+ * cannot run without a workspace-relative root, and per Scope item 5 this
+ * must not crash; the caller (`runComparisonCommand`) treats `undefined`
+ * as "skip persistence, surface via showErrorMessage" rather than throwing.
+ */
+function resolveRunHistoryRoot(workspaceFolders: readonly { uri: { fsPath: string } }[] | undefined): string | undefined {
+  const first = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0] : undefined;
+  return first !== undefined ? join(first.uri.fsPath, RUN_HISTORY_SUBDIRECTORY) : undefined;
+}
+
+/**
  * The `paritylens.runComparison` command handler, extracted as a directly
  * testable function separate from the raw `vscode.commands.registerCommand`
  * callback — same pattern T-10/T-11 already use for testability without
@@ -214,6 +257,28 @@ export async function runComparisonCommand(
      */
     connectionProfileStore?: ConnectionProfileStore;
     secretStore?: SecretStore;
+    /**
+     * T-33 Scope item 5: resolves the safe output root `persistRun` writes
+     * run records under, given the live `vscode.workspace.workspaceFolders`
+     * array (or `undefined` if none is open). Injected — like
+     * `connectionProfileStore`/`secretStore` above — as a typed optional
+     * defaulting to a no-op-safe absent state: `runComparisonCommand.test.ts`
+     * (T-22's pre-existing file, outside this task's "Files owned" list)
+     * calls this function without this field, and per this task's own
+     * "Prohibited changes," a `persistRun` failure (including "no
+     * workspace open") must never crash or replace the success path with
+     * an error — omitting this dep simply skips persistence for that call,
+     * exactly like an unresolvable workspace would.
+     */
+    resolveRunHistoryRoot?: () => string | undefined;
+    /**
+     * T-33 Scope item 5/6: the status bar item `activate()` constructs
+     * once via `createParityStatusBarItem` and passes through here so a
+     * successful run can call `updateFromResult` + `.show()`. Typed
+     * optional for the same reason as the two fields above — this
+     * function's pre-existing test file never supplies it.
+     */
+    statusBarItem?: ParityStatusBarItem;
   }
 ): Promise<ComparisonResult | undefined> {
   try {
@@ -241,6 +306,33 @@ export async function runComparisonCommand(
 
     const result = await runComparison(definition, registry);
 
+    // T-33 Scope item 5: persist the run and update the status bar
+    // additively, alongside showing the results webview. Both are
+    // best-effort: a persistRun failure (no workspace open, unwritable
+    // root, etc.) must not prevent the results webview from showing the
+    // run's actual result, per this task's Scope item 5 and Prohibited
+    // Changes ("only permitted change to that function is the additive
+    // persist/status-bar calls") — so this is a separate try/catch, not
+    // folded into the outer one that reports parse/connection failures.
+    if (deps.resolveRunHistoryRoot !== undefined) {
+      const safeOutputRoot = deps.resolveRunHistoryRoot();
+      if (safeOutputRoot !== undefined) {
+        try {
+          await persistRun(result, safeOutputRoot);
+        } catch (persistErr) {
+          const message = persistErr instanceof Error ? persistErr.message : String(persistErr);
+          deps.showErrorMessage(`ParityLens: could not save this run to history — ${message}`);
+        }
+      } else {
+        deps.showErrorMessage("ParityLens: could not save this run to history — no workspace folder is open.");
+      }
+    }
+
+    if (deps.statusBarItem !== undefined) {
+      deps.statusBarItem.updateFromResult(result);
+      deps.statusBarItem.show();
+    }
+
     showResultsWebview(deps.createWebviewPanel, deps.viewColumn, result);
     return result;
   } catch (err) {
@@ -262,8 +354,17 @@ export async function runComparisonCommand(
  * T-30: now takes the same `connectionProfileStore`/`secretStore` `activate()`
  * already constructs for the connection-management commands, so real
  * connection profiles can be resolved for this command too.
+ *
+ * T-33: also takes the `ParityStatusBarItem` `activate()` constructs once,
+ * and passes a `resolveRunHistoryRoot` closure bound to the live
+ * `vscode.workspace.workspaceFolders` — see `resolveRunHistoryRoot`'s doc
+ * comment for the convention.
  */
-function registerRunComparisonCommand(connectionProfileStore: ConnectionProfileStore, secretStore: SecretStore): vscode.Disposable {
+function registerRunComparisonCommand(
+  connectionProfileStore: ConnectionProfileStore,
+  secretStore: SecretStore,
+  statusBarItem: ParityStatusBarItem
+): vscode.Disposable {
   return vscode.commands.registerCommand(RUN_COMPARISON_COMMAND_ID, async () => {
     const workspaceFolders = vscode.workspace.workspaceFolders;
     const defaultUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0]?.uri : undefined;
@@ -301,7 +402,9 @@ function registerRunComparisonCommand(connectionProfileStore: ConnectionProfileS
       showInformationMessage: vscode.window.showInformationMessage,
       showErrorMessage: vscode.window.showErrorMessage,
       connectionProfileStore,
-      secretStore
+      secretStore,
+      resolveRunHistoryRoot: () => resolveRunHistoryRoot(vscode.workspace.workspaceFolders),
+      statusBarItem
     });
   });
 }
@@ -382,6 +485,90 @@ function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileS
 }
 
 /**
+ * The `paritylens.reopenRun` command handler (T-33), extracted as a
+ * directly testable function separate from the raw
+ * `vscode.commands.registerCommand` callback — same extraction pattern
+ * `runComparisonCommand` above already uses for the same reason (see its
+ * own header comment): every dependency that touches the `vscode` API or
+ * the filesystem is injected, so this function can be exercised in a plain
+ * Vitest run without going through a mocked `registerCommand` that would
+ * otherwise discard the callback and never invoke it (the exact gap
+ * REVIEW-REPORT.md's T-33-01 finding identified — `registerReopenRunCommand`
+ * previously inlined this logic directly in the `registerCommand` callback,
+ * so no test could invoke it).
+ *
+ * Loads the persisted `ComparisonResult` via T-31's `loadRun` (given the
+ * caller-resolved `safeOutputRoot`, following the same
+ * `resolveRunHistoryRoot` convention `runComparisonCommand` uses for
+ * `persistRun`) and reopens it via `showResultsWebview` — mirroring the
+ * brief's Scope item 2 ("its `command` should invoke `loadRun` for that
+ * `id` and pass the result to `showResultsWebview`"). Never throws: a
+ * `loadRun` rejection (bad id, unreadable record, etc.) is caught and
+ * surfaced via `showErrorMessage` rather than left as an unhandled
+ * rejection.
+ */
+export async function reopenRunCommand(
+  id: string,
+  safeOutputRoot: string | undefined,
+  deps: {
+    loadRun: (id: string, safeOutputRoot: string) => Promise<ComparisonResult>;
+    createWebviewPanel: (
+      viewType: string,
+      title: string,
+      showOptions: vscode.ViewColumn,
+      options?: vscode.WebviewPanelOptions & vscode.WebviewOptions
+    ) => vscode.WebviewPanel;
+    viewColumn: vscode.ViewColumn;
+    showErrorMessage: (message: string) => unknown;
+    showResultsWebview: (
+      createWebviewPanel: (
+        viewType: string,
+        title: string,
+        showOptions: vscode.ViewColumn,
+        options?: vscode.WebviewPanelOptions & vscode.WebviewOptions
+      ) => vscode.WebviewPanel,
+      viewColumn: vscode.ViewColumn,
+      result: ComparisonResult
+    ) => vscode.WebviewPanel;
+  }
+): Promise<void> {
+  if (safeOutputRoot === undefined) {
+    deps.showErrorMessage("ParityLens: could not reopen this run — no workspace folder is open.");
+    return;
+  }
+
+  try {
+    const result = await deps.loadRun(id, safeOutputRoot);
+    deps.showResultsWebview(deps.createWebviewPanel, deps.viewColumn, result);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    deps.showErrorMessage(`ParityLens: could not reopen run "${id}" — ${message}`);
+  }
+}
+
+/**
+ * Registers `paritylens.reopenRun` (T-33) against the live `vscode` API:
+ * invoked by a "Recent Runs" tree node
+ * (`ParityRecentRunTreeItem.command`, `parityTreeDataProvider.ts`) with the
+ * run's `id` as its sole argument. Delegates to `reopenRunCommand` above
+ * for the actual load/reopen logic, binding it against the live `vscode`
+ * API the same way `registerRunComparisonCommand` binds
+ * `runComparisonCommand`.
+ */
+function registerReopenRunCommand(): vscode.Disposable {
+  return vscode.commands.registerCommand(REOPEN_RUN_COMMAND_ID, async (id: string) => {
+    const safeOutputRoot = resolveRunHistoryRoot(vscode.workspace.workspaceFolders);
+    await reopenRunCommand(id, safeOutputRoot, {
+      loadRun,
+      createWebviewPanel: vscode.window.createWebviewPanel.bind(vscode.window),
+      viewColumn: vscode.ViewColumn.Active,
+      showErrorMessage: vscode.window.showErrorMessage,
+      showResultsWebview
+    });
+  });
+}
+
+/**
  * Extension activation entry point. Registers the "DATA PARITY" tree view,
  * constructs the `SecretStore` wrapper around `context.secrets`, and (T-22)
  * registers the `paritylens.runComparison` command, (T-29) registers the
@@ -401,7 +588,22 @@ function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileS
  * instruction.
  */
 export function activate(context: vscode.ExtensionContext): ActivationResult {
-  const treeDataProvider = new ParityTreeDataProvider();
+  // T-33: statusBarItem is constructed once here (via createParityStatusBarItem,
+  // T-11) and passed into registerRunComparisonCommand's deps, then added to
+  // context.subscriptions for disposal — same wiring pattern already used
+  // for connectionProfileStore/secretStore below.
+  const statusBarItem = createParityStatusBarItem();
+  context.subscriptions.push({ dispose: () => statusBarItem.dispose() });
+
+  const treeDataProvider = new ParityTreeDataProvider({
+    findComparisonFiles: async () => vscode.workspace.findFiles("**/*.paritylens"),
+    listRecentRuns: async () => {
+      const safeOutputRoot = resolveRunHistoryRoot(vscode.workspace.workspaceFolders);
+      return safeOutputRoot !== undefined ? listRecentRuns(safeOutputRoot) : [];
+    },
+    runComparisonCommandId: RUN_COMPARISON_COMMAND_ID,
+    reopenRunCommandId: REOPEN_RUN_COMMAND_ID
+  });
   const treeView = vscode.window.createTreeView(PARITY_TREE_VIEW_ID, {
     treeDataProvider
   });
@@ -415,13 +617,14 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   // construction (originally below, after this call) moves above it. This
   // is a reorder only -- neither construction call's own arguments nor the
   // three connection-management command registrations below change.
-  const runComparisonDisposable = registerRunComparisonCommand(connectionProfileStore, secretStore);
+  const runComparisonDisposable = registerRunComparisonCommand(connectionProfileStore, secretStore, statusBarItem);
   context.subscriptions.push(runComparisonDisposable);
 
   context.subscriptions.push(registerAddConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerEditConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerDeleteConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerNewComparisonCommand(connectionProfileStore));
+  context.subscriptions.push(registerReopenRunCommand());
 
   return { treeDataProvider, treeView, secretStore };
 }

@@ -49,7 +49,13 @@ vi.mock("vscode", () => {
 });
 
 import * as vscode from "vscode";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import type { ComparisonResult } from "@paritylens/shared";
 import { runComparisonCommand } from "./activate";
+import { listRecentRuns } from "../runHistory/runHistory";
+import { formatParitySummary } from "../statusbar/parityStatusBar";
 
 // Same fixture-shaped YAML used throughout planner.test.ts (T-09) --
 // "legacy-sql-prod"/"snowflake-analytics" are arbitrary connection names a
@@ -167,5 +173,107 @@ checks:
     expect(result).toBeUndefined();
     expect(deps.showErrorMessage).toHaveBeenCalledTimes(1);
     expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T-33 Scope item 5: runComparisonCommand additively calls persistRun and
+ * the status bar's updateFromResult/.show() after a successful run. Fake
+ * `ParityStatusBarItem` implementation below mirrors
+ * parityStatusBar.test.ts's own mock shape (text/updateFromResult/show/
+ * dispose) rather than depending on the live vscode.window.createStatusBarItem
+ * mock, keeping this suite focused on runComparisonCommand's own call
+ * sequencing rather than parityStatusBar.ts's (untouched, per Scope item 4)
+ * internals.
+ */
+describe("runComparisonCommand (T-33 persist-run/status-bar wiring)", () => {
+  function createFakeStatusBarItem() {
+    let text = "";
+    return {
+      updateFromResult: vi.fn((result: ComparisonResult) => {
+        text = formatParitySummary(result.summary);
+      }),
+      show: vi.fn(),
+      dispose: vi.fn(),
+      get text() {
+        return text;
+      }
+    };
+  }
+
+  let tempRoot: string;
+
+  afterEach(() => {
+    vi.clearAllMocks();
+    if (tempRoot) {
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  });
+
+  it("persists the run via persistRun so listRecentRuns picks it up afterward (red-state: today nothing calls persistRun, so this always returns [])", async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "paritylens-runcmd-"));
+    const deps = {
+      ...createDeps(),
+      resolveRunHistoryRoot: () => tempRoot
+    };
+
+    const before = await listRecentRuns(tempRoot);
+    expect(before).toEqual([]);
+
+    const result = await runComparisonCommand(VALID_YAML, deps as never);
+    expect(result).toBeDefined();
+
+    const after = await listRecentRuns(tempRoot);
+    expect(after).toHaveLength(1);
+    expect(after[0]?.name).toBe("customer-migration-parity");
+  });
+
+  it("updates the injected status bar item to match formatParitySummary(result.summary) and calls .show()", async () => {
+    tempRoot = mkdtempSync(join(tmpdir(), "paritylens-runcmd-"));
+    const statusBarItem = createFakeStatusBarItem();
+    const deps = {
+      ...createDeps(),
+      resolveRunHistoryRoot: () => tempRoot,
+      statusBarItem
+    };
+
+    const result = await runComparisonCommand(VALID_YAML, deps as never);
+    expect(result).toBeDefined();
+
+    expect(statusBarItem.updateFromResult).toHaveBeenCalledWith(result);
+    expect(statusBarItem.show).toHaveBeenCalledTimes(1);
+    expect(statusBarItem.text).toBe(formatParitySummary(result!.summary));
+  });
+
+  it("does not prevent showResultsWebview from being called when persistRun fails (no workspace open / resolveRunHistoryRoot returns undefined)", async () => {
+    const deps = {
+      ...createDeps(),
+      resolveRunHistoryRoot: () => undefined
+    };
+
+    const result = await runComparisonCommand(VALID_YAML, deps as never);
+
+    expect(result).toBeDefined();
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
+    // Surfaced as a showErrorMessage call (this implementation's chosen
+    // judgment call — see activate.ts's doc comment), but never replacing
+    // the success path: showErrorMessage is called for the persistence
+    // failure specifically, not for a generic "run comparison failed"
+    // message, and the run's actual result is still returned/rendered.
+    expect(deps.showErrorMessage).toHaveBeenCalledWith(expect.stringContaining("could not save this run to history"));
+  });
+
+  it("does not prevent showResultsWebview from being called when persistRun itself throws (e.g. an unwritable root)", async () => {
+    const deps = {
+      ...createDeps(),
+      // A path nested under a file (not a directory) forces writeExport's
+      // mkdir to fail — a real, not simulated, persistRun failure.
+      resolveRunHistoryRoot: () => join(tmpdir(), "paritylens-not-a-real-dir-file.txt", "nested")
+    };
+
+    const result = await runComparisonCommand(VALID_YAML, deps as never);
+
+    expect(result).toBeDefined();
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
   });
 });
