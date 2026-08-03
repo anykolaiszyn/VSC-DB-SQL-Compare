@@ -176,8 +176,8 @@ regressions, 0 newly skipped.
 ## Patch or commit identity
 
 - **Branch:** `task/T-38-plan-queries-preview`
-- **Commit:** recorded after this report is committed — see the commit
-  immediately following this file in `git log` on this branch.
+- **Commit:** `51639f3` — "T-38: pre-execution SQL preview + confirmation
+  before runComparison"
 
 ## Recommended next step
 
