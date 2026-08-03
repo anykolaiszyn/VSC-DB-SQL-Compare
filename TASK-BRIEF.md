@@ -1,223 +1,192 @@
-# TASK-BRIEF.md — T-38: Pre-execution SQL preview + confirmation
+# TASK-BRIEF.md — T-39: CodeLens actions (final Phase 5 task)
 
 ## Objective
 
-`DESIGN-SPEC.md` states "generated SQL is shown to the user for preview
-before execution" as a security/safety requirement. Today,
-`paritylens.runComparison` does not honor this: it shows a single
-passive `showInformationMessage` toast (whichever real connections are
-in play) and immediately calls `runComparison`, executing real queries
-against real databases with no preview and no way to cancel.
+Add inline CodeLens actions above an open `.paritylens` file — **Run
+Profile**, **Run Schema Check**, **Run Full Comparison**, **Open Last
+Result** — per `Idea Prompt.md` section 6's sketch. CodeLens must work
+whether the file is open via T-36's custom editor or as plain text (a
+`CodeLensProvider` is a document-level feature, independent of which
+editor has the document open).
 
-This task closes that gap in two pieces:
+This is the final task in Phase 5. See
+`docs/superpowers/specs/2026-08-02-comparison-authoring-ui-design.md`
+("CodeLens actions" section) for the original design context.
 
-1. A new, pure, engine-side `planQueries(definition, connectors, baseDir?)`
-   function that builds the exact same SQL strings `runComparison` would
-   execute, **without executing any of them** (no `executeQuery` calls) —
-   a "dry run" of query construction.
-2. Extending `paritylens.runComparison`'s command flow to call
-   `planQueries()` first, show the resulting SQL list in a blocking
-   confirmation webview panel (Run / Cancel), and only call the existing,
-   unmodified `runComparison()` if the user clicks Run.
+**Two design decisions made before this brief, disclosed here** (the
+original plan row didn't anticipate either — both are genuine gaps this
+brief closes rather than leaving for the implementer to discover):
 
-See `docs/superpowers/specs/2026-08-02-comparison-authoring-ui-design.md`
-("Pre-execution SQL preview" section) for the full design context.
-
-**Scope clarification made before this brief, disclosed here**: "zero
-execution" means zero `executeQuery` calls — the actual comparison
-queries (row-count SQL, row-level fetch SQL, profile-metric SQL) are
-never run. It does **not** mean zero connector contact: building an
-accurate profile-check query preview requires knowing each column's
-type, which requires a `getSchema()` call (schema introspection, not a
-data-fetching query) exactly the way `runComparison` itself already does
-before building profile queries (see `planner.ts`'s `runComparison`,
-lines ~244-248). `planQueries` may call `getSchema()`; it must never call
-`executeQuery()`.
+1. **`paritylens.runComparison` today always opens a file picker
+   dialog** — it has no way to accept "run this specific file" as an
+   argument, which is what clicking a CodeLens on an already-open file
+   implies. This task extends `runComparisonCommand` to accept an
+   optional `vscode.Uri` argument: when supplied (from a CodeLens click),
+   skip `showOpenDialog` and use that file directly; when absent (command
+   palette invocation), behave exactly as today. This must be backward
+   compatible — every existing call site/test that invokes the command
+   with no argument keeps working unchanged.
+2. **"Run Profile"/"Run Schema Check" need to run only a subset of
+   checks**, but `definition.checks.*.enabled` comes from the parsed YAML
+   itself — there is no existing per-invocation override mechanism.
+   This task adds one: extend `runComparisonCommand`'s call site (or the
+   underlying flow) to accept an optional check-subset override (e.g.
+   `{ schema: true, profile: false, rowCount: false, rowLevel: false }`)
+   that, when present, temporarily overrides the parsed definition's
+   `checks` **in memory only** before calling `planQueries`/
+   `runComparison` — the file on disk is never modified. When absent, the
+   definition's own `checks` are used exactly as today. Confirm
+   `planQueries` (T-38) naturally respects this since it already reads
+   `definition.checks.*` — passing an overridden `ParityDefinition` object
+   (a shallow copy with `checks` replaced) should require no change to
+   `planQueries`/`runComparison` themselves, only to what
+   `runComparisonCommand` passes them.
 
 ## Scope
 
-1. **`planQueries(definition, connectors, baseDir?): Promise<string[]>`**
-   in a new file `packages/engine/src/orchestration/planner/planQueries.ts`.
-   Read `runComparison`'s current implementation in `planner.ts` in full
-   first — this function must mirror its query-building logic exactly
-   (same gating on `definition.checks.*.enabled`, same `resolveSideInput`
-   calls, same builder functions: `buildProfileQueries`, `buildRowCountSql`,
-   `buildFetchAllRowsSql`), so the preview can never drift from what a
-   real run would execute. Concretely, for each enabled check:
-   - `checks.schema.enabled` or `checks.profile.enabled`: resolve both
-     sides via `resolveSideInput`, call `source.getSchema`/
-     `target.getSchema` (needed for `checks.profile` specifically, to get
-     column types; also needed if you determine `checks.schema` alone
-     doesn't need query-string collection — confirm and disclose which is
-     actually required by reading `runComparison`'s current code, since
-     schema *comparison* itself doesn't issue a "query" in the
-     `queriesUsed` sense today, only profile does). Only if
-     `checks.profile.enabled`: call `buildProfileQueries` for every
-     source/target column pair, exactly as `runProfileChecks` does today,
-     and append every returned SQL string.
-   - `checks.rowCount.enabled`: resolve both sides via `resolveSideInput`,
-     call `buildRowCountSql` for both, append both strings.
-   - `checks.rowLevel.enabled`: resolve both sides via `resolveSideInput`,
-     call `buildFetchAllRowsSql` for both (now `async`, per T-35a), append
-     both strings.
-   - Return the accumulated list, same order `runComparison`'s own
-     `queriesUsed` accumulation would produce (schema/profile first, then
-     row-count, then row-level) — this ordering match matters for the
-     Handoff note's diff-based verification.
-   - **Never call `source.executeQuery`/`target.executeQuery`** anywhere
-     in this function, directly or transitively. `getSchema` calls are
-     fine (see Objective's scope clarification).
-   - Must not throw for a connectivity failure the way `runComparison`
-     doesn't either — but since this is a preview-only, no-side-effects
-     function, propagating a genuine error (e.g. `getSchema` rejecting)
-     is acceptable; document your choice and reasoning either way.
+1. **`comparisonCodeLensProvider.ts`** (new) — a `vscode.CodeLensProvider`
+   implementation registered for `.paritylens` files. `provideCodeLenses`:
+   - Reads the document text, attempts `parseDefinition` (T-08).
+   - **If parsing fails** (malformed YAML, missing required fields):
+     return an empty array (no lenses) — do not show lenses that would
+     crash on click, and do not throw out of `provideCodeLenses` itself
+     (VS Code calls this on every keystroke-adjacent document change;
+     throwing repeatedly would be disruptive).
+   - **If parsing succeeds**: return 4 `CodeLens` instances at line 0 (or
+     wherever the design's convention places them — document your
+     choice), each with a `command` object:
+     - **Run Profile**: invokes the run command with a check-subset
+       override enabling only `profile`.
+     - **Run Schema Check**: invokes the run command with a check-subset
+       override enabling only `schema`.
+     - **Run Full Comparison**: invokes the run command with the
+       document's own URI, no check-subset override (runs exactly what
+       the file specifies) — this must route through T-38's confirmation
+       step exactly like any other full run; do not bypass it.
+     - **Open Last Result**: looks up the most recent persisted run for
+       this document's comparison `name` via `listRecentRuns()` (T-31),
+       filtering by `name` and taking the most recent `timestamp` (same
+       lookup-by-name pattern T-33's tree view already uses — do not
+       reimplement differently), then invokes `paritylens.reopenRun` with
+       that run's `id`. If no matching run exists yet, this lens should
+       either not appear or invoke a command that shows a clear "no runs
+       yet for this comparison" message — your call, document it (do not
+       silently no-op).
 
-2. **Extend `paritylens.runComparison`'s command flow**
-   (`runComparisonCommand` in `activate.ts`) to, after resolving the
-   connector registry and before calling `runComparison`:
-   - Call `planQueries(definition, registry, baseDir)` (thread through
-     whatever `baseDir` value is appropriate — check how T-35a's
-     `runComparison` call site in this same file already handles `baseDir`
-     today, if at all; if it doesn't pass one yet, that's worth noting and
-     resolving consistently with how a real workspace root would be
-     determined, mirroring T-33's `resolveRunHistoryRoot` pattern).
-   - Show the resulting query list in a **blocking confirmation webview
-     panel** (new, `enableScripts: true` since it needs Run/Cancel buttons
-     to `postMessage` back — same interactive pattern T-36 established,
-     not the read-only `resultsWebview.ts` pattern). Reuse
-     `resultsWebview.ts`'s exported `renderQueryPreviewSection` function
-     (it already takes a bare `string[]` and renders SQL cards — do not
-     reimplement this rendering, import and call it) for the actual SQL
-     display; wrap it in your own new pure render function with Run/
-     Cancel buttons and the same static-script pattern T-36 uses.
-   - **Block**: `runComparisonCommand` must `await` the user's choice
-     (via the webview panel's message channel, same pattern T-36's
-     Apply-message handling uses) before proceeding. If the user clicks
-     Cancel (or closes the panel without choosing), `runComparison` must
-     **never** be called, and the command should exit cleanly (no error
-     shown — cancellation is not a failure).
-   - If the user clicks Run, proceed with the existing,
-     completely-unmodified `runComparison(definition, registry, ...)` call
-     and the rest of the existing flow (persist run, status bar, results
-     webview) exactly as it works today.
-   - A `planQueries` failure (e.g. a connectivity/schema-introspection
-     error before any confirmation is even shown) should be handled the
-     same way this function's existing outer `try`/`catch` handles other
-     pre-execution failures — surfaced via `showErrorMessage`, not a
-     crash, and `runComparison` never called.
+2. **Extend `runComparisonCommand`** (`activate.ts`) per this brief's two
+   disclosed design decisions above: optional `vscode.Uri` argument
+   (skip dialog when supplied) and an optional check-subset override
+   (in-memory only, never written to disk). Both must be additive/
+   backward compatible — every existing call site and test must keep
+   compiling and behaving identically when these new parameters are
+   omitted.
 
-3. **Preserve `runComparison`'s existing signature/behavior completely
-   unchanged** — `planQueries` is a new, separate, additive function; this
-   is the brief's single most important correctness property, mirroring
-   T-38's own Prohibited Changes below.
+3. **Register the `CodeLensProvider`** in `activate.ts`
+   (`vscode.languages.registerCodeLensProvider`, matched against
+   `.paritylens` files — check `@types/vscode`'s actual API for the
+   right document selector shape, do not guess).
 
 ## Dependencies
 
-- T-08/T-35a (`ParityDefinition`, `resolveSideInput`, `QueryInput`) —
+- T-08 (`parseDefinition`) — complete.
+- T-30 (real-connector-aware run command) — complete.
+- T-31 (`listRecentRuns`, `loadRun`) — complete.
+- T-33 (`paritylens.reopenRun`, the lookup-by-name pattern to mirror) —
   complete.
-- T-09/T-30 (`runComparison`, `ConnectorRegistry` resolution) — complete.
-- T-16b (`renderQueryPreviewSection`, exported from `resultsWebview.ts`)
-  — complete, this task imports and reuses it directly.
-- T-36 (the `enableScripts: true` + `postMessage` interactive-webview
-  pattern this task's confirmation panel follows) — complete, read
-  `comparisonEditorProvider.ts`/`comparisonEditorHtml.ts` for the
-  established pattern before building a divergent one.
+- T-36 (custom editor — CodeLens must coexist with it, not conflict) —
+  complete.
+- T-38 (`planQueries`, the confirmation-panel flow "Run Full Comparison"
+  and the two subset lenses must route through, never bypass) — complete.
 
 ## Files owned
 
-- `packages/engine/src/orchestration/planner/planQueries.ts` (new)
-- `packages/engine/src/orchestration/planner/planQueries.test.ts` (new)
-- `packages/extension/src/activation/activate.ts` (extends T-22/T-30,
-  the confirmation step only — no change to how `runComparison` itself is
-  called once confirmed, no change to persist/status-bar/results-webview
-  logic that already exists after it)
+- `packages/extension/src/codelens/comparisonCodeLensProvider.ts` (new)
+- `packages/extension/src/codelens/comparisonCodeLensProvider.test.ts`
+  (new)
+- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/
+  T-30/T-33/T-36/T-38 — CodeLens registration, `runComparisonCommand`'s
+  URI/check-override parameter additions only)
 - `packages/extension/src/activation/activate.test.ts` (extends, for the
-  new confirmation-flow tests)
-- A new file for the confirmation webview's pure render function (e.g.
-  `packages/extension/src/webview/runConfirmationWebview.ts` or under
-  `activation/` — your call on the exact path/name, keep it consistent
-  with this codebase's existing `webview`/`authoring` directory
-  conventions; document your choice)
+  new parameter tests)
 
 ## Prohibited changes
 
-- Do not modify `runComparison`'s exported signature, control flow, or
-  behavior in `planner.ts` in any way.
-- Do not modify `resultsWebview.ts` beyond importing
-  `renderQueryPreviewSection` (it must already be exported — confirm; if
-  it isn't, that's the one narrow addition permitted to that file: adding
-  an `export` keyword to an existing function, nothing else).
-- Do not touch `comparisonEditorProvider.ts`/`comparisonEditorHtml.ts`
-  (T-36/T-37's files) — read them for pattern reference only.
-- Do not touch `packages/engine/src/comparison-core/**` or any
-  connector-sdk file.
-- Do not add a way to skip or bypass the confirmation (e.g. a "don't ask
-  again" setting) — out of scope; every run goes through confirmation.
+- Do not modify `planQueries` or `runComparison` (`packages/engine/**`)
+  — the check-subset override happens entirely at the `activate.ts` call
+  site, by passing a modified-in-memory `ParityDefinition` object; the
+  engine functions themselves need no change since they already read
+  `definition.checks.*`.
+- Do not modify `comparisonEditorProvider.ts`/`comparisonEditorHtml.ts`
+  (T-36) or `runConfirmationWebview.ts` (T-38) — CodeLens invokes the
+  same existing command flow, it doesn't need to touch either editor's
+  internals.
+- Do not write a check-subset override back to the `.paritylens` file on
+  disk under any circumstance — it is strictly a one-invocation, in-memory
+  override.
+- Do not remove or change `paritylens.runComparison`'s existing
+  no-argument (file-picker-dialog) behavior — it must remain exactly as
+  it is today for command-palette invocation.
 
 ## Interfaces consumed / produced
 
-- Consumed (read-only): `resolveSideInput`, `buildProfileQueries`,
-  `buildRowCountSql`, `buildFetchAllRowsSql` (all already exported by
-  `planner.ts`/`profiling.ts`/`volume.ts`); `renderQueryPreviewSection`
-  (`resultsWebview.ts`, T-16b).
-- Produced: `planQueries(definition, connectors, baseDir?): Promise<string[]>`
-  (exported from the new `planQueries.ts`); a new confirmation-webview
-  render function (pure, exported, document its name/signature clearly);
-  extended `runComparisonCommand` (same exported name, extended internal
-  flow only).
+- Consumed (read-only): `parseDefinition` (T-08); `listRecentRuns`,
+  `loadRun` (T-31); `REOPEN_RUN_COMMAND_ID`/`reopenRunCommand` (T-33);
+  `planQueries`/the confirmation flow (T-38).
+- Produced: registered `CodeLensProvider` for `.paritylens`; extended
+  `runComparisonCommand` accepting optional `vscode.Uri` and check-subset
+  override parameters (document the exact new signature clearly in your
+  implementation report — this is the interface any future task touching
+  the run command needs to know about).
 
 ## Red/Green/Full verification evidence required
 
-- **Red**: a test calling `planQueries` against a fixture definition with
-  various checks enabled, expecting the returned list to match exactly
-  what `runComparison`'s own `queriesUsed` would produce for the same
-  definition/connectors, fails today (function doesn't exist). A second
-  red-state test: a test running `paritylens.runComparison`'s command
-  flow with a mocked "cancel" confirmation response, expecting
-  `runComparison` to never be called, fails today (no confirmation step
-  exists — `runComparison` is always called immediately).
+- **Red**: a test opening a valid `.paritylens` document, expecting 4
+  CodeLenses, fails today (provider doesn't exist).
 - **Green**:
-  - `planQueries`'s output, compared against `runComparison`'s actual
-    `queriesUsed` for the same fixture definition/connectors, matches
-    exactly (same strings, same order) — this is the core anti-drift
-    guarantee.
-  - A test asserting the mocked connectors' `executeQuery` was never
-    called during a `planQueries` run (mock-call-count inspection).
-  - A test confirming `runComparisonCommand` blocks on a mocked "cancel"
-    response and never calls `runComparison` (or the real connector's
-    `executeQuery`/`getSchema` beyond what `planQueries` itself needs).
-  - A test confirming a mocked "run" response does proceed to call
-    `runComparison` and the rest of the existing flow unchanged.
-  - A test confirming the confirmation webview's render function is pure
-    (same input twice → identical output).
+  - Same test passes.
+  - A test confirming an unparseable/invalid document produces zero
+    CodeLenses (or a documented safe alternative), not lenses that would
+    crash on click.
+  - A test confirming "Run Full Comparison"'s command invokes the same
+    confirmation-then-run flow T-38 established — no bypass (e.g. confirm
+    it still calls `planQueries` and blocks on confirmation, doesn't call
+    `runComparison` directly).
+  - A test confirming "Run Profile"/"Run Schema Check" pass the correct
+    check-subset override and that the override never touches the
+    on-disk file content (document text/hash unchanged after invocation).
+  - A test confirming `runComparisonCommand` with a supplied `Uri` skips
+    the file-picker dialog, and a test confirming it still shows the
+    dialog when no `Uri` is supplied (regression guard for existing
+    command-palette behavior).
+  - A test confirming "Open Last Result" correctly finds the most recent
+    run matching the document's comparison name (not just any run).
 - **Full**: `npm run verify` (typecheck + lint + test) green.
 
 ## Handoff note for the reviewer
 
 Please adversarially confirm, independent of the implementation report:
 
-1. **No drift**: diff `planQueries`'s output against `runComparison`'s
-   actual `queriesUsed` for at least 2 different fixture definitions
-   (varying which checks are enabled) — confirm byte-for-byte string
-   equality, not just "similar."
-2. **Zero `executeQuery` calls**: grep `planQueries.ts` and everything it
-   transitively calls for any `executeQuery` invocation; confirm via a
-   mock call-count assertion of your own construction, not just the
-   implementer's test.
-3. **`runComparison` genuinely untouched**: diff `planner.ts` against
-   `main` — confirm zero changes.
-4. **Cancellation genuinely blocks execution**: construct your own test
-   simulating a Cancel response and confirm no connector method beyond
-   what `planQueries` itself calls is ever invoked.
-5. **Confirmation panel purity/escaping**: confirm the new render
-   function is pure and every SQL string interpolated into it (via
-   `renderQueryPreviewSection`, reused, or your own wrapper) is properly
-   escaped — same standard as every other webview in this codebase.
+1. **Lenses never appear for an invalid document**: construct your own
+   malformed YAML and missing-required-field cases beyond whatever the
+   implementation report discloses.
+2. **"Open Last Result" reuses T-31's exact lookup**: confirm it calls
+   `listRecentRuns`/`reopenRunCommand` as-is, not a reimplementation with
+   subtly different name-matching or sort-order logic.
+3. **No lens bypasses T-38's confirmation**: for both "Run Full
+   Comparison" and the two subset lenses, trace the actual call path and
+   confirm `runComparison` is never called directly without first going
+   through `planQueries`/the confirmation panel.
+4. **Check-subset override never persists**: construct a test that
+   invokes "Run Profile," then re-reads the document from disk, and
+   confirms it is byte-for-byte unchanged.
+5. **Backward compatibility**: confirm every existing call site/test for
+   `runComparisonCommand` (with no `Uri`/override arguments) still
+   compiles and behaves identically — diff against `main`.
 6. **File-ownership diff**: confirm via `git diff --stat main..<branch>`
-   that only the declared files changed, and that any change to
-   `resultsWebview.ts` is narrowly an `export` keyword addition if
-   needed, nothing else.
+   that only the declared files changed — `packages/engine/**`,
+   `comparisonEditorProvider.ts`, `comparisonEditorHtml.ts`, and
+   `runConfirmationWebview.ts` untouched.
 
 ## Branch
 
-`task/T-38-plan-queries-preview`
+`task/T-39-codelens-actions`
