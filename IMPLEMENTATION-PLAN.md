@@ -149,6 +149,49 @@ discussion) before being added to a future phase.
   and blockers table, not repeated here. Reactivate by resolving its
   trial-account blocker and following T-17/T-19's established pattern.
 
+### Candidate Phase 6 — self-service gap follow-ups (added 2026-08-02)
+
+Sourced from `docs/superpowers/specs/2026-08-02-self-service-gap-analysis.md`,
+a user-journey/self-service-gap analysis run through a Jr. Data Analyst /
+Jr. Analytics Engineer lens against the product as it ships *today*
+(distinct from Phase 5's T-36–T-39, which are approved but not yet
+built). Four of the analysis's nine findings are already substantially
+covered by Phase 5's in-flight scope (hand-authoring YAML → T-36/T-37;
+no pre-execution SQL confirmation → T-38; engineer-voiced error text and
+no results→source navigation → partially touched by T-36/T-39) and are
+not repeated here. These five are genuinely new, untouched by Phase 5,
+and not yet scoped as tasks — each needs its own scoping pass (and, for
+the onboarding/welcome-view item, likely a small design discussion)
+before being added to a future phase:
+
+- **No onboarding surface / empty-sidebar first run** (Finding 1) — a
+  first-time user sees three empty, unlabeled tree sections with no
+  welcome view, no placeholder "click here to start" text, and no
+  in-product signal to use the command palette at all. Ranked the
+  analysis's #1 impact item (combined with the next item) — the very
+  first moment of contact with the product.
+- **Command discovery relies entirely on the command palette** (Finding
+  2) — none of the 5 registered commands (`addConnection`,
+  `newComparison`, etc.) have a tree-view title-bar button, context-menu
+  entry, or `viewsWelcome` contribution; a user must already know to
+  open the command palette and guess a search term.
+- **No connection-test feedback at add-time** (Finding 3) —
+  `paritylens.addConnection` reports success immediately after storing a
+  profile, with zero verification the host/credentials actually work;
+  failures only surface later, disconnected from the input step that
+  caused them.
+- **Results webview isn't actionable for a non-engineer** (Finding 7) —
+  severity tags and diff messages are engine-voiced with no legend, no
+  "what does Compatible/Review/Risk mean," and no guidance on whether a
+  finding needs a fix, an escalation, or is expected migration noise.
+  Explicitly **not** touched by Phase 5 (its Non-goals section leaves
+  `resultsWebview.ts` untouched).
+- **Silent fixture-vs-real-connector fallback ambiguity** (Finding 9) —
+  a typo'd connection name silently falls back to canned fixture demo
+  data with only a passive, easy-to-miss toast as the signal; a user
+  could see a clean "Passed" result while unknowingly comparing fixture
+  data instead of their real databases.
+
 ## Execution rules
 
 1. Start only the task identified as active in `PROGRESS-LEDGER.md` after all dependencies are approved.
