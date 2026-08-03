@@ -1,202 +1,267 @@
-# ParityLens — Review Report T-31 (Result Store)
+# ParityLens — Review Report T-32
 
 ## Review independence statement
 
-I am a separate reviewer instance from the implementer of this task. I have
-no memory of writing this code. All findings below come from my own
-inspection of the diff (`db169fc`, `f7fb004` on `task/T-31-result-store`
-against `main`), my own execution of the verification commands, and my own
-constructed adversarial test cases (subsequently deleted — confirmed via
-`git status`). I did not take `IMPLEMENTATION-REPORT.md`'s claims at face
-value; every claim below marked "confirmed" was independently re-derived.
+I am a separate reviewer instance from whoever implemented this task. I did
+not write any of the code under review. All findings below are based on my
+own fresh reading of `TASK-BRIEF.md`, the actual diff (`git diff
+main...HEAD`), the actual current source of every changed file, and my own
+re-run of verification and adversarial probes — not on the implementer's
+characterization of them in `IMPLEMENTATION-REPORT.md`.
 
 ## Scope reviewed
 
-- `TASK-BRIEF.md` (T-31, sole scope authority) — read in full.
-- `IMPLEMENTATION-REPORT.md` — read in full, treated as claims to verify,
-  not fact.
-- Diff `main..task/T-31-result-store`:
-  - `packages/extension/src/runHistory/runHistory.ts` (new, 189 lines)
-  - `packages/extension/src/runHistory/runHistory.test.ts` (new, 92 lines)
-  - `IMPLEMENTATION-REPORT.md` (overwritten, expected per-task pattern)
-- `packages/extension/src/export/writeExport.ts` and `exporters.ts` (read,
-  unmodified — confirmed via `git diff main..task/T-31-result-store --
-  packages/extension/src/export/ packages/engine/ packages/shared/`,
-  which produced empty output).
-- `DESIGN-SPEC.md` (Architecture table line 72, Data Flow step 5, "Write
-  safety" principle lines 122-123), `IMPLEMENTATION-PLAN.md` (T-31/T-33
-  rows), `PROGRESS-LEDGER.md` (current state, T-30 precedent).
+Branch `task/T-32-comparison-authoring-scaffold`, commits `f3388cc` and
+`64d017a`, diffed against `main`. Changed files (confirmed via `git diff
+main...HEAD --name-only`, 7 files):
+
+- `packages/extension/src/authoring/buildComparisonYaml.ts` (new)
+- `packages/extension/src/authoring/buildComparisonYaml.test.ts` (new)
+- `packages/extension/src/authoring/newComparisonWizard.ts` (new)
+- `packages/extension/src/authoring/newComparisonWizard.test.ts` (new)
+- `packages/extension/src/activation/activate.ts` (modified)
+- `packages/extension/package.json` (modified)
+- `IMPLEMENTATION-REPORT.md` (modified, per this kit's per-task pattern)
 
 ## Scope and ownership check
 
-Only files under `packages/extension/src/runHistory/**` plus
-`IMPLEMENTATION-REPORT.md` changed. `packages/extension/src/export/**`,
-`packages/engine/**`, `packages/shared/**` are byte-identical to `main`
-(confirmed by an explicitly-scoped empty `git diff`). No wiring into
-`activate.ts`, tree view, or status bar (confirmed by `git diff --stat`
-showing no other files touched). **No scope violations.**
+All changed files fall within `TASK-BRIEF.md`'s declared "Files owned":
+`activate.ts` (new command registration only), `authoring/**` (new), and
+`package.json`'s `contributes.commands` array. Verified independently:
 
-## Judgment call 1 — `RunSummary` vs. literal `RunRecord[]`
+- `git diff main...HEAD -- packages/engine` → empty. `packages/engine/**`
+  (including `parseDefinition`/`definition.ts`) is untouched, per the
+  brief's Prohibited Changes.
+- `git diff main...HEAD -- packages/extension/src/connections` → empty.
+  T-29's owned files are untouched.
+- `activate.ts` diff is strictly additive: one new import, one new command
+  ID constant, one new `registerNewComparisonCommand` function, one new
+  `context.subscriptions.push(...)` call, and a doc-comment update. No
+  existing command handler or registration (`runComparison`/
+  `addConnection`/`editConnection`/`deleteConnection`) was touched.
+- `package.json` diff adds exactly one new entry to `contributes.commands`
+  (`paritylens.newComparison`); no existing entry was touched.
 
-`TASK-BRIEF.md` §3 states verbatim: *"Implement `listRecentRuns(...):
-Promise<RunRecord[]>` (or a lighter summary type if reading full
-`ComparisonResult` bodies for every listed run is wasteful — your call,
-document it)."* This is a genuine, explicit authorization in the Scope
-section to deviate from the literal `RunRecord[]` return type stated later
-in the brief's own "Interfaces produced" section (and echoed verbatim in
-`IMPLEMENTATION-PLAN.md`'s T-31 row). The report is correct that these two
-sections of the brief are in tension, and correct that Scope's explicit,
-reasoned invitation is the more authoritative signal — it is where the
-brief actually reasons about the tradeoff, whereas the Interfaces-produced
-table reads as short-form restatement.
+No unauthorized scope expansion found.
 
-Verified in code: `RunSummary = Omit<RunRecord, "result">`
-(`runHistory.ts` line 34), returned by `listRecentRuns`, with a doc comment
-(lines 22-33) explaining the tradeoff (avoiding reading/parsing every full
-`ComparisonResult` body, including potentially large row-difference
-arrays, just to render a name/timestamp list) and pointing to `loadRun` as
-the mechanism for retrieving a full body on demand. This is honestly
-documented, not silently substituted. **Accepted, not a finding** — the
-brief authorized this and the deviation is disclosed both in code comments
-and in the implementation report.
+## Verification performed
 
-## Judgment call 2 — duplicated path-containment expression
+### Fresh full verification (`npm run verify`)
 
-Claim: `writeExport.ts` exposes no standalone path-resolution/containment
-function separate from the coupled read+write `writeExport`, so `loadRun`
-cannot import a shared helper and instead mirrors the identical expression.
-
-**Verified.** `grep -n "^export" packages/extension/src/export/*.ts` shows
-exactly three exports: `exportToCsv`, `exportToJson`, `exportToMarkdown`
-(pure, in `exporters.ts`) and `writeExport` (the only I/O-performing
-export, in `writeExport.ts`). No standalone containment-check function
-exists to import. The claim is accurate, and the brief's own Prohibited
-Changes section (T-31 may not modify `packages/extension/src/export/**`)
-forecloses extracting one as part of this task.
-
-**Byte-for-byte comparison of the two expressions**, done directly rather
-than trusting the report's "verified word-for-word" claim:
-
-`writeExport.ts` lines 31-32:
-```
-const rel = relative(resolvedRoot, resolvedTarget);
-const escapesRoot = rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-```
-
-`runHistory.ts` lines 91-92:
-```
-const rel = relative(resolvedRoot, resolvedTarget);
-const escapesRoot = rel === "" || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel);
-```
-
-Identical, character for character, including the resolution pattern one
-line above each (`resolve(safeOutputRoot, targetPath)` / `resolve(id...)`
-against `resolve(safeOutputRoot)` as root). No divergence found.
-
-**Adversarial probing.** I wrote a temporary test file
-(`packages/extension/src/runHistory/_adversarial.test.ts`, deleted after
-use — confirmed clean via `git status --short` post-cleanup) covering
-cases beyond the implementer's own two escape tests:
-
-| Case | Input | Result |
-| --- | --- | --- |
-| Empty id → root itself (`rel === ""`) | `loadRun("", tempRoot)` | Rejected (throws) |
-| Sibling-directory-prefix trick (`/base/bar` root, `/base/barEVIL` target — a classic string-prefix-check bypass) | `loadRun("../barEVIL/secret", tempRootAtBar)` | Rejected (throws) — confirms containment uses `path.relative`, not a naive `startsWith` string check, exactly as documented |
-| Backslash-style traversal | `loadRun("..\\..\\etc\\passwd", tempRoot)` | Rejected (throws) |
-| Non-`..`-literal traversal variant | `loadRun("....//....//etc/passwd", tempRoot)` | Rejected (throws — resolves to a literal `....` named entry outside root via `..` collapsing, still caught) |
-
-All four passed (rejected as expected); test run output: `4 tests`, `1
-passed (1)` file, `4 passed (4)`. No path-escape bypass found in either
-direction — `resolveRecordPath` neither over-rejects legitimate cases (the
-implementer's own byte-for-byte round-trip and two-runs tests pass) nor
-under-rejects adversarial ones.
-
-**Disposition:** the duplication is real but faithful, disclosed, and
-adversarially confirmed non-divergent. No finding.
-
-## Immutability check (brief Handoff item a)
-
-`persistRun` (lines 116-130) always constructs a fresh filename via
-`buildIdStem`, which embeds an ISO millisecond timestamp plus a random
-6-character base36 suffix (`Math.random().toString(36).slice(2, 8)`).
-Traced every call site: `persistRun` is the only function that writes
-(via `writeExport`); `loadRun` and `listRecentRuns` only read
-(`readFile`/`readdir`). There is no update/overwrite path anywhere in the
-module — no function takes an existing `id` and rewrites its content. Two
-back-to-back `persistRun` calls with the same `comparison` name (the
-implementer's own third required test, and a case I re-ran independently)
-produced two distinct ids and two distinct files, both independently
-loadable. The random suffix closes the theoretical same-millisecond
-collision gap the brief flagged as acceptable to leave undocumented-but-flagged;
-here it's actually closed rather than merely documented, which exceeds the
-brief's minimum bar without adding lock/retry machinery — a reasonable,
-disclosed judgment call, not scope creep. **Confirmed: no code path can
-cause one run's record to overwrite another's.**
-
-## `writeExport` reuse check (brief Handoff item b)
-
-`runHistory.ts` line 4: `import { writeExport } from "../export/writeExport";`
-Line 127: `await writeExport(targetPath, JSON.stringify(record), safeOutputRoot);`
-— genuinely imported and called, not reimplemented. `persistRun` performs
-no `fs.writeFile`/`fs.mkdir` calls of its own anywhere in the file (only
-`readFile`/`readdir` appear, both exclusively in `loadRun`/
-`listRecentRuns`). **Confirmed genuine reuse for the write path.**
-
-## Independent verification performed
+Ran independently, not copied from the report:
 
 ```
-npm run verify
+Test Files  28 passed | 2 skipped (30)
+     Tests  450 passed | 27 skipped (477)
 ```
-Result: exit 0. `tsc -b --force` clean, `eslint .` clean,
-`vitest run`: **26 test files passed, 2 skipped (28 total)**;
-**432 tests passed, 27 skipped (459 total)**. This matches
-`IMPLEMENTATION-REPORT.md`'s claimed full-verification numbers exactly
-(432/27/459, 26/2/28) — no discrepancy between my fresh run and the
-report's claim.
 
-```
-npx vitest run packages/extension/src/runHistory
-```
-4/4 tests passed, matching the report's focused-green claim.
+typecheck clean, lint clean, all test files green except the two
+integration suites (SQL Server/Postgres) that skip by design when
+`PARITYLENS_TEST_*` env vars are unset — matching this repo's documented
+baseline. This matches the report's claimed full-verification numbers
+exactly (450 passed / 27 skipped / 28 files passed / 2 skipped).
 
-Reviewed `runHistory.test.ts` line-by-line against the brief's three
-required Green-state tests (byte-for-byte round trip, escape rejection,
-no-overwrite-on-collision) — all three present and doing what they claim;
-a fourth (ordering) test is additive coverage, not required but
-reasonable.
+### Focused authoring suite
+
+`npx vitest run packages/extension/src/authoring` → `buildComparisonYaml.test.ts`
+(5 tests) + `newComparisonWizard.test.ts` (13 tests), all green — matches
+the report's claimed 18/18.
+
+### Adversarial probe 1 — credential/structural-injection into scaffolded YAML
+
+Per the brief's Handoff note, I wrote an independent adversarial test file
+(`packages/extension/src/authoring/__reviewer_probe.test.ts`, deleted after
+the run — confirmed via `git status --short` showing a clean tree) that
+goes beyond the implementer's own tests. It fed `buildComparisonYaml` +
+`parseDefinition` together (round-tripping through the real parser, not
+just inspecting the builder's string output) with:
+
+- YAML anchor/alias injection (`"&anchor foo\ntarget:\n  connection: hijacked"`)
+- Flow-mapping injection (`"{password: hunter2}"`)
+- Quote-escape-and-reopen-mapping attempts on `connection`, `object`, and
+  `where` fields specifically crafted to try to break out of the
+  double-quoted scalar and inject a sibling `password:` key
+  (`'x"\n  password: hunter2\n  connection: "y'` and analogous variants for
+  `object`/`where`/top-level `name`/`keys[]`)
+- A trailing-backslash-before-closing-quote case (`"trailing\\"`) to check
+  the escape doesn't consume the closing delimiter
+- Tab/control characters
+- An empty-string connection (confirmed rejected by `parseDefinition`
+  itself, not something the builder needs to special-case)
+- A sweep of six credential-shaped substrings (`password:`, `secret:`,
+  `token:`/`refresh_token:`, a quoted-nested-object string, a list-item
+  form, and a literal `connection: {password: x}` string) fed into both
+  `sourceConnection` and `targetConnection` simultaneously
+
+Result: **all 11 probe cases passed** — `parseDefinition` on the builder's
+output always returned the literal adversarial string, unmodified, as a
+plain JS string value for the relevant field, and in the anchor-injection
+case the sibling `target.connection` was confirmed *not* hijacked
+(`"postgres-products"`, unchanged). No case produced a nested
+object/mapping, no case allowed a `password`/`secret`/`token`-shaped key to
+appear anywhere in the parsed structure outside of being a literal
+substring of a scalar value. `yamlQuotedString`'s escaping
+(backslash → `\\`, `"` → `\"`, `\r` → `\r`, `\n` → `\n`) is sufficient for
+every double-quoted-YAML-scalar-breakout technique I could construct, and
+I probed all five user-facing string-bearing fields
+(`comparisonName`/`sourceConnection`/`sourceObject`/`sourceWhere`/`keys[]`),
+not just `connection` as the implementer's own tests focused on.
+
+This independently confirms the brief's Handoff point (1): the scaffolded
+YAML never contains a credential-shaped field under any answer combination
+I could construct, including inputs the implementer's own test suite did
+not cover (object/where/name/keys fields, anchors, flow mappings, and
+explicit quote-breakout attempts).
+
+### Adversarial probe 2 — overwrite check tracing
+
+Traced `runNewComparisonCommand` (`newComparisonWizard.ts` lines 184–216)
+by hand:
+
+1. Runs the wizard to completion (aborts early, before any file-system
+   touch, if any step returns `undefined`).
+2. Prompts for a file name; aborts (no write) if cancelled.
+3. Resolves `targetPath` via `deps.resolveTargetPath`.
+4. Calls `deps.fileExists(targetPath)` — **before** any call to
+   `buildComparisonYaml`, `parseDefinition`, or `deps.writeFile`. If true,
+   shows an error and returns `undefined` immediately; none of the
+   subsequent steps run.
+5. Only if the file does not exist does it build the YAML, self-validate
+   via `parseDefinition`, and call `deps.writeFile`.
+
+There is exactly one call site to `deps.writeFile` in the whole module
+(confirmed by inspection — no other write path, no retry-with-overwrite
+branch, no auto-numbering). The "wizard interrupted partway and re-run"
+case the brief specifically asks about: because `writeFile` is only ever
+reached at the very end of a single linear async sequence, a cancelled run
+(at any step, including the file-name prompt) never calls `writeFile` at
+all — there is no partial-write state left behind to collide with on a
+second run. A second run against the same target path re-enters the same
+`fileExists` check with the same result, so a file created by a completed
+first run is correctly detected and blocks a second run's write.
+
+The real `activate.ts` wiring backs `fileExists` with `node:fs/promises`
+`stat` wrapped in try/catch (true on success, false on any throw,
+including `ENOENT`) — a standard, correct existence check. The report
+discloses a check-then-write TOCTOU gap (no `O_EXCL`); I agree this is a
+theoretical, disclosed, and out-of-scope gap under the brief's explicit
+"aborting cleanly is an acceptable minimum" / no-required-atomic-create
+wording, and it is consistent with this codebase's existing
+`writeExport.ts` precedent (also not atomic). Not a blocking finding.
+
+Confirmed via the existing `newComparisonWizard.test.ts` test "never
+overwrites an existing file at the target path -- aborts without
+writing" plus my own trace: `deps.writeFile` is asserted never called when
+`existingFiles` seeds the target path, and `showErrorMessage` is called
+with an "already exists" message. This independently confirms the brief's
+Handoff point (2).
+
+### Round-trip self-validation
+
+Confirmed `runNewComparisonCommand` calls `parseDefinition(yamlText)`
+(line 211) directly on the builder's own output, uncaught, before the
+`writeFile` call — a real self-validation step, not a decorative no-op.
+The "writes a scaffolded file whose contents parseDefinition accepts"
+test asserts on the actual parsed `ParityDefinition` shape field-by-field
+(`version`, `name`, `source`, `target`, `keys`), not just "did not throw",
+matching the brief's Green-state requirement wording exactly. I also
+independently re-parsed the written YAML from my own adversarial probe
+cases above and confirmed the shape assertions hold there too.
+
+### Cancellation coverage
+
+Traced `runNewComparisonWizard`: every one of its six `showInputBox`/
+`showQuickPick` calls (comparison name, source connection, source
+object+where, target connection, target object+where, keys) is followed
+by an `=== undefined` check that returns `undefined` immediately, before
+any later step runs or any answer is assembled. `runNewComparisonCommand`
+adds two more early-return points (file-name prompt cancellation,
+never-overwrite abort) before `buildComparisonYaml`/`writeFile` are ever
+reached. Cross-checked against the report's claimed test count: eight
+dedicated cancel/abort-path tests exist across both test files (six in
+`runNewComparisonWizard`'s describe block, two more in
+`runNewComparisonCommand`'s), all asserting `writeFile` was never called.
+This matches.
+
+### Fixture-pair-name fallback list claim
+
+Independently confirmed via direct inspection: `packages/engine/src/index.ts`
+re-exports only `orchestration/definition/definition.js`,
+`orchestration/planner/planner.js`, and the three connector modules
+(`fixture-connector.js`, `sqlServerConnector.js`, `postgresConnector.js`)
+— it does **not** re-export `packages/engine/fixtures/index.ts` or any
+`FIXTURE_SET_IDS`-shaped constant. The implementer's claim that this
+module is not part of `@paritylens/engine`'s public surface is accurate.
+I also confirmed `activate.ts` already contains a pre-existing hardcoded
+`"sqlserver-customer"` string literal precedent (in
+`buildFixtureRegistry`/`buildConnectorRegistry`, both outside this task's
+diff) for exactly the same reason — this is a genuine, honest precedent
+in the codebase, not a fabricated justification. Importing the fixtures
+module directly would require either a prohibited `packages/engine/**`
+change (adding the re-export) or a cross-package deep import this
+codebase's own `index.ts` header comment explicitly disclaims
+("no file in this monorepo deep-imports across the @paritylens/engine
+package boundary"). The hardcoded three-literal list
+(`FIXTURE_PAIR_NAMES` in `newComparisonWizard.ts`) was the only option
+available within this task's ownership constraints; this was not
+avoidable without a scope violation. I agree with the implementer's
+disclosed risk that a user picking `snowflake-orders`/`postgres-products`
+from this list would hit a runtime surprise on `paritylens.runComparison`
+(only `sqlserver-customer` currently resolves to a wired connector) — this
+is honestly disclosed in both the implementation report and in a code
+comment in `newComparisonWizard.ts` itself, and is a reasonable judgment
+call given the brief's plural "fixture pair names" wording and
+`IMPLEMENTATION-PLAN.md`'s T-32 row wording. Not a blocking finding, but
+noting it as a candidate for a future task to reconcile (e.g. widening
+`buildConnectorRegistry`'s fixture wiring, or narrowing this list) rather
+than silent scope creep here.
 
 ## Findings
 
 ### Critical
+
 NONE.
 
 ### Important
+
 NONE.
 
 ### Minor
-NONE. Both disclosed judgment calls (RunSummary vs. RunRecord[], the
-duplicated containment expression) were adversarially checked and found
-sound, faithful to their justification, and explicitly authorized or
-foreclosed-by-brief respectively — they do not rise to findings requiring
-follow-up tracking. The `listRecentRuns` silent-skip-on-parse-failure
-behavior and shared-directory risk the implementer flagged under "Risks or
-limitations" are reasonable, in-scope-for-now design notes correctly
-routed to a future task (T-33) rather than defects in this one.
+
+| ID | Finding | Evidence | Resolution |
+| --- | --- | --- | --- |
+| T-32-01 | Fixture-pair fallback list offers `snowflake-orders`/`postgres-products` as connection names even though `activate.ts`'s `buildConnectorRegistry` currently only wires a real connector for `sqlserver-customer` — a user picking one of the other two in `newComparison`'s quick pick gets a syntactically valid `.paritylens` file that will fail at `runComparison` time with an unresolved-connection error. | `packages/extension/src/authoring/newComparisonWizard.ts` lines 15-34 (`FIXTURE_PAIR_NAMES`); `packages/extension/src/activation/activate.ts` `buildFixtureRegistry`/`buildConnectorRegistry` (pre-existing, outside this diff) only registers `"sqlserver-customer"`. | Honestly disclosed by the implementer in both the report and an in-code comment; not a defect introduced by dishonesty or an unjustified reading of the brief. Suggest a follow-up task widen `buildConnectorRegistry`'s fixture wiring to match, or narrow this list to only the fixture(s) actually resolvable today — does not block this task's approval. |
+| T-32-02 | Check-then-write TOCTOU gap in the never-overwrite check (`deps.fileExists` then, later, `deps.writeFile`, not atomic). | `packages/extension/src/authoring/newComparisonWizard.ts` lines 200-213. | Disclosed by the implementer; consistent with this codebase's existing `writeExport.ts` precedent (also non-atomic) and explicitly permitted by the brief's "aborting cleanly is an acceptable minimum" wording (no atomic-create requirement stated). No action required; noting for completeness only. |
 
 ## Disposition of prior findings
 
-No prior findings were opened against T-31 (this is its first review
-round); nothing carried forward to re-verify.
+No prior review round or open finding was assigned to T-32 specifically —
+this is the first review pass for this task. `PROGRESS-LEDGER.md`'s
+existing open findings (I-01/I-02, the SQL Server `GO`-separator and
+PostgreSQL dollar-quoting statement-safety gaps) are unrelated to this
+task's scope (`assertReadOnlyStatement` and connector execution paths are
+untouched by this diff) and are not re-litigated here.
 
-## Approval status
+## Final approval status
 
 **APPROVED**
 
-Rationale: scope is clean (only owned files touched), fresh verification
-matches the report's claims exactly, both disclosed judgment calls were
-independently checked against the brief text and the actual code (not
-trusted from the report's description), the safe-output-root reuse for
-writes is genuine, the path-containment duplication for reads is
-byte-for-byte identical to `writeExport`'s and survived adversarial
-probing with inputs beyond the implementer's own test suite, and record
-immutability holds under every traced code path.
+Both Handoff-note adversarial requirements are independently confirmed:
+(1) the scaffolded YAML never contains a credential-shaped field under any
+answer combination I could construct, across all five user-facing string
+fields, including anchor/flow-mapping/quote-breakout injection attempts
+the implementer's own tests did not cover; (2) an existing file at the
+target path is genuinely never silently overwritten under any code path,
+including a wizard interrupted partway and re-run — there is exactly one
+write call site, reached only after a successful existence check, and a
+cancelled/interrupted run never reaches it at all. Fresh `npm run verify`
+matches the report's claimed numbers exactly (450 passed / 27 skipped / 28
+files passed / 2 skipped). Scope is fully within the brief's declared file
+ownership with zero touches to `packages/engine/**` or
+`packages/extension/src/connections/**`. The fixture-pair-name hardcoding
+claim was independently verified against `packages/engine/src/index.ts`'s
+actual exports and found accurate, not a convenient fabrication. No
+Critical or Important findings. Two Minor findings recorded, both already
+honestly disclosed by the implementer and consistent with the project's
+existing risk model (documented non-atomic-write precedent,
+plural-reading-of-brief judgment call) — neither blocks approval.
