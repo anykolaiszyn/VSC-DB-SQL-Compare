@@ -115,6 +115,22 @@ import { ConnectionProfileStore } from "../connections/connectionProfileStore";
 import type { ConnectionProfile } from "../connections/connectionProfile";
 import type { ComparisonResult } from "@paritylens/shared";
 
+const VALID_YAML_FOR_CONFIRMATION = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+
 function createMockExtensionContext() {
   const secretsStore = new Map<string, string>();
   return {
@@ -430,5 +446,130 @@ describe("reopenRunCommand (T-33-01: recent-run click behavior)", () => {
       "ParityLens: could not reopen this run — no workspace folder is open."
     );
     expect(deps.showResultsWebview).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * T-38: `runComparisonCommand` now calls `planQueries` first and blocks on
+ * an injected `confirmRun` callback (mirroring `resolveRunHistoryRoot`/
+ * `statusBarItem`'s existing optional-injected-dependency pattern above --
+ * `runComparisonCommand.test.ts`, T-22's pre-existing file, is outside this
+ * task's declared "Files owned" list per TASK-BRIEF.md, so its calls
+ * (which never supply `confirmRun`) must keep compiling and passing
+ * unchanged; `confirmRun` is therefore typed optional, defaulting to
+ * "proceed" when absent, exactly like `resolveRunHistoryRoot`/
+ * `statusBarItem` already do for the same documented reason). The live
+ * `registerRunComparisonCommand` wiring always supplies a real
+ * webview-backed `confirmRun` — see this file's own assertions on
+ * `registerRunComparisonCommand`'s registration below for that wiring, and
+ * `runConfirmationWebview.test.ts` for the render function's own purity/
+ * escaping tests) before `runComparison` (the real query-execution
+ * function) is ever called.
+ */
+describe("runComparisonCommand (T-38 pre-execution confirmation)", () => {
+  function createDeps(confirmRun: (queries: string[]) => Promise<boolean>) {
+    return {
+      createWebviewPanel: vscode.window.createWebviewPanel as unknown as (
+        ...args: unknown[]
+      ) => { webview: { html: string } },
+      viewColumn: vscode.ViewColumn.Active as unknown as number,
+      showInformationMessage: vscode.window.showInformationMessage as unknown as (message: string) => unknown,
+      showErrorMessage: vscode.window.showErrorMessage as unknown as (message: string) => unknown,
+      confirmRun
+    };
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("blocks on confirmRun and never calls runComparison (or shows the results webview) when the user cancels", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const deps = createDeps(confirmRun);
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    // The confirmation panel must have been shown with the real planned
+    // queries -- schema-only YAML issues no SQL (see planQueries.test.ts's
+    // own "schema comparison issues no SQL" case), so an empty list here is
+    // correct and still proves confirmRun was invoked with planQueries's
+    // actual output, not a placeholder.
+    expect(confirmRun.mock.calls[0]?.[0]).toEqual([]);
+    expect(result).toBeUndefined();
+    expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to call runComparison and show the results webview when the user confirms Run", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const deps = createDeps(confirmRun);
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+    expect(result?.comparison).toBe("customer-migration-parity");
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("surfaces a planQueries failure via showErrorMessage without ever calling confirmRun or runComparison", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => true);
+    const deps = createDeps(confirmRun);
+    // A definition whose object doesn't exist in the sqlserver-customer
+    // fixture -- planQueries's own getSchema call (needed because
+    // checks.schema.enabled: true) will reject, the same way
+    // runComparisonCommand.test.ts's existing "unknown object" test proves
+    // runComparison's equivalent getSchema call rejects.
+    const yamlWithUnknownObject = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: does_not_exist_table
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  schema:
+    enabled: true
+`;
+
+    const result = await runComparisonCommand(yamlWithUnknownObject, deps as never);
+
+    expect(result).toBeUndefined();
+    expect(confirmRun).not.toHaveBeenCalled();
+    expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+    expect(deps.showErrorMessage).toHaveBeenCalledTimes(1);
+  });
+
+  it("passes the exact planQueries output (not a re-derived list) to confirmRun for a check combination that does produce SQL", async () => {
+    const confirmRun = vi.fn<(queries: string[]) => Promise<boolean>>(async () => false);
+    const deps = createDeps(confirmRun);
+    const rowCountYaml = `
+version: 1
+name: customer-migration-parity
+source:
+  connection: legacy-sql-prod
+  object: customer_source
+target:
+  connection: snowflake-analytics
+  object: customer_target
+keys:
+  - CustomerID
+checks:
+  row_count:
+    enabled: true
+`;
+
+    await runComparisonCommand(rowCountYaml, deps as never);
+
+    const passedQueries = confirmRun.mock.calls[0]?.[0] ?? [];
+    expect(passedQueries).toHaveLength(2);
+    expect(passedQueries[0]).toContain("SELECT COUNT(*)");
+    expect(passedQueries[1]).toContain("SELECT COUNT(*)");
   });
 });

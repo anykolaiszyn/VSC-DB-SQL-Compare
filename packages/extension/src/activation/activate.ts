@@ -5,6 +5,7 @@ import type { ComparisonResult, DataPlatformConnector } from "@paritylens/shared
 import {
   parseDefinition,
   runComparison,
+  planQueries,
   FixtureConnector,
   InvalidDefinitionError,
   UnresolvedConnectionError,
@@ -13,6 +14,7 @@ import {
 import { ParityTreeDataProvider } from "../views/parityTreeDataProvider";
 import { SecretStore } from "../secrets/secretStore";
 import { showResultsWebview } from "../webview/resultsWebview";
+import { renderRunConfirmationHtml } from "../webview/runConfirmationWebview";
 import { ConnectionProfileStore, secretKeyFor } from "../connections/connectionProfileStore";
 import { addConnectionCommand, editConnectionCommand, deleteConnectionCommand } from "../connections/connectionCommands";
 import { resolveConnector } from "../connections/resolveConnector";
@@ -280,6 +282,34 @@ export async function runComparisonCommand(
      * function's pre-existing test file never supplies it.
      */
     statusBarItem?: ParityStatusBarItem;
+    /**
+     * T-38: called with `planQueries`'s output (the exact SQL list a real
+     * run would issue) after the connector registry is resolved and before
+     * `runComparison` is ever invoked — resolving `true` proceeds with the
+     * existing, unmodified `runComparison(...)` call; resolving `false`
+     * (or the promise's default when this dep is unsupplied) cancels the
+     * run cleanly, with `runComparison` never called and no error shown.
+     * The live `registerRunComparisonCommand` wiring below always supplies
+     * a real implementation backed by `renderRunConfirmationHtml` +
+     * `createWebviewPanel` + `onDidReceiveMessage` (see
+     * `createWebviewConfirmRun` below).
+     *
+     * Typed optional, defaulting to "proceed" (`true`) when absent — the
+     * same documented pattern `resolveRunHistoryRoot`/`statusBarItem`
+     * above already use: `runComparisonCommand.test.ts` (T-22's
+     * pre-existing file, outside this task's declared "Files owned" list
+     * per TASK-BRIEF.md, so not touchable by this task) calls this
+     * function without this field at all, and its existing assertions
+     * depend on `runComparison` actually being reached and
+     * `createWebviewPanel` actually being called for the results webview.
+     * Defaulting an absent `confirmRun` to "proceed" preserves that file's
+     * exact existing behavior unchanged, while `activate.test.ts`'s new
+     * T-38 suite (this task's own test file) and the real
+     * `registerRunComparisonCommand` wiring always supply a real
+     * confirmation callback, so "every run goes through confirmation"
+     * holds for every actual caller this task controls.
+     */
+    confirmRun?: (queries: string[]) => Promise<boolean>;
   }
 ): Promise<ComparisonResult | undefined> {
   try {
@@ -304,6 +334,21 @@ export async function runComparisonCommand(
             deps.secretStore
           )
         : buildFixtureRegistry(definition.source.connection, definition.target.connection);
+
+    // T-38: preview the exact SQL a real run would issue, and block until
+    // the user confirms Run (or cancels). planQueries never calls
+    // executeQuery -- see planQueries.ts's own header comment -- so this
+    // step is safe to run before any real query executes. A planQueries
+    // failure (e.g. a getSchema rejection) falls through to this
+    // function's existing outer catch below, exactly like any other
+    // pre-execution failure.
+    const plannedQueries = await planQueries(definition, registry);
+    const proceed = deps.confirmRun !== undefined ? await deps.confirmRun(plannedQueries) : true;
+    if (!proceed) {
+      // Cancellation is not a failure -- exit cleanly, no error shown,
+      // runComparison never called.
+      return undefined;
+    }
 
     const result = await runComparison(definition, registry);
 
@@ -360,6 +405,9 @@ export async function runComparisonCommand(
  * and passes a `resolveRunHistoryRoot` closure bound to the live
  * `vscode.workspace.workspaceFolders` — see `resolveRunHistoryRoot`'s doc
  * comment for the convention.
+ *
+ * T-38: also passes `confirmRun` (see `createWebviewConfirmRun` below),
+ * a real blocking confirmation callback backed by a new webview panel.
  */
 function registerRunComparisonCommand(
   connectionProfileStore: ConnectionProfileStore,
@@ -405,9 +453,68 @@ function registerRunComparisonCommand(
       connectionProfileStore,
       secretStore,
       resolveRunHistoryRoot: () => resolveRunHistoryRoot(vscode.workspace.workspaceFolders),
-      statusBarItem
+      statusBarItem,
+      confirmRun: createWebviewConfirmRun()
     });
   });
+}
+
+/**
+ * T-38: builds the real, `vscode`-backed `confirmRun` callback
+ * `runComparisonCommand` blocks on before ever calling `runComparison`.
+ * Opens a new webview panel (`enableScripts: true`, following T-36's
+ * established interactive-webview pattern — see
+ * `comparisonEditorProvider.ts`'s header comment) rendered via
+ * `renderRunConfirmationHtml`, and resolves the returned promise from the
+ * panel's `onDidReceiveMessage` handler: `{ type: "run" }` resolves `true`,
+ * `{ type: "cancel" }` resolves `false`. `onDidDispose` (the panel closed
+ * without either button being clicked — e.g. the user closed the tab)
+ * resolves `false` as well, matching TASK-BRIEF.md Scope item 2's "If the
+ * user clicks Cancel (or closes the panel without choosing), runComparison
+ * must never be called" contract. The panel is always disposed once a
+ * decision is reached (whichever happens first: a message or a manual
+ * close), so a stray disposal after a message never double-resolves the
+ * promise (`resolved` guards against exactly that).
+ */
+function createWebviewConfirmRun(): (queries: string[]) => Promise<boolean> {
+  return (queries: string[]) =>
+    new Promise<boolean>((resolvePromise) => {
+      let resolved = false;
+      const resolveOnce = (value: boolean) => {
+        if (resolved) {
+          return;
+        }
+        resolved = true;
+        resolvePromise(value);
+      };
+
+      const panel = vscode.window.createWebviewPanel(
+        "paritylens.runConfirmation",
+        "ParityLens: Confirm Run",
+        vscode.ViewColumn.Active,
+        { enableScripts: true }
+      );
+      panel.webview.html = renderRunConfirmationHtml(queries);
+
+      const messageSubscription = panel.webview.onDidReceiveMessage((message: unknown) => {
+        if (typeof message !== "object" || message === null) {
+          return;
+        }
+        const type = (message as { type?: unknown }).type;
+        if (type === "run") {
+          resolveOnce(true);
+          panel.dispose();
+        } else if (type === "cancel") {
+          resolveOnce(false);
+          panel.dispose();
+        }
+      });
+
+      panel.onDidDispose(() => {
+        messageSubscription.dispose();
+        resolveOnce(false);
+      });
+    });
 }
 
 /**
