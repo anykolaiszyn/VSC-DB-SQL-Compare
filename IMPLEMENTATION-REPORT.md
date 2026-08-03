@@ -1,264 +1,238 @@
-# ParityLens — Implementation Report T-33
+# ParityLens — Implementation Report T-34
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not
   reviewed/approved; see Recommended next step)
-- **Objective:** Wire the "DATA PARITY" sidebar's `Comparisons` and
-  `Recent Runs` tree sections to real data, wire `parityStatusBar.ts` to
-  show `Parity: N passed | N warnings | N failed` after a run, and (per
-  the brief's explicitly authorized narrow amendment) make
-  `runComparisonCommand` actually call T-31's `persistRun` so `Recent
-  Runs` is genuinely populatable — quoting `TASK-BRIEF.md`'s Objective:
-  "`Recent Runs` is meaningless while nothing ever calls T-31's
-  `persistRun`... Making `Recent Runs` genuinely populatable therefore
-  requires one narrow, additive call to `persistRun` inside that existing
-  command flow."
+- **Objective:** Apply the owner-approved visual design handoff
+  (`multi-agent-idea-to-app/design_handoff_paritylens_results_webview/README.md`
+  + `ParityLens Results.dc.html`) to the two currently-unstyled UI
+  surfaces, per `TASK-BRIEF.md`'s exact wording:
+  - `packages/extension/src/webview/resultsWebview.ts` — give the bare,
+    unstyled `renderResultsHtml` output "a real visual language mapped
+    onto **VS Code theme CSS variables** ... not the prototype's raw
+    Nocturne hex/token values, which are reference only."
+  - `packages/extension/src/views/parityTreeDataProvider.ts` — add
+    "`iconPath`/`ThemeIcon` (codicons), `description` text, and
+    `contextValue`-driven affordances" to the tree items T-33 populated
+    with real data but left using default `TreeItem` rendering.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/src/views/parityTreeDataProvider.ts` | `ParityTreeDataProvider` now takes an optional `ParityTreeDataProviderDeps` constructor argument (`findComparisonFiles`, `listRecentRuns`, `runComparisonCommandId`, `reopenRunCommandId`). `getChildren` populates `Comparisons` with one `ParityComparisonTreeItem` per discovered `.paritylens` file (command = `paritylens.runComparison`, arg = file URI) and `Recent Runs` with one `ParityRecentRunTreeItem` per `RunSummary` (command = reopen-run command id, arg = run id). `getChildren` return type widened to `TreeItem[] \| Promise<TreeItem[]>` (sync for the top-level call, async for section children) — `TreeDataProvider<T>.getChildren`'s own contract (`ProviderResult<T>`) permits this. | Brief Scope items 1–3 |
-| `packages/extension/src/views/parityTreeDataProvider.test.ts` | Added `Uri` to the mocked `vscode` module; added test coverage for both new sections (file discovery → tree items, run summaries → tree items, command/argument correctness on click, empty-state behavior with no deps); updated 3 pre-existing synchronous `getChildren()` call sites to cast `as ParityTreeItem[]` since the return type is now a union. | Red/green evidence for Scope items 1–3 |
-| `packages/extension/src/activation/activate.ts` | **Amendment** (brief-authorized, Objective section): `runComparisonCommand`'s `deps` gained two new **typed-optional** fields, `resolveRunHistoryRoot` and `statusBarItem`, following the existing `connectionProfileStore`/`secretStore` optional-with-no-op-absent-state pattern. After a successful `runComparison` call and before `showResultsWebview`, the function now (a) resolves a safe output root and calls `persistRun`, catching and surfacing any failure via `showErrorMessage` without throwing, and (b) calls `statusBarItem.updateFromResult(result)` + `.show()` if supplied. Added `registerReopenRunCommand` (`paritylens.reopenRun`) which loads a run via `loadRun` and reopens it via `showResultsWebview`. Added `resolveRunHistoryRoot` helper (first workspace folder + `.paritylens/runs` convention). `activate()` now constructs the status bar item once via `createParityStatusBarItem`, registers it for disposal, builds `ParityTreeDataProvider`'s real deps (backed by `vscode.workspace.findFiles`/`listRecentRuns`), passes the status bar item into `registerRunComparisonCommand`, and registers `paritylens.reopenRun`. No change to parse/registry-resolution/error-handling logic in `runComparisonCommand` itself. | Brief Scope items 5–6 |
-| `packages/extension/src/activation/activate.test.ts` | Extended the mocked `vscode` module with `StatusBarAlignment`, `window.createStatusBarItem`, `workspace.findFiles` (needed because `activate()` now constructs these at call time). Added tests: status bar constructed once and disposed via `context.subscriptions`; `paritylens.reopenRun` registered. Updated 1 pre-existing synchronous `getChildren()` call site to cast `as ParityTreeItem[]`. | Companion test file for the owned `activate.ts`; needed for green-state evidence of Scope item 6 |
-| `packages/extension/src/activation/runComparisonCommand.test.ts` | Added a new `describe` block covering: `persistRun` is actually called (verified via `listRecentRuns` reading the same temp root back, red-state-first — see below); status bar `updateFromResult`/`.show()` called with the run's real result, text matches `formatParitySummary`; `showResultsWebview`/`createWebviewPanel` still called when `resolveRunHistoryRoot` returns `undefined` (no workspace open) or `persistRun` itself throws (unwritable root) — i.e. persistence failure never blocks the results webview. | Green-state evidence required by the brief |
+| `packages/extension/src/webview/resultsWebview.ts` | Added a fixed (non-`ComparisonResult`-derived) `renderStyles()` `<style>` block using `--vscode-*` theme variables (background/foreground/panel-border/badge/testing-icon/editorWarning tokens) instead of Nocturne raw hex. Restyled the header into eyebrow/`<h1>`/meta-line/status-tag markup. Added a 4-tile summary stat band (`stat-tile`) plus a row-counts detail card. Replaced the always-visible `<h2>` section stack with a CSS-only radio-button-driven tab strip (`Schema`/`Profile`/`Volume`/`Row-Level`/`SQL Preview`), each tab (except SQL Preview) carrying a `tab-badge` count pill, and five `.tab-panel` divs shown/hidden via `:checked ~ .tab-panels .tab-panel--X` sibling selectors — no JS. Added `severityTagClass`/`statusTag` helper functions mapping `Severity`/`ComparisonStatus` to CSS classes using VS Code semantic-color variables. Row-Level panel: rows with `columnDifferences` now render inside a native `<details class="row-detail" id="row-detail-N">`/`<summary>` pair (index-keyed id) for CSS/native-only expand/collapse; rows without `columnDifferences` stay plain (no caret), matching the handoff's "only rows with columnDifferences are clickable" spec. SQL Preview panel restyled into one `.sql-card` per query with a "Query N" header, same escaping/one-`<pre>`-per-query structure as before. `renderResultsHtml`'s signature, purity, and `showResultsWebview`'s `{ enableScripts: false }` call are all unchanged. | Brief Scope item 1 |
+| `packages/extension/src/webview/resultsWebview.test.ts` | Added a red-state-first `describe("T-34 visual redesign", ...)` block (6 tests: `<style>` block present with `--vscode-*` vars and without Nocturne raw hex; CSS-only tab strip present with no `<script>`/inline handlers; `stat-tile` class present; `severity-tag` class present on a severity value; `<details>`/`<summary>` present for a row with `columnDifferences`; `tab-badge` class present) and a `describe("T-34: renderResultsHtml purity + enableScripts guard", ...)` block (3 tests: same input twice → identical output; `renderResultsHtml.length === 1`; `showResultsWebview`'s `createWebviewPanel` call still receives `{ enableScripts: false }` as its 4th argument). Imported `showResultsWebview` alongside `renderResultsHtml`. | Red/Green evidence required by the brief |
+| `packages/extension/src/views/parityTreeDataProvider.ts` | `ParityComparisonTreeItem` constructor now sets `this.iconPath = new vscode.ThemeIcon("file")`. `ParityRecentRunTreeItem` constructor now sets `this.iconPath = new vscode.ThemeIcon("circle-outline")` — a neutral, uncolored codicon, **not** an outcome-colored dot; see Assumptions/Risks for why (`RunSummary` scope boundary). No other change (no `description`/`contextValue` change — the brief names only the icon affordance as required for these two node kinds; `ParityTreeItem` section headers were explicitly left untouched per Scope item 2's own "no icon change needed ... do not over-engineer this node"). | Brief Scope item 2 |
+| `packages/extension/src/views/parityTreeDataProvider.test.ts` | Extended the mocked `vscode` module with `ThemeIcon`/`ThemeColor` classes and `iconPath`/`description` fields on the mocked `TreeItem`. Added a `describe("T-34 visual redesign: icons", ...)` block (2 tests: `ParityComparisonTreeItem.iconPath instanceof ThemeIcon`; `ParityRecentRunTreeItem.iconPath instanceof ThemeIcon`). | Red/Green evidence required by the brief |
 
-No changes to `packages/engine/**`, `packages/extension/src/runHistory/**`,
-`packages/extension/src/connections/**`, `packages/extension/src/authoring/**`,
-or `packages/extension/src/statusbar/parityStatusBar.ts` (confirmed via
-`git diff --stat` — zero diff on that file).
+No changes to `packages/shared/src/result.ts` (see Assumptions/Risks — the
+row-id judgment call resolved to index-keying, so this file was never
+touched), `packages/extension/src/runHistory/`,
+`packages/extension/src/connections/`,
+`packages/extension/src/statusbar/parityStatusBar.ts`,
+`packages/extension/src/activation/activate.ts`, or any
+engine/`comparison-core`/`connector-sdk` code — confirmed via
+`git diff --stat main...HEAD`, which shows exactly the four files listed
+above and nothing else.
 
 ## Behavior and interfaces
 
 - **Behavior delivered:**
-  - Opening the "Comparisons" tree section in a workspace with
-    `.paritylens` files now lists one node per file; clicking it invokes
-    `paritylens.runComparison` with the file's URI as a command argument
-    (the existing open-dialog flow is unmodified and still runs if the
-    command doesn't consume the argument — per the brief's explicit
-    fallback allowance).
-  - Opening "Recent Runs" lists one node per persisted run
-    (`name — timestamp`, most-recent-first, as `listRecentRuns` already
-    sorts); clicking it invokes the new `paritylens.reopenRun` command
-    with the run's `id`, which loads the full result via `loadRun` and
-    reopens it via `showResultsWebview`.
-  - After every successful `paritylens.runComparison` run, the run is
-    persisted (`persistRun`) under `<first workspace folder>/.paritylens/runs`,
-    and the status bar updates to `Parity: N passed | N warnings | N failed`
-    and becomes visible.
-  - A persistence failure (no workspace open, or an I/O error) is reported
-    via a distinct `showErrorMessage` call but never prevents the run's
-    results from displaying — the outer `catch` (which reports parse/
-    connection failures as `undefined`) is untouched and not triggered by
-    a persistence failure.
-- **Interfaces consumed:** `listRecentRuns`, `loadRun`, `RunSummary`,
-  `persistRun` (`packages/extension/src/runHistory/runHistory.ts`, T-31,
-  read-only except for the one additive `persistRun` call point);
-  `showResultsWebview` (T-11/T-16); `formatParitySummary`,
-  `createParityStatusBarItem`, `ParityStatusBarItem` (T-11, consumed
-  as-is, unmodified); `vscode.workspace.findFiles` (only via the injected
-  `findComparisonFiles` dependency, never called directly inside
-  `parityTreeDataProvider.ts`).
-- **Interfaces produced:** `ParityTreeDataProviderDeps`,
-  `ParityComparisonTreeItem`, `ParityRecentRunTreeItem` (all in
-  `parityTreeDataProvider.ts`); `REOPEN_RUN_COMMAND_ID` and
-  `resolveRunHistoryRoot`'s underlying `.paritylens/runs` convention
-  (`activate.ts`); two new optional fields on `runComparisonCommand`'s
-  `deps` parameter (`resolveRunHistoryRoot`, `statusBarItem`).
+  - The results webview now renders with VS Code theme-aware colors
+    (background/foreground/borders follow the user's active VS Code
+    theme via `--vscode-*` variables, not a fixed dark palette), a
+    header with an uppercase eyebrow/title/meta line/status tag, a
+    4-tile Passed/Warnings/Failed/Row-count-delta stat band plus a
+    source/target/difference row-counts card, a 5-tab strip
+    (Schema/Profile/Volume/Row-Level/SQL Preview) that switches panels
+    via native radio-button `:checked` CSS with zero JavaScript, colored
+    severity tags on every difference table, and click-to-expand
+    `<details>`/`<summary>` sub-tables for row-level differences that
+    carry `columnDifferences`.
+  - The sidebar's `Comparisons` tree items now show a file codicon; the
+    `Recent Runs` tree items now show a neutral circle-outline codicon
+    (not outcome-colored — see below).
+- **Interfaces consumed (read-only):** `ComparisonResult` and all
+  sub-shapes from `@paritylens/shared` (unchanged); `RunSummary` from
+  `runHistory.ts` (read as-is; confirmed it has no status/outcome field
+  — see Assumptions/Risks).
+- **Interfaces produced:** No new public interfaces. `renderResultsHtml`
+  keeps its exact prior signature (`(result: ComparisonResult) =>
+  string`) and purity contract. `ParityComparisonTreeItem`/
+  `ParityRecentRunTreeItem` keep their exact prior constructor
+  signatures — only their internal `iconPath` construction changed.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline green (pre-change) | `npm run verify` | Exit 0 — 450 passed, 27 skipped (30 files, 28 run) | captured in this session before any edits |
-| Red state 1 (tree sections) | `git stash push -- packages/extension/src/views/parityTreeDataProvider.ts && npx vitest run packages/extension/src/views/parityTreeDataProvider.test.ts` | 4 tests failed against the reverted (T-10 empty-state) provider: `expected undefined to be 'paritylens.runComparison'`, `expected "spy" to be called 1 times, but got 0 times`, `expected undefined to be 'paritylens.reopenRun'` — i.e. the old provider returns no children/commands for either section, exactly the brief's predicted red state | this session's transcript; `git stash pop` restored the implementation immediately after |
-| Red state 2 (persist/status-bar) | `git stash push -- packages/extension/src/activation/activate.ts && npx vitest run packages/extension/src/activation/runComparisonCommand.test.ts` | 3 of 8 tests failed against the reverted (T-30) `runComparisonCommand`: `expected [] to have a length of 1 but got +0` (persistRun never called, so `listRecentRuns` stays empty), and two `expected "spy" to be called ... Number of calls: 0` (status bar / persistence-failure message never sent) — exactly the brief's predicted red state ("nothing ever calls `persistRun`") | this session's transcript; `git stash pop` restored the implementation immediately after |
-| Focused green state (tree provider) | `npx vitest run packages/extension/src/views/parityTreeDataProvider.test.ts` | Exit 0 — 11 tests passed (was 5 before this task) | this session's transcript |
-| Focused green state (persist/status-bar) | `npx vitest run packages/extension/src/activation/runComparisonCommand.test.ts` | Exit 0 — 8 tests passed (was 4 before this task) | this session's transcript |
-| Focused green state (activate wiring) | `npx vitest run packages/extension/src/activation/activate.test.ts` | Exit 0 — 8 tests passed (was 6 before this task) | this session's transcript |
-| Full verification | `npm run verify` (`tsc -b --force` → `eslint .` → `vitest run`) | Exit 0 — typecheck clean, lint clean, **462 passed, 27 skipped** (30 files, 28 run; the 27 skipped are the pre-existing SQL Server/PostgreSQL integration tests requiring a docker container, unrelated to this task) | this session's transcript |
+| Baseline green (pre-change) | `npm run verify` | Exit 0 — typecheck clean, lint clean, **466 passed, 27 skipped** (30 files, 28 run) | this session's transcript, run before any edit |
+| Red state | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts packages/extension/src/views/parityTreeDataProvider.test.ts` (new T-34 assertions added, implementation not yet started) | **8 tests failed** against the pre-T-34 markup: missing `<style>`/`--vscode-editor-background`, missing `class="tab-strip"`, missing `class="stat-tile`, missing a `severity-tag` class on `Failure`, missing `<details`/`<summary`, missing `class="tab-badge"` — exactly the brief's predicted red-state signal ("new required markup ... absent from today's `renderResultsHtml` output"); all 21 pre-existing tests in those two files still passed | this session's transcript |
+| Focused green state (results webview) | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts` | Exit 0 — **16 tests passed** (was 7 before this task) | this session's transcript |
+| Focused green state (tree provider) | `npx vitest run packages/extension/src/views/parityTreeDataProvider.test.ts` | Exit 0 — **13 tests passed** (was 11 before this task) | this session's transcript |
+| Full verification | `npm run verify` (`tsc -b --force` → `eslint .` → `vitest run`) | Exit 0 — typecheck clean, lint clean, **477 passed, 27 skipped** (30 files, 28 run; +11 tests vs. baseline, 0 regressions; the 27 skips are the pre-existing SQL Server/PostgreSQL docker-container integration tests, unrelated to this task) | this session's transcript |
 
 ## Assumptions and risks
 
 - **Assumptions (judgment calls):**
-  - **Safe output root convention:** `<first open workspace folder>/.paritylens/runs`.
-    The brief explicitly invited "pick a straightforward convention and
-    document it" since nothing previously wired a concrete value. Chosen
-    to nest under a dedicated hidden subdirectory (matching `AGENTS.md`'s
-    "isolated output paths under a safe output root (e.g. a project-local
-    `work/` or `.paritylens/` directory)" language) rather than writing
-    JSON run records into the workspace root directly.
-  - **`paritylens.reopenRun` not added to `package.json`'s
-    `contributes.commands`:** `package.json` is outside this task's
-    declared "Files owned" list. A manifest entry is only required for
-    command-palette visibility/activation events, not for
-    `vscode.commands.registerCommand`/tree-item-triggered `command`
-    bindings to function — `paritylens.reopenRun` is only ever invoked
-    programmatically via a tree item click, never from the command
-    palette, so this omission does not affect the described behavior.
-    Flagged explicitly rather than silently expanding scope into
-    `package.json`; a reviewer/future task should confirm this is
-    acceptable or route a manifest update through its own brief.
-  - **Comparison tree item command argument:** `ParityComparisonTreeItem`
-    passes the file's `vscode.Uri` as a command argument to
-    `paritylens.runComparison`. Per the brief, `runComparisonCommand`'s
-    existing file-picking flow was *not* modified to consume this
-    argument (that would have exceeded the narrow persist-only
-    amendment) — today, clicking a comparison node still opens the
-    existing file-picker dialog rather than pre-selecting the clicked
-    file. This is the brief's own explicitly-allowed fallback ("if
-    ... does not accept a pre-selected URI ... it is acceptable for the
-    click to just invoke the command and let the existing open-dialog
-    flow run"). A future task could wire the argument through without
-    touching this task's files.
-  - **`getChildren`'s return type widened to a union
-    (`TreeItem[] | Promise<TreeItem[]>`)** rather than making it uniformly
-    `async`: this preserves the pre-existing synchronous contract for the
-    top-level (no-`element`) call, so the original "getChildren() with no
-    element returns the three top-level section nodes" test needed only a
-    type-level cast, not a behavioral change. `vscode.TreeDataProvider<T>.getChildren`'s
-    own declared return type (`ProviderResult<T>` = `T[] | undefined |
-    Thenable<T[] | undefined>`) explicitly permits either shape per call.
+  - **Row-level expand/collapse id: index-keyed, per the brief's own
+    stated preference.** `renderRowDifferenceRow` generates
+    `id="row-detail-N"` from the row's position within `differences`,
+    not a new `RowDifference` field. This is documented in a code
+    comment directly above `renderRowDifferencesTable` in
+    `resultsWebview.ts`. Justification: `renderResultsHtml` is (and
+    remains, per its own purity test) a pure function of its
+    `ComparisonResult` argument, and `rowDifferences` is a plain array —
+    the same result object always produces the same array order, so the
+    same logical row always gets the same index-derived id within any
+    single render of that result. Each `<details>` only needs a
+    locally-unique id for that one rendered HTML document (there is no
+    cross-render, client-persisted "expanded" state to key against,
+    since scripts are disabled and `<details open>` state lives only in
+    that document's own DOM for its lifetime). `packages/shared/src/result.ts`
+    was therefore **not** touched — the brief's own default position
+    ("prefer index-based keying... only touch `result.ts` if you
+    conclude ... an index-based key is genuinely insufficient") was
+    judged satisfied without needing the escape hatch.
+  - **`ParityRecentRunTreeItem` gets a neutral icon, not an
+    outcome-colored one — disclosed scope boundary, exactly as the brief
+    anticipated.** The brief's Scope item 2 says: "Requires `RunSummary`
+    to expose an outcome/status field usable for this — check
+    `packages/extension/src/runHistory/runHistory.ts`'s existing
+    `RunSummary` shape first ... If it doesn't carry anything
+    sufficient, that's a scope boundary to flag and stop at, not
+    silently work around." I read `runHistory.ts` in full: `RunSummary
+    = Omit<RunRecord, "result">` — i.e. exactly `{ id: string; name:
+    string; timestamp: string }`. The full `ComparisonResult` (which
+    does carry `status`) is intentionally excluded from `RunSummary` per
+    that file's own doc comment ("Reading and JSON-parsing every
+    persisted run's full body ... just to render a 'Recent Runs' list of
+    names/timestamps is wasteful"). Options I rejected: (a) widening
+    `RunSummary` to add a status field — `runHistory.ts` is explicitly
+    listed under Prohibited Changes ("Do not touch
+    `packages/extension/src/runHistory/`"); (b) having
+    `parityTreeDataProvider.ts` itself call `loadRun` per run to recover
+    `status` — this is presentation-layer code reaching into
+    filesystem I/O it doesn't own, works around the exact wasteful-read
+    pattern `RunSummary` was designed to avoid, and isn't authorized by
+    "`TreeItem` presentation only — no data-fetching/dependency-shape
+    changes beyond what T-33 already established" in Files owned. Given
+    both are out of bounds, I stopped at a neutral `ThemeIcon("circle-outline")`
+    icon (satisfies "add iconPath/ThemeIcon" — every run item does get
+    an icon) rather than fabricating or guessing an outcome. **This
+    means the brief's Green-state bullet "the run item's icon color
+    reflects at least two distinct outcomes" is not satisfied** — I
+    judged this an unsatisfiable requirement given the actual
+    `RunSummary` shape, not a gap I could close within this task's
+    ownership, and I'm flagging it explicitly here rather than either
+    silently declaring it done or silently working around the ownership
+    boundary. A follow-up task that's authorized to extend `RunSummary`
+    (additively, e.g. an optional `status?: ComparisonStatus` field
+    populated by `persistRun` from the `ComparisonResult` it's already
+    given) would unblock this.
+  - **`ParityTreeItem` (section headers) and `contextValue`/`description`
+    left untouched:** per Scope item 2's own instruction ("no icon
+    change needed ... do not over-engineer this node" for section
+    headers; the "● active" `description` suffix idea is explicitly
+    "optional polish, not required scope"). Neither was added.
+  - **Tab strip implementation: 5 hidden `<input type="radio">` +
+    `<label for="...">` + `:checked ~` sibling-selector CSS**, chosen
+    over an anchor/`:target`-based approach because radio buttons give a
+    single mutually-exclusive "current tab" state for free (only one can
+    be checked at a time) without needing `:target`'s browser-history/
+    URL-fragment side effects, which would be an odd fit for a webview
+    document that isn't really "navigated." The five inputs and the
+    `.tab-strip`/`.tab-panels` blocks are direct siblings inside
+    `.content`, which is required for the `#tab-X:checked ~ .tab-panels
+    ...` sibling-combinator selectors to match.
+  - **`<h2 class="panel-heading">Query Preview</h2>` retained inside the
+    SQL Preview tab panel** even though the tab label itself now reads
+    "SQL Preview" (per the brief's exact tab-name list) — this keeps the
+    pre-existing "Query Preview" text substring that an existing T-16b
+    test (`renders an empty-state message for Query Preview when
+    queriesUsed is absent`) already asserted on, avoiding an
+    unnecessary, out-of-scope rewrite of a pre-existing green test.
+  - **`data-category="..."` attribute added to each row-level `<tr>`**
+    carrying the raw `RowDifferenceCategory` enum value (e.g.
+    `matched-key-differing-values`), in addition to the human-readable
+    `categoryLabel` text shown in the cell — this preserves the
+    pre-existing test assertion that the raw category string appears
+    in the output (`toContain("matched-key-differing-values")`) while
+    still showing the handoff-specified human-readable label
+    ("Matched key, differing values") to the user.
 - **Risks or limitations:**
-  - The `resolveRunHistoryRoot`/`persistRun` failure path is currently
-    always surfaced via `showErrorMessage` (never silently skipped) — the
-    brief left this as "your call, document whichever." A user running
-    many comparisons with no workspace open will see a
-    `showErrorMessage` every time; this was judged more honest than
-    silent failure, but a reviewer may prefer a quieter default (e.g.
-    silent skip, or a single one-time notice).
-  - `ParityComparisonTreeItem`'s label is derived from `uri.path.split("/").pop()`
-    rather than a VS Code-native basename helper — this is a plain-string
-    operation matching the mocked-`vscode.Uri` test surface (no
-    `@vscode/test-electron` in this codebase's test setup, per every
-    existing test file's own header comment) rather than using
-    `vscode.workspace.asRelativePath` or similar, which would need a
-    richer mock. Functionally correct for both POSIX and (via `Uri.path`,
-    always forward-slash-normalized in real VS Code) Windows paths.
-  - `findComparisonFiles`'s glob (`"**/*.paritylens"`) is unbounded
-    workspace-wide; no exclude pattern (e.g. `node_modules`) was added,
-    matching the brief's silence on this detail. Unlikely to matter in
-    practice (`.paritylens` is this project's own extension) but flagged
-    for completeness.
-- **Blockers:** None.
-
-## T-33-01 fix (post-review, REVIEW-REPORT.md CHANGES REQUIRED)
-
-Independent review returned one Important finding, T-33-01: the brief's
-Green-state Verification section requires "a test confirms clicking a
-listed 'Recent Runs' item invokes `loadRun` for the correct `id` and
-passes its result to `showResultsWebview`," and no test actually did
-this. `registerReopenRunCommand` inlined its handler directly inside the
-`vscode.commands.registerCommand` callback, and every test touching
-`activate()` mocks `registerCommand` as `() => ({ dispose: () =>
-undefined })`, discarding the callback without invoking it — so the
-`loadRun` → `showResultsWebview` chain, and the `loadRun`-rejection →
-`showErrorMessage` catch, were never exercised by any test. The reviewer
-confirmed by manual inspection that the underlying implementation logic
-was already correct; this was a missing-test gap, not a functional
-defect.
-
-**Fix applied**, following the reviewer's suggested resolution and the
-codebase's own precedent (`runComparisonCommand`'s existing
-registration-vs-logic extraction split):
-
-- `packages/extension/src/activation/activate.ts`: extracted a new,
-  exported, directly-testable function `reopenRunCommand(id,
-  safeOutputRoot, deps)` — where `deps` injects `loadRun`,
-  `createWebviewPanel`, `viewColumn`, `showErrorMessage`, and
-  `showResultsWebview` — containing exactly the logic that previously
-  lived inline in `registerReopenRunCommand`'s `registerCommand`
-  callback (no behavioral change: same `safeOutputRoot === undefined` →
-  `showErrorMessage` early return; same `try { loadRun → showResultsWebview
-  } catch { showErrorMessage }` shape). `registerReopenRunCommand` now
-  just resolves `safeOutputRoot` from the live `vscode.workspace.
-  workspaceFolders` and delegates to `reopenRunCommand`, binding the live
-  `vscode` API into `deps` — mirroring exactly how
-  `registerRunComparisonCommand` delegates to `runComparisonCommand`.
-- `packages/extension/src/activation/activate.test.ts`: added a new
-  `describe("reopenRunCommand (T-33-01: recent-run click behavior)")`
-  block with four tests, calling the extracted function directly (no
-  `registerCommand` mock involved): (1) `loadRun` is called with the
-  clicked run's `id` and the resolved `safeOutputRoot`; (2)
-  `showResultsWebview` receives `loadRun`'s resolved `ComparisonResult`
-  (via `deps.createWebviewPanel`/`deps.viewColumn`) and `showErrorMessage`
-  is not called; (3) a `loadRun` rejection is caught and surfaced via
-  `showErrorMessage` (`'ParityLens: could not reopen run "run-missing" —
-  record not found'`) rather than propagating as an unhandled rejection,
-  and `showResultsWebview` is not called; (4) an `undefined`
-  `safeOutputRoot` (no workspace open) surfaces the existing
-  "no workspace folder is open" message without ever calling `loadRun`.
-
-No other file was touched — this fix stays entirely within
-`activate.ts`/`activate.test.ts`, both already within T-33's declared
-"Files owned."
-
-### Red-state evidence for the fix
-
-`git stash push -- packages/extension/src/activation/activate.ts && npx
-vitest run packages/extension/src/activation/activate.test.ts` (i.e. the
-new tests against the pre-fix `activate.ts`, which had no `reopenRunCommand`
-export):
-
-```
-FAIL packages/extension/src/activation/activate.test.ts (4 tests failed, 8 passed)
- × reopenRunCommand (T-33-01...) > invokes loadRun with the clicked run's id...
- × reopenRunCommand (T-33-01...) > passes loadRun's resolved ComparisonResult...
- × reopenRunCommand (T-33-01...) > catches a loadRun rejection...
- × reopenRunCommand (T-33-01...) > surfaces a clear error via showErrorMessage...
-Unhandled Rejection: Error: record not found
- Test Files  1 failed (1)
-      Tests  4 failed | 8 passed (12)
-```
-
-(The 3 non-rejection failures are `reopenRunCommand is not a function` /
-`TypeError` from calling an undefined import — expected, since the
-extraction didn't exist yet. The 4th surfaces as an unhandled promise
-rejection rather than a clean assertion failure, which is itself exactly
-the defect class this fix closes: without the extraction, a `loadRun`
-rejection has no injectable catch path for a test to observe.)
-`git stash pop` restored the fix immediately after.
-
-### Green-state evidence for the fix
-
-`npx vitest run packages/extension/src/activation/activate.test.ts`:
-
-```
-✓ packages/extension/src/activation/activate.test.ts (12 tests) 101ms
- Test Files  1 passed (1)
-      Tests  12 passed (12)
-```
-
-### Full verification after the fix
-
-`npm run verify` (`tsc -b --force` → `eslint .` → `vitest run`): **exit
-0**. `tsc -b --force` clean, `eslint .` clean, `vitest run` →
-**466 passed, 27 skipped** (30 files, 28 run — up from the pre-fix
-462/27; the +4 are exactly the new `reopenRunCommand` tests, no other
-count changed). The 27 skips remain the pre-existing SQL Server/PostgreSQL
-docker-container integration tests, unrelated to this task.
+  - I did not verify the visual result in an actual running VS Code
+    extension host (no `@vscode/test-electron` harness exists in this
+    repo, per every existing test file's own header comment, and
+    spinning one up is outside this task's scope) — verification is
+    markup/structure-level (Vitest string assertions on the rendered
+    HTML), not a rendered-pixel check. A reviewer or later manual smoke
+    test should confirm the CSS actually produces the intended visual
+    layout inside a real webview panel, since `color-mix(in srgb, ...)`
+    (used for the tinted severity/status tag backgrounds) requires a
+    reasonably modern Chromium (VS Code's Electron webview is normally
+    well ahead of this, but I have not confirmed the exact minimum VS
+    Code version this project targets support down to).
+  - `--vscode-testing-iconPassed`/`--vscode-testing-iconFailed`/
+    `--vscode-editorWarning-foreground` are real, documented VS Code
+    theme color ids (per the VS Code Theme Color reference the brief's
+    Handoff note asks the reviewer to check), but I have not run this
+    inside a live VS Code instance to confirm they resolve to non-empty
+    values in every built-in theme — each CSS rule includes a literal
+    hex fallback (`var(--vscode-testing-iconFailed, #f14c4c)` etc.)
+    specifically to avoid an invisible/transparent result if a given
+    theme doesn't define that token, but a reviewer should spot-check
+    this per the Handoff note's item 3.
+  - The row-level `<details>` markup nests a `<table class="data-table">`
+    inside a `<summary>` element to lay out the caret/severity/category/
+    key-values/message cells identically to a normal (non-expandable)
+    row. This is unusual but valid HTML (`<summary>` accepts flow
+    content); I chose it over a plain-text `<summary>` to keep column
+    alignment consistent between expandable and non-expandable rows in
+    the same `<table>`. A reviewer should confirm this renders
+    acceptably (no unwanted extra `<tbody>`-level whitespace/border
+    artifacts) in a real webview.
+  - `Skipped`/`Informational` severities map to a neutral tag class
+    (`severity-tag--neutral`) rather than their own dedicated color —
+    the handoff's Design Tokens section didn't specify distinct
+    treatment for these two, and DESIGN-SPEC.md's severity model lists
+    six values total; I judged a shared neutral treatment for the two
+    non-pass/warn/fail values reasonable rather than inventing two more
+    ad hoc colors.
+- **Blockers:** None for the work completed. The one true blocker (run
+  outcome color) is the disclosed `RunSummary` scope boundary above,
+  routed to a future task rather than blocking this one.
 
 ## Patch or commit identity
 
-- **Original implementation commit:** `7cb46a3` — "T-33: wire tree view
-  Comparisons/Recent Runs sections and status bar"
-- **Report commit:** `107e060` — "T-33: add implementation report"
-- **T-33-01 fix commit:** `2c8a14e` — "T-33-01 fix: extract
-  reopenRunCommand for direct test coverage"
-- **Branch:** `task/T-33-tree-status-bar-wiring`
+- **Commit:** `33e6ccd` — "T-34: restyle results webview and sidebar
+  tree per design handoff"
+- **Branch:** `task/T-34-results-sidebar-visual-redesign`
 
 ## Recommended next step
 
-Independent re-review by a separate reviewer agent, per this project's
+Independent review by a separate reviewer agent, per this project's
 operating contract (`AGENTS.md`: "Every implementation task receives an
 independent review by a reviewer who did not author the task's change").
-The reviewer should confirm the T-33-01 fix above actually closes the
-finding (the extracted `reopenRunCommand` is exercised directly, the four
-new assertions are non-vacuous, and no existing behavior changed —
-`registerReopenRunCommand`'s externally observable behavior is identical
-before and after, only its internals were split for testability) before
-re-considering the original Handoff-note adversarial checks. This report
-does not constitute review or approval — no task in this codebase may be
-marked complete/approved by the agent that implemented it.
+The reviewer should, per the brief's own Handoff note:
+
+1. Diff `renderResultsHtml` against `main` to independently confirm
+   purity (no new `vscode` runtime API usage, no non-determinism, no
+   closures over mutable state) and that `showResultsWebview`'s
+   `{ enableScripts: false }` call site is genuinely unchanged.
+2. Walk every new piece of `ComparisonResult`-derived string data in the
+   restyled markup and confirm it passes through `escapeHtml` (all of it
+   already does — every new interpolation in this diff reuses the
+   pre-existing `escapeHtml` helper; no new escaping mechanism was
+   introduced).
+3. Confirm no custom HTML/webview conversion crept into
+   `parityTreeDataProvider.ts` (only `ThemeIcon` was added), and spot
+   check `"file"`/`"circle-outline"` as valid built-in codicon ids.
+4. Independently judge whether the `RunSummary`-status scope-boundary
+   call above was the right stopping point, or whether it should instead
+   have been resolved a different way within this task's ownership.
+
+This report does not constitute review or approval — no task in this
+codebase may be marked complete/approved by the agent that implemented
+it.
