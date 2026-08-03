@@ -20,6 +20,7 @@ import type { ConnectionProfile } from "../connections/connectionProfile";
 import { runNewComparisonCommand } from "../authoring/newComparisonWizard";
 import { persistRun, loadRun, listRecentRuns } from "../runHistory/runHistory";
 import { createParityStatusBarItem, type ParityStatusBarItem } from "../statusbar/parityStatusBar";
+import { ComparisonEditorProvider, COMPARISON_EDITOR_VIEW_TYPE } from "../authoring/comparisonEditorProvider";
 
 /** View ID the tree data provider registers against (matches `package.json`'s `contributes.views`). */
 export const PARITY_TREE_VIEW_ID = "paritylens.dataParityView";
@@ -547,6 +548,26 @@ export async function reopenRunCommand(
 }
 
 /**
+ * Registers `ComparisonEditorProvider` (T-36) against the live `vscode`
+ * API for `.paritylens` files (per `package.json`'s
+ * `contributes.customEditors` entry, `viewType:
+ * "paritylens.comparisonEditor"` -- `COMPARISON_EDITOR_VIEW_TYPE`). The
+ * provider's own `ComparisonEditorProviderDeps` (see
+ * `comparisonEditorProvider.ts`) are bound here against the live
+ * `connectionProfileStore`/`vscode.workspace.applyEdit`, following the
+ * same injected-dependency binding pattern
+ * `registerRunComparisonCommand`/`registerNewComparisonCommand` above
+ * already use.
+ */
+function registerComparisonEditorProvider(connectionProfileStore: ConnectionProfileStore): vscode.Disposable {
+  const provider = new ComparisonEditorProvider({
+    listConnectionNames: () => connectionProfileStore.list().map((profile) => profile.name),
+    applyEdit: (edit) => vscode.workspace.applyEdit(edit)
+  });
+  return vscode.window.registerCustomEditorProvider(COMPARISON_EDITOR_VIEW_TYPE, provider);
+}
+
+/**
  * Registers `paritylens.reopenRun` (T-33) against the live `vscode` API:
  * invoked by a "Recent Runs" tree node
  * (`ParityRecentRunTreeItem.command`, `parityTreeDataProvider.ts`) with the
@@ -625,6 +646,7 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(registerDeleteConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerNewComparisonCommand(connectionProfileStore));
   context.subscriptions.push(registerReopenRunCommand());
+  context.subscriptions.push(registerComparisonEditorProvider(connectionProfileStore));
 
   return { treeDataProvider, treeView, secretStore };
 }

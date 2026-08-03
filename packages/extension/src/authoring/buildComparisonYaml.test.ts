@@ -254,4 +254,68 @@ describe("buildComparisonYaml", () => {
       }
     ]);
   });
+
+  // --- T-36: checks emission -------------------------------------------
+  // Red-state: `NewComparisonAnswers` has no `checks` field yet (T-35b did
+  // not include it), so a caller supplying `checks` either fails to compile
+  // or -- since these tests use a plain object literal spread rather than a
+  // type-checked construction that would fail to compile -- the emitted
+  // YAML has no `checks:` block even when checks were specified. Per
+  // TASK-BRIEF.md Scope item 5.
+
+  it("emits a checks block with schema and rowCount enabled, round-tripping through parseDefinition", () => {
+    const yamlText = buildComparisonYaml({
+      ...baseAnswers,
+      checks: {
+        schema: { enabled: true },
+        rowCount: { enabled: true }
+      }
+    });
+    const parsed = parseDefinition(yamlText);
+    expect(parsed.checks).toEqual({
+      schema: { enabled: true },
+      rowCount: { enabled: true }
+    });
+  });
+
+  it("emits a checks block with profile enabled and rowLevel explicitly disabled, round-tripping through parseDefinition", () => {
+    const yamlText = buildComparisonYaml({
+      ...baseAnswers,
+      checks: {
+        profile: { enabled: true },
+        rowLevel: { enabled: false }
+      }
+    });
+    const parsed = parseDefinition(yamlText);
+    expect(parsed.checks).toEqual({
+      profile: { enabled: true },
+      rowLevel: { enabled: false }
+    });
+  });
+
+  it("omits the checks block entirely when checks is absent", () => {
+    const yamlText = buildComparisonYaml(baseAnswers);
+    expect(yamlText).not.toContain("checks:");
+    const parsed = parseDefinition(yamlText);
+    expect(parsed.checks).toEqual({});
+  });
+
+  it("omits the checks block entirely when checks is an empty object", () => {
+    const yamlText = buildComparisonYaml({ ...baseAnswers, checks: {} });
+    expect(yamlText).not.toContain("checks:");
+    const parsed = parseDefinition(yamlText);
+    expect(parsed.checks).toEqual({});
+  });
+
+  it("emits only the toggles provided, leaving unspecified checks absent from the parsed ParityChecks object", () => {
+    const yamlText = buildComparisonYaml({
+      ...baseAnswers,
+      checks: { schema: { enabled: false } }
+    });
+    const parsed = parseDefinition(yamlText);
+    expect(parsed.checks).toEqual({ schema: { enabled: false } });
+    expect(parsed.checks).not.toHaveProperty("rowCount");
+    expect(parsed.checks).not.toHaveProperty("profile");
+    expect(parsed.checks).not.toHaveProperty("rowLevel");
+  });
 });

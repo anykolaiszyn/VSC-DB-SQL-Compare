@@ -26,6 +26,16 @@
 // caller cannot accidentally supply `object` on a `query`-kind side or
 // `sql` on a `table`-kind side; TypeScript rejects that at the call site
 // the same way `parseSide` rejects it at parse time.
+//
+// T-36: extended again to emit a `checks` block (`checks.schema.enabled`/
+// `checks.rowCount.enabled`/`checks.profile.enabled`/`checks.rowLevel.enabled`)
+// -- the comparison editor (T-36) is the first caller that needs this;
+// T-35b's brief explicitly did not include `checks`. Only the four
+// `enabled` toggles are supported here, per TASK-BRIEF.md T-36 Scope item
+// 5 -- `tolerance`/`strategy`/`maxDifferences`/`topValues` sub-fields are
+// out of this task's scope and stay hand-YAML-edited. See
+// `NewComparisonAnswerChecks`'s own doc comment for the omit-when-default
+// judgment call.
 
 /** One source/target side of `NewComparisonAnswers`, mirroring
  * `ParitySide`'s (T-35a) discriminated union exactly. `query`/`sqlFile`
@@ -36,6 +46,24 @@ export type NewComparisonAnswerSide =
   | { kind: "table"; object: string; where?: string }
   | { kind: "query"; sql: string }
   | { kind: "sqlFile"; filePath: string };
+
+/** Answers for `checks` emission (T-36) -- four independent enabled
+ * toggles, matching `ParityChecks`'s `schema`/`rowCount`/`profile`/
+ * `rowLevel` sub-objects but restricted to just `enabled` (per
+ * TASK-BRIEF.md T-36 Scope item 5, this task's caller -- the comparison
+ * editor -- only builds UI for the enabled toggles, not
+ * `tolerance`/`strategy`/`maxDifferences`/`topValues`). Each key is
+ * independently optional: a key entirely absent from `checks` means "leave
+ * this check's enabled state unspecified" (the emitted YAML omits that
+ * sub-block, and `parseDefinition` leaves the corresponding `ParityChecks`
+ * property `undefined`) -- distinct from `{ enabled: false }`, which
+ * explicitly emits a disabled sub-block. */
+export interface NewComparisonAnswerChecks {
+  schema?: { enabled: boolean };
+  rowCount?: { enabled: boolean };
+  profile?: { enabled: boolean };
+  rowLevel?: { enabled: boolean };
+}
 
 /** Already-collected answers from `runNewComparisonWizard` (or any other
  * caller), sufficient to scaffold a minimal `.paritylens` definition.
@@ -83,6 +111,19 @@ export interface NewComparisonAnswers {
    * `parseDefinition`'s existing "absent -> `[]`" default rather than
    * emitting an explicit empty `column_mapping: []`. */
   columnMapping?: ColumnMappingEntry[];
+  /** Optional `checks` enabled-toggle answers (T-36). Omitted from the
+   * emitted YAML entirely when absent or when every provided toggle key is
+   * itself absent (i.e. an empty `{}`), matching this file's existing
+   * omit-when-absent convention for other optional fields -- relies on
+   * `parseDefinition`'s existing "absent -> `{}`" default for `checks`
+   * rather than emitting an explicit empty `checks: {}`. When present,
+   * only the toggles actually supplied are emitted (this file's chosen
+   * judgment call over "emit all four, defaulting unspecified ones to
+   * `parseDefinition`'s implicit defaults" -- see this field's usage in
+   * `buildComparisonYaml` and the header comment above for the reasoning:
+   * a toggle a caller never mentioned should stay entirely unspecified in
+   * the document, not silently written as an explicit value). */
+  checks?: NewComparisonAnswerChecks;
 }
 
 /** A single column mapping entry -- re-exported from the engine's
@@ -194,6 +235,44 @@ function renderColumnMappingEntry(entry: ColumnMappingEntry): string {
   return lines.join("\n");
 }
 
+/** Renders the `checks:` block from `NewComparisonAnswerChecks`, emitting
+ * only the sub-blocks the caller actually supplied (see
+ * `NewComparisonAnswers.checks`'s doc comment for the judgment call). YAML
+ * key names are snake_case (`row_count`, `row_level`) matching
+ * `parseChecks` (`definition.ts`, lines ~502-558) reading `obj["row_count"]`/
+ * `obj["row_level"]` -- the TS/`ParityChecks` fields are camelCase
+ * (`rowCount`/`rowLevel`), matching this codebase's established
+ * camelCase-TS/snake_case-YAML convention already used for
+ * `source_expression`/`target_expression`/`exclude_columns` elsewhere in
+ * this file. Returns `undefined` (rather than an empty string) when no
+ * toggle was actually supplied, so the caller can omit the `checks:` key
+ * entirely instead of emitting a value-less mapping key. */
+function renderChecks(checks: NewComparisonAnswerChecks | undefined): string | undefined {
+  if (checks === undefined) {
+    return undefined;
+  }
+
+  const lines: string[] = [];
+  if (checks.schema !== undefined) {
+    lines.push(`  schema:`);
+    lines.push(`    enabled: ${checks.schema.enabled}`);
+  }
+  if (checks.rowCount !== undefined) {
+    lines.push(`  row_count:`);
+    lines.push(`    enabled: ${checks.rowCount.enabled}`);
+  }
+  if (checks.profile !== undefined) {
+    lines.push(`  profile:`);
+    lines.push(`    enabled: ${checks.profile.enabled}`);
+  }
+  if (checks.rowLevel !== undefined) {
+    lines.push(`  row_level:`);
+    lines.push(`    enabled: ${checks.rowLevel.enabled}`);
+  }
+
+  return lines.length > 0 ? lines.join("\n") : undefined;
+}
+
 /**
  * Builds a minimal `.paritylens` YAML document from already-collected
  * wizard answers. Sets exactly the fields `parseDefinition` (T-08)
@@ -227,6 +306,12 @@ export function buildComparisonYaml(answers: NewComparisonAnswers): string {
   if (answers.columnMapping !== undefined && answers.columnMapping.length > 0) {
     lines.push(`column_mapping:`);
     lines.push(...answers.columnMapping.map(renderColumnMappingEntry));
+  }
+
+  const checksBlock = renderChecks(answers.checks);
+  if (checksBlock !== undefined) {
+    lines.push(`checks:`);
+    lines.push(checksBlock);
   }
 
   lines.push(``);
