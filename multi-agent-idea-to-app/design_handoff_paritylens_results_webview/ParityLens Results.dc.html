@@ -1,0 +1,480 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+<link rel="stylesheet" href="_ds/nocturne-37392dfa-9781-4a1a-a624-bfae1e599a6c/styles.css">
+<script src="_ds/nocturne-37392dfa-9781-4a1a-a624-bfae1e599a6c/_ds_bundle.js"></script>
+<style>
+body{margin:0}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-thumb{background:var(--color-neutral-700);border-radius:6px}
+::-webkit-scrollbar-track{background:transparent}
+</style>
+</helmet>
+
+<div style="height:100vh;width:100%;display:flex;flex-direction:column;background:var(--color-bg);color:var(--color-text);font-family:var(--font-body);font-size:13px;overflow:hidden">
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- Activity bar -->
+    <div style="width:52px;flex:none;background:var(--color-neutral-900);border-right:1px solid var(--color-neutral-800);display:flex;flex-direction:column;align-items:center;padding:12px 0;gap:18px">
+      <div style="width:28px;height:28px;border-radius:var(--radius-md);background:color-mix(in oklch, var(--color-accent) 18%, transparent);border:1px solid var(--color-accent-700);display:flex;align-items:center;justify-content:center;color:var(--color-accent-300)" title="Data Parity">
+        {{ icons.parity }}
+      </div>
+      <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500)">{{ icons.files }}</div>
+      <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500)">{{ icons.search }}</div>
+      <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500)">{{ icons.branch }}</div>
+      <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500)">{{ icons.puzzle }}</div>
+      <div style="flex:1"></div>
+      <div style="width:28px;height:28px;display:flex;align-items:center;justify-content:center;color:var(--color-neutral-500)">{{ icons.gear }}</div>
+    </div>
+
+    <!-- Sidebar -->
+    <div style="width:272px;flex:none;background:var(--color-neutral-900);border-right:1px solid var(--color-neutral-800);display:flex;flex-direction:column;overflow:hidden">
+      <div style="padding:14px 16px 8px;font:600 11px var(--font-heading);letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-300);display:flex;align-items:center;justify-content:space-between">
+        <span>Data Parity</span>
+        <span style="display:flex;gap:6px;color:var(--color-neutral-500)">{{ icons.plusSmall }}{{ icons.refresh }}</span>
+      </div>
+
+      <div style="flex:1;overflow-y:auto;padding-bottom:12px">
+
+        <!-- Connections -->
+        <div>
+          <div onclick="{{ toggleSection.bind(null, 'connections') }}" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;color:var(--color-neutral-200);font-weight:500;user-select:none">
+            <span style="display:flex;transform:{{ sections.connections ? 'rotate(0deg)' : 'rotate(-90deg)' }};transition:transform .12s;color:var(--color-neutral-500)">{{ icons.caretDown }}</span>
+            <span style="flex:1">Connections</span>
+            <span style="font:11px var(--font-body);color:var(--color-neutral-500)">2</span>
+          </div>
+          <sc-if value="{{ sections.connections }}" hint-placeholder-val="{{ true }}">
+            <sc-for list="{{ connections }}" as="conn" hint-placeholder-count="2">
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px 5px 30px;color:var(--color-neutral-300);cursor:default">
+                <span style="display:flex;color:{{ conn.color }}">{{ icons.database }}</span>
+                <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ conn.name }}</span>
+                <span style="font:10px var(--font-body);color:var(--color-neutral-500);letter-spacing:.03em;text-transform:uppercase">{{ conn.platform }}</span>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+
+        <!-- Comparisons -->
+        <div style="margin-top:6px">
+          <div onclick="{{ toggleSection.bind(null, 'comparisons') }}" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;color:var(--color-neutral-200);font-weight:500;user-select:none">
+            <span style="display:flex;transform:{{ sections.comparisons ? 'rotate(0deg)' : 'rotate(-90deg)' }};transition:transform .12s;color:var(--color-neutral-500)">{{ icons.caretDown }}</span>
+            <span style="flex:1">Comparisons</span>
+            <span style="font:11px var(--font-body);color:var(--color-neutral-500)">3</span>
+          </div>
+          <sc-if value="{{ sections.comparisons }}" hint-placeholder-val="{{ true }}">
+            <sc-for list="{{ comparisons }}" as="cmp" hint-placeholder-count="3">
+              <div onclick="{{ selectComparison.bind(null, cmp.id) }}" style="display:flex;align-items:center;gap:8px;padding:5px 10px 5px 30px;color:{{ cmp.id === activeComparisonId ? 'var(--color-text)' : 'var(--color-neutral-300)' }};background:{{ cmp.id === activeComparisonId ? 'color-mix(in oklch, var(--color-accent) 12%, transparent)' : 'transparent' }};cursor:pointer;border-left:2px solid {{ cmp.id === activeComparisonId ? 'var(--color-accent)' : 'transparent' }}">
+                <span style="display:flex;color:var(--color-neutral-500)">{{ icons.file }}</span>
+                <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ cmp.name }}</span>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+
+        <!-- Recent Runs -->
+        <div style="margin-top:6px">
+          <div onclick="{{ toggleSection.bind(null, 'runs') }}" style="display:flex;align-items:center;gap:6px;padding:6px 10px;cursor:pointer;color:var(--color-neutral-200);font-weight:500;user-select:none">
+            <span style="display:flex;transform:{{ sections.runs ? 'rotate(0deg)' : 'rotate(-90deg)' }};transition:transform .12s;color:var(--color-neutral-500)">{{ icons.caretDown }}</span>
+            <span style="flex:1">Recent Runs</span>
+            <span style="font:11px var(--font-body);color:var(--color-neutral-500)">3</span>
+          </div>
+          <sc-if value="{{ sections.runs }}" hint-placeholder-val="{{ true }}">
+            <sc-for list="{{ runs }}" as="run" hint-placeholder-count="3">
+              <div style="display:flex;align-items:center;gap:8px;padding:5px 10px 5px 30px;color:var(--color-neutral-300)">
+                <span style="width:7px;height:7px;border-radius:50%;flex:none;background:{{ run.dotColor }}"></span>
+                <span style="flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">{{ run.label }}</span>
+                <span style="font:10px var(--font-body);color:var(--color-neutral-500)">{{ run.when }}</span>
+              </div>
+            </sc-for>
+          </sc-if>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- Main area -->
+    <div style="flex:1;display:flex;flex-direction:column;min-width:0;background:var(--color-bg)">
+
+      <!-- Editor tab strip -->
+      <div style="flex:none;display:flex;align-items:center;background:var(--color-neutral-900);border-bottom:1px solid var(--color-neutral-800);height:34px">
+        <div style="display:flex;align-items:center;gap:8px;padding:0 12px;height:100%;background:var(--color-bg);border-right:1px solid var(--color-neutral-800);color:var(--color-text);font-size:12px">
+          <span style="display:flex;color:var(--color-accent-300)">{{ icons.parity }}</span>
+          <span>Parity Results: Customer Migration Validation</span>
+          <span style="color:var(--color-neutral-500);margin-left:4px">×</span>
+        </div>
+      </div>
+
+      <!-- Results webview content -->
+      <div style="flex:1;overflow-y:auto;padding:28px 36px 60px">
+
+        <div style="max-width:980px">
+
+          <div style="display:flex;align-items:flex-start;justify-content:space-between;gap:20px;flex-wrap:wrap">
+            <div>
+              <div style="font:11px var(--font-body);letter-spacing:.08em;text-transform:uppercase;color:var(--color-neutral-500);margin-bottom:6px">Parity Results</div>
+              <h1 style="margin:0;font:500 22px var(--font-heading);color:var(--color-text)">Customer Migration Validation</h1>
+              <div style="margin-top:8px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;color:var(--color-neutral-400);font-size:12px">
+                <span>Run {{ result.runId }}</span>
+                <span style="color:var(--color-neutral-700)">·</span>
+                <span>dbo.Customer → ANALYTICS.CUSTOMER</span>
+                <span style="color:var(--color-neutral-700)">·</span>
+                <span>{{ result.execution.sourceDurationMs }}ms source / {{ result.execution.targetDurationMs }}ms target</span>
+              </div>
+            </div>
+            <div style="display:flex;align-items:center;gap:8px;flex:none">
+              <span class="tag {{ statusTagClass }}">{{ statusLabel }}</span>
+              <button type="button" class="btn btn-secondary btn-icon" aria-label="Export">{{ icons.download }}</button>
+              <button type="button" class="btn btn-ghost">Re-run</button>
+            </div>
+          </div>
+
+          <!-- Summary stat band -->
+          <div style="margin-top:22px;display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+            <div class="card elev-sm" style="padding:14px 16px">
+              <div class="card-kicker">Passed</div>
+              <div style="font:500 26px var(--font-heading);color:var(--color-text);margin-top:4px">{{ result.summary.passed }}</div>
+            </div>
+            <div class="card elev-sm" style="padding:14px 16px">
+              <div class="card-kicker">Warnings</div>
+              <div style="font:500 26px var(--font-heading);color:var(--color-accent-300);margin-top:4px">{{ result.summary.warnings }}</div>
+            </div>
+            <div class="card elev-sm" style="padding:14px 16px">
+              <div class="card-kicker">Failed</div>
+              <div style="font:500 26px var(--font-heading);color:#e8918a;margin-top:4px">{{ result.summary.failed }}</div>
+            </div>
+            <div class="card elev-sm" style="padding:14px 16px">
+              <div class="card-kicker">Row count delta</div>
+              <div style="font:500 26px var(--font-heading);color:var(--color-text);margin-top:4px">{{ rowCountDeltaLabel }}</div>
+            </div>
+          </div>
+
+          <!-- Row counts detail -->
+          <div class="card elev-sm" style="margin-top:14px;padding:14px 18px;display:flex;align-items:center;gap:28px;flex-wrap:wrap">
+            <div><span class="card-kicker">Source rows</span><div style="font:500 15px var(--font-heading);margin-top:2px">{{ sourceRowsLabel }}</div></div>
+            <div><span class="card-kicker">Target rows</span><div style="font:500 15px var(--font-heading);margin-top:2px">{{ targetRowsLabel }}</div></div>
+            <div><span class="card-kicker">Difference</span><div style="font:500 15px var(--font-heading);color:var(--color-accent-300);margin-top:2px">{{ result.rowCounts.difference }}</div></div>
+            <div style="flex:1"></div>
+            <div style="color:var(--color-neutral-500);font-size:12px">Comparison run at read-only isolation · schema, profile, volume and row-level checks executed</div>
+          </div>
+
+          <!-- Tabs -->
+          <div style="margin-top:26px;display:flex;gap:6px;border-bottom:1px solid var(--color-neutral-800)">
+            <sc-for list="{{ tabs }}" as="tab" hint-placeholder-count="5">
+              <div onclick="{{ setTab.bind(null, tab.id) }}" style="padding:9px 14px;font-size:12.5px;font-weight:500;cursor:pointer;color:{{ tab.id === activeTab ? 'var(--color-text)' : 'var(--color-neutral-400)' }};border-bottom:2px solid {{ tab.id === activeTab ? 'var(--color-accent)' : 'transparent' }};display:flex;align-items:center;gap:7px;user-select:none">
+                {{ tab.label }}
+                <sc-if value="{{ tab.count > 0 }}" hint-placeholder-val="{{ false }}">
+                  <span style="font:10px var(--font-body);padding:1px 6px;border-radius:999px;background:var(--color-neutral-800);color:var(--color-neutral-300)">{{ tab.count }}</span>
+                </sc-if>
+              </div>
+            </sc-for>
+          </div>
+
+          <!-- Panel: Schema -->
+          <sc-if value="{{ activeTab === 'schema' }}" hint-placeholder-val="{{ true }}">
+            <div style="margin-top:18px">
+              <table class="table">
+                <thead><tr><th>Severity</th><th>Column</th><th>Kind</th><th>Source Type</th><th>Target Type</th><th>Message</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{ result.schemaDifferences }}" as="d" hint-placeholder-count="4">
+                    <tr>
+                      <td><span class="tag {{ severityTagClass(d.severity) }}">{{ d.severity }}</span></td>
+                      <td>{{ d.columnName }}</td>
+                      <td class="text-muted">{{ d.kind }}</td>
+                      <td>{{ d.sourceType }}</td>
+                      <td>{{ d.targetType }}</td>
+                      <td class="text-muted">{{ d.message }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </sc-if>
+
+          <!-- Panel: Profile -->
+          <sc-if value="{{ activeTab === 'profile' }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:18px">
+              <table class="table">
+                <thead><tr><th>Severity</th><th>Column</th><th>Metric</th><th>Source Value</th><th>Target Value</th><th>Message</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{ result.profileDifferences }}" as="d" hint-placeholder-count="3">
+                    <tr>
+                      <td><span class="tag {{ severityTagClass(d.severity) }}">{{ d.severity }}</span></td>
+                      <td>{{ d.columnName }}</td>
+                      <td class="text-muted">{{ d.metric }}</td>
+                      <td>{{ d.sourceValue }}</td>
+                      <td>{{ d.targetValue }}</td>
+                      <td class="text-muted">{{ d.message }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </sc-if>
+
+          <!-- Panel: Volume -->
+          <sc-if value="{{ activeTab === 'volume' }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:18px">
+              <table class="table">
+                <thead><tr><th>Severity</th><th>Source Count</th><th>Target Count</th><th>Difference</th><th>Difference Rate</th><th>Message</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{ result.aggregateDifferences }}" as="d" hint-placeholder-count="1">
+                    <tr>
+                      <td><span class="tag {{ severityTagClass(d.severity) }}">{{ d.severity }}</span></td>
+                      <td>{{ d.sourceCountLabel }}</td>
+                      <td>{{ d.targetCountLabel }}</td>
+                      <td>{{ d.difference }}</td>
+                      <td>{{ d.differenceRateLabel }}</td>
+                      <td class="text-muted">{{ d.message }}</td>
+                    </tr>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </sc-if>
+
+          <!-- Panel: Row-level -->
+          <sc-if value="{{ activeTab === 'rows' }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:18px">
+              <table class="table">
+                <thead><tr><th></th><th>Severity</th><th>Category</th><th>Key Values</th><th>Message</th></tr></thead>
+                <tbody>
+                  <sc-for list="{{ result.rowDifferences }}" as="d" hint-placeholder-count="5">
+                    <tr onclick="{{ toggleRow.bind(null, d.rowId) }}" style="cursor:{{ d.columnDifferences ? 'pointer' : 'default' }}">
+                      <td style="width:18px;color:var(--color-neutral-500)">
+                        <sc-if value="{{ d.columnDifferences }}" hint-placeholder-val="{{ false }}">
+                          <span style="display:flex;transform:{{ expandedRows[d.rowId] ? 'rotate(90deg)' : 'rotate(0deg)' }};transition:transform .12s">{{ icons.caretRight }}</span>
+                        </sc-if>
+                      </td>
+                      <td><span class="tag {{ severityTagClass(d.severity) }}">{{ d.severity }}</span></td>
+                      <td class="text-muted">{{ d.categoryLabel }}</td>
+                      <td>{{ d.keyValuesLabel }}</td>
+                      <td class="text-muted">{{ d.message }}</td>
+                    </tr>
+                    <sc-if value="{{ d.columnDifferences }}" hint-placeholder-val="{{ false }}">
+                      <sc-if value="{{ expandedRows[d.rowId] }}" hint-placeholder-val="{{ false }}">
+                        <tr>
+                          <td></td>
+                          <td colspan="4" style="padding:0 0 12px 0">
+                            <table class="table column-differences" style="margin-left:6px">
+                              <thead><tr><th>Column</th><th>Source Value</th><th>Target Value</th></tr></thead>
+                              <tbody>
+                                <sc-for list="{{ d.columnDifferences }}" as="c" hint-placeholder-count="2">
+                                  <tr><td>{{ c.columnName }}</td><td>{{ c.sourceValueLabel }}</td><td>{{ c.targetValueLabel }}</td></tr>
+                                </sc-for>
+                              </tbody>
+                            </table>
+                          </td>
+                        </tr>
+                      </sc-if>
+                    </sc-if>
+                  </sc-for>
+                </tbody>
+              </table>
+            </div>
+          </sc-if>
+
+          <!-- Panel: SQL Preview -->
+          <sc-if value="{{ activeTab === 'sql' }}" hint-placeholder-val="{{ false }}">
+            <div style="margin-top:18px;display:grid;gap:12px">
+              <sc-for list="{{ result.queriesUsed }}" as="sql" hint-placeholder-count="3">
+                <div class="card elev-sm" style="padding:0;overflow:hidden">
+                  <div style="padding:8px 14px;border-bottom:1px solid var(--color-neutral-800);color:var(--color-neutral-400);font-size:11px;letter-spacing:.05em;text-transform:uppercase;display:flex;align-items:center;justify-content:space-between">
+                    <span>Query {{ $index }}</span>
+                    <span style="display:flex;color:var(--color-neutral-500)">{{ icons.terminal }}</span>
+                  </div>
+                  <pre style="margin:0;padding:14px;font:12.5px/1.6 ui-monospace,Menlo,monospace;color:var(--color-neutral-200);white-space:pre-wrap;overflow-x:auto">{{ sql }}</pre>
+                </div>
+              </sc-for>
+            </div>
+          </sc-if>
+
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+</x-dc>
+<script type="text/x-dc" data-dc-script>
+const ICONS = {
+  parity: iconSvg('M197.58,129.06,146,110l-19-51.62a15.92,15.92,0,0,0-29.88,0L78,110l-51.62,19a15.92,15.92,0,0,0,0,29.88L78,178l19,51.62a15.92,15.92,0,0,0,29.88,0L146,178l51.62-19a15.92,15.92,0,0,0,0-29.88ZM137,164.22a8,8,0,0,0-4.74,4.74L112,223.85,91.78,169A8,8,0,0,0,87,164.22L32.15,144,87,123.78A8,8,0,0,0,91.78,119L112,64.15,132.22,119a8,8,0,0,0,4.74,4.74L191.85,144Z', 16),
+  files: iconSvg('M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Z', 16),
+  search: iconSvg('M229.66,218.34l-50.07-50.06a88.11,88.11,0,1,0-11.31,11.31l50.06,50.07a8,8,0,0,0,11.32-11.32ZM40,112a72,72,0,1,1,72,72A72.08,72.08,0,0,1,40,112Z', 16),
+  branch: iconSvg('M224,80a32,32,0,1,0-40,31v9a8,8,0,0,1-8,8H88a23.84,23.84,0,0,0-8,1.37V71a32,32,0,1,0-16,0v114a32,32,0,1,0,16,0v-9A8,8,0,0,1,88,168h88a24,24,0,0,0,24-24V111A32.06,32.06,0,0,0,224,80ZM64,56A16,16,0,1,1,80,72,16,16,0,0,1,64,56ZM96,200a16,16,0,1,1-16-16A16,16,0,0,1,96,200ZM192,96a16,16,0,1,1,16-16A16,16,0,0,1,192,96Z', 16),
+  puzzle: iconSvg('M226.53,101.66,196,84.6V64a8,8,0,0,0-8-8H167.4L150.34,25.47a15.85,15.85,0,0,0-27.68,0L105.6,56H88a8,8,0,0,0-8,8V85.63a16,16,0,0,0,7.94,13.83l24.53,14.11a8,8,0,0,1,0,13.86L87.94,141.54A16,16,0,0,0,80,155.37V176a8,8,0,0,0,8,8h20.63a16,16,0,0,0,13.83-7.94l14.11-24.53a8,8,0,0,1,13.86,0l14.11,24.53A16,16,0,0,0,178.37,184H196a8,8,0,0,0,8-8V152a8,8,0,0,0-8-8H178.37Z', 16),
+  gear: iconSvg('M128,80a48,48,0,1,0,48,48A48.05,48.05,0,0,0,128,80Zm0,80a32,32,0,1,1,32-32A32,32,0,0,1,128,160Z', 16),
+  caretDown: iconSvg('M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z', 12),
+  caretRight: iconSvg('M181.66,133.66l-80,80a8,8,0,0,1-11.32-11.32L164.69,128,90.34,53.66a8,8,0,0,1,11.32-11.32l80,80A8,8,0,0,1,181.66,133.66Z', 12),
+  database: iconSvg('M128,24C74.17,24,32,45,32,72V184c0,27,42.17,48,96,48s96-21,96-48V72C224,45,181.83,24,128,24Zm80,88c0,13.28-32.42,32-80,32s-80-18.72-80-32V93.16c17.06,13,46.28,22.84,80,22.84s62.94-9.86,80-22.84Zm0,72c0,13.28-32.42,32-80,32s-80-18.72-80-32V165.16c17.06,13,46.28,22.84,80,22.84s62.94-9.86,80-22.84Z', 13),
+  plusSmall: iconSvg('M224,128a8,8,0,0,1-8,8H136v80a8,8,0,0,1-16,0V136H40a8,8,0,0,1,0-16h80V40a8,8,0,0,1,16,0v80h80A8,8,0,0,1,224,128Z', 13),
+  refresh: iconSvg('M197.67,186.37a8,8,0,0,1,0,11.29C196.58,198.73,170.73,224,128,224c-37.51,0-64.55-20.14-80-35.77V208a8,8,0,0,1-16,0V160a8,8,0,0,1,8-8H88a8,8,0,0,1,0,16H55.31C67.72,183.19,93.94,208,128,208c34.6,0,55.7-20.06,58.36-22.71A8,8,0,0,1,197.67,186.37ZM216,40a8,8,0,0,0-8,8V72.77c-13.75-13.9-42.05-40.77-80-40.77-42.73,0-68.58,25.27-69.66,26.34a8,8,0,0,0,11.3,11.34C69.86,69.36,90.68,48,128,48c34.06,0,60.28,24.81,72.69,40H168a8,8,0,0,0,0,16h48a8,8,0,0,0,8-8V48A8,8,0,0,0,216,40Z', 13),
+  file: iconSvg('M213.66,82.34l-56-56A8,8,0,0,0,152,24H56A16,16,0,0,0,40,40V216a16,16,0,0,0,16,16H200a16,16,0,0,0,16-16V88A8,8,0,0,0,213.66,82.34ZM160,51.31,188.69,80H160ZM200,216H56V40h88V88a8,8,0,0,0,8,8h48V216Z', 13),
+  download: iconSvg('M224,152v56a16,16,0,0,1-16,16H48a16,16,0,0,1-16-16V152a8,8,0,0,1,16,0v56H208V152a8,8,0,0,1,16,0ZM117.66,154.34a8,8,0,0,0,11.31,0l40-40a8,8,0,0,0-11.31-11.31L136,124.69V32a8,8,0,0,0-16,0v92.69L98.34,103A8,8,0,0,0,87,114.34Z', 15),
+  terminal: iconSvg('M117.61,161a8,8,0,0,1-2.35,11.07,32,32,0,0,1-38.52-49.4L88.36,112,76.74,101.32A32,32,0,0,1,115.26,50.6,8,8,0,1,1,104,63.72a16,16,0,0,0-19.24,25.36l19.6,17.9a8,8,0,0,1,0,11.79l-19.6,17.9A16,16,0,1,0,106.53,163,8,8,0,0,1,117.61,161ZM216,64V192a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V64A16,16,0,0,1,56,48H200A16,16,0,0,1,216,64Zm-16,0H56V192H200Z', 13)
+};
+
+function iconSvg(path, size) {
+  return React.createElement('svg', { width: size, height: size, viewBox: '0 0 256 256', fill: 'currentColor' },
+    React.createElement('path', { d: path }));
+}
+
+const CONNECTIONS = [
+  { name: 'Prod SQL Server', platform: 'SQLSERVER', color: 'var(--color-neutral-400)' },
+  { name: 'Analytics Snowflake', platform: 'SNOWFLAKE', color: 'var(--color-accent-300)' }
+];
+
+const COMPARISONS = [
+  { id: 'customer-migration', name: 'Customer Migration Validation' },
+  { id: 'orders-regression', name: 'Orders ETL Regression' },
+  { id: 'stg-customers', name: 'dbt stg_customers vs prod' }
+];
+
+const RUNS = [
+  { label: 'Customer Migration Validation', dotColor: '#d9a15a', when: '2m ago' },
+  { label: 'Orders ETL Regression', dotColor: 'var(--color-accent-300)', when: '1h ago' },
+  { label: 'stg_customers vs prod', dotColor: '#e8918a', when: 'Yesterday' }
+];
+
+const RESULT = {
+  comparison: 'Customer Migration Validation',
+  runId: 'run_8f21ac3e',
+  status: 'warning',
+  summary: { passed: 12, warnings: 3, failed: 1 },
+  rowCounts: { source: 12405128, target: 12402991, difference: -2137 },
+  execution: { sourceDurationMs: 842, targetDurationMs: 967, comparisonDurationMs: 1310 },
+  schemaDifferences: [
+    { severity: 'Pass', columnName: 'CustomerID', kind: 'type-mismatch', sourceType: 'INT', targetType: 'NUMBER(38,0)', message: 'Compatible: canonical Integer on both sides.' },
+    { severity: 'Pass', columnName: 'CustomerName', kind: 'length-mismatch', sourceType: 'VARCHAR(100)', targetType: 'VARCHAR(255)', message: 'Compatible: target length is wider, no truncation risk.' },
+    { severity: 'Warning', columnName: 'CreatedDate', kind: 'type-mismatch', sourceType: 'DATETIME', targetType: 'TIMESTAMP_NTZ', message: 'Review: source has no timezone; confirm target is not silently assuming one.' },
+    { severity: 'Failure', columnName: 'CreditLimit', kind: 'type-mismatch', sourceType: 'MONEY', targetType: 'FLOAT', message: 'Risk: floating point target may lose exact decimal precision on currency values.' }
+  ],
+  profileDifferences: [
+    { severity: 'Warning', columnName: 'Email', metric: 'nullPercentage', sourceValue: '0.4%', targetValue: '2.1%', message: 'Target has more null emails than source.' },
+    { severity: 'Pass', columnName: 'Region', metric: 'distinctCount', sourceValue: 14, targetValue: 14, message: 'Distinct count matches.' },
+    { severity: 'Warning', columnName: 'Status', metric: 'newTargetValue', sourceValue: undefined, targetValue: 'PENDING_REVIEW', message: 'Target has a category not present in source.' }
+  ],
+  aggregateDifferences: [
+    { severity: 'Failure', sourceCount: 12405128, targetCount: 12402991, difference: -2137, differenceRate: -0.0172, tolerance: { percentage: 0.01 } }
+  ],
+  rowDifferences: [
+    { rowId: 'r1', severity: 'Pass', category: 'matching', keyValues: [1008101], message: 'Row matches on all mapped columns.' },
+    { rowId: 'r2', severity: 'Failure', category: 'missing-from-target', keyValues: [1008331], message: 'Key exists in source but not in target.' },
+    { rowId: 'r3', severity: 'Failure', category: 'missing-from-source', keyValues: [1009982], message: 'Key exists in target but not in source.' },
+    {
+      rowId: 'r4', severity: 'Warning', category: 'matched-key-differing-values', keyValues: [1008924], message: 'Values differ on 2 mapped columns.',
+      columnDifferences: [
+        { columnName: 'CreditLimit', sourceValue: 5000.0, targetValue: 5000.01 },
+        { columnName: 'Email', sourceValue: 'j.doe@acme.com', targetValue: 'j.doe@acme.com ' }
+      ]
+    },
+    { rowId: 'r5', severity: 'Warning', category: 'duplicate-in-target', keyValues: [1007765], message: 'Key appears twice in target.' }
+  ],
+  queriesUsed: [
+    'SELECT COUNT(*) AS row_count FROM dbo.Customer WITH (NOLOCK);',
+    'SELECT COUNT(*) AS row_count FROM ANALYTICS.CUSTOMER;',
+    "SELECT CustomerID, CreditLimit, Email FROM dbo.Customer WHERE CustomerID IN (1008924, 1007765) ORDER BY CustomerID;"
+  ]
+};
+
+const SEVERITY_TAG = {
+  Pass: 'tag-accent',
+  Informational: 'tag-outline',
+  Warning: 'tag-outline',
+  Failure: 'tag-neutral',
+  Error: 'tag-neutral',
+  Skipped: 'tag-neutral'
+};
+
+const CATEGORY_LABELS = {
+  matching: 'Matching',
+  'missing-from-source': 'Missing from source',
+  'missing-from-target': 'Missing from target',
+  'duplicate-in-source': 'Duplicate in source',
+  'duplicate-in-target': 'Duplicate in target',
+  'matched-key-differing-values': 'Matched key, differing values',
+  'unable-to-compare': 'Unable to compare',
+  'ignored-by-rule': 'Ignored by rule'
+};
+
+function fmt(n) { return n.toLocaleString('en-US'); }
+
+class Component extends DCLogic {
+  state = {
+    sections: { connections: true, comparisons: true, runs: true },
+    activeTab: 'schema',
+    activeComparisonId: 'customer-migration',
+    expandedRows: { r4: true }
+  };
+
+  toggleSection = (key) => this.setState(s => ({ sections: { ...s.sections, [key]: !s.sections[key] } }));
+  setTab = (id) => this.setState({ activeTab: id });
+  selectComparison = (id) => this.setState({ activeComparisonId: id });
+  toggleRow = (rowId) => this.setState(s => ({ expandedRows: { ...s.expandedRows, [rowId]: !s.expandedRows[rowId] } }));
+  severityTagClass = (sev) => SEVERITY_TAG[sev] || 'tag-neutral';
+
+  renderVals() {
+    const result = {
+      ...RESULT,
+      aggregateDifferences: RESULT.aggregateDifferences.map(d => ({
+        ...d,
+        sourceCountLabel: fmt(d.sourceCount),
+        targetCountLabel: fmt(d.targetCount),
+        differenceRateLabel: `${d.differenceRate}%`
+      })),
+      rowDifferences: RESULT.rowDifferences.map(d => ({
+        ...d,
+        categoryLabel: CATEGORY_LABELS[d.category] || d.category,
+        keyValuesLabel: d.keyValues.join(', '),
+        columnDifferences: d.columnDifferences ? d.columnDifferences.map(c => ({
+          ...c,
+          sourceValueLabel: c.sourceValue === undefined ? '—' : String(c.sourceValue),
+          targetValueLabel: c.targetValue === undefined ? '—' : String(c.targetValue)
+        })) : undefined
+      }))
+    };
+
+    const statusMap = { passed: ['Passed', 'tag-accent'], warning: ['Warning', 'tag-outline'], failed: ['Failed', 'tag-neutral'], error: ['Error', 'tag-neutral'] };
+    const [statusLabel, statusTagClass] = statusMap[RESULT.status] || ['Unknown', 'tag-neutral'];
+
+    return {
+      icons: ICONS,
+      connections: CONNECTIONS,
+      comparisons: COMPARISONS,
+      runs: RUNS,
+      sections: this.state.sections,
+      toggleSection: this.toggleSection,
+      activeTab: this.state.activeTab,
+      setTab: this.setTab,
+      activeComparisonId: this.state.activeComparisonId,
+      selectComparison: this.selectComparison,
+      expandedRows: this.state.expandedRows,
+      toggleRow: this.toggleRow,
+      severityTagClass: this.severityTagClass,
+      result,
+      statusLabel,
+      statusTagClass,
+      rowCountDeltaLabel: fmt(RESULT.rowCounts.difference),
+      sourceRowsLabel: fmt(RESULT.rowCounts.source),
+      targetRowsLabel: fmt(RESULT.rowCounts.target),
+      tabs: [
+        { id: 'schema', label: 'Schema', count: RESULT.schemaDifferences.length },
+        { id: 'profile', label: 'Profile', count: RESULT.profileDifferences.length },
+        { id: 'volume', label: 'Volume', count: RESULT.aggregateDifferences.length },
+        { id: 'rows', label: 'Row-Level', count: RESULT.rowDifferences.length },
+        { id: 'sql', label: 'SQL Preview', count: 0 }
+      ]
+    };
+  }
+}
+
+</script>
+</body>
+</html>
