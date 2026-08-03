@@ -17,22 +17,80 @@
 // it as a scalar string value into a `connection:` YAML mapping entry --
 // there is no code path here that could turn a free-typed connection name
 // into a structured/nested field.
+//
+// T-35b: extended to emit all three `ParitySide` kinds (T-35a's widened
+// union in `packages/engine/src/orchestration/definition/definition.ts`)
+// and `column_mapping`. `NewComparisonAnswerSide` below mirrors
+// `ParitySide`'s discriminated union shape exactly -- one variant per
+// `kind` -- rather than a single "all fields optional" bag type, so a
+// caller cannot accidentally supply `object` on a `query`-kind side or
+// `sql` on a `table`-kind side; TypeScript rejects that at the call site
+// the same way `parseSide` rejects it at parse time.
+
+/** One source/target side of `NewComparisonAnswers`, mirroring
+ * `ParitySide`'s (T-35a) discriminated union exactly. `query`/`sqlFile`
+ * kinds have no `where` field of their own -- per TASK-BRIEF.md Scope item
+ * 1, a row filter for those kinds belongs inside the `sql`/file contents
+ * itself, matching `parseSide`'s own rejection of `where` on those kinds. */
+export type NewComparisonAnswerSide =
+  | { kind: "table"; object: string; where?: string }
+  | { kind: "query"; sql: string }
+  | { kind: "sqlFile"; filePath: string };
 
 /** Already-collected answers from `runNewComparisonWizard` (or any other
- * caller), sufficient to scaffold a minimal `.paritylens` definition. */
+ * caller), sufficient to scaffold a minimal `.paritylens` definition.
+ *
+ * Backward-compatible field names: `comparisonName`/`keys`/
+ * `sourceConnection`/`targetConnection` are unchanged from the pre-T-35b
+ * shape (`newComparisonWizard.ts`'s existing call site keeps compiling and
+ * behaving unchanged, per TASK-BRIEF.md Scope item 6). `sourceObject`/
+ * `sourceWhere`/`targetObject`/`targetWhere` are now optional convenience
+ * aliases for the common `table`-kind case: when `source`/`target` (the
+ * new discriminated-union fields) are absent, they are synthesized from
+ * these flat fields as `kind: "table"`. When `source`/`target` is present,
+ * it takes precedence over the flat fields for that side. */
 export interface NewComparisonAnswers {
   /** The parity definition's `name` field. */
   comparisonName: string;
   sourceConnection: string;
-  sourceObject: string;
+  /** Flat `table`-kind convenience field, used only when `source` is
+   * absent. Ignored if `source` is present. */
+  sourceObject?: string;
+  /** Flat `table`-kind convenience field, used only when `source` is
+   * absent. Ignored if `source` is present. */
   sourceWhere?: string;
+  /** Discriminated-union side answer (T-35b). Takes precedence over
+   * `sourceObject`/`sourceWhere` when present, enabling `query`/`sqlFile`
+   * kinds. */
+  source?: NewComparisonAnswerSide;
   targetConnection: string;
-  targetObject: string;
+  /** Flat `table`-kind convenience field, used only when `target` is
+   * absent. Ignored if `target` is present. */
+  targetObject?: string;
+  /** Flat `table`-kind convenience field, used only when `target` is
+   * absent. Ignored if `target` is present. */
   targetWhere?: string;
+  /** Discriminated-union side answer (T-35b). Takes precedence over
+   * `targetObject`/`targetWhere` when present, enabling `query`/`sqlFile`
+   * kinds. */
+  target?: NewComparisonAnswerSide;
   /** One or more key column names (composite keys supported, per
    * `ParityDefinition.keys`). */
   keys: string[];
+  /** Optional column mapping entries (T-35b). Omitted from the emitted
+   * YAML entirely when absent or empty, matching this file's existing
+   * convention for other optional fields (e.g. `where`) -- relies on
+   * `parseDefinition`'s existing "absent -> `[]`" default rather than
+   * emitting an explicit empty `column_mapping: []`. */
+  columnMapping?: ColumnMappingEntry[];
 }
+
+/** A single column mapping entry -- re-exported from the engine's
+ * `ColumnMappingEntry` (T-08/T-28, read-only consumed here) so callers of
+ * this module don't need a separate `@paritylens/engine` import just to
+ * type a `columnMapping` answer. */
+import type { ColumnMappingEntry } from "@paritylens/engine";
+export type { ColumnMappingEntry } from "@paritylens/engine";
 
 /** Quotes a YAML scalar as a double-quoted string, escaping backslashes,
  * double quotes, and embedded newlines/carriage returns so arbitrary user
@@ -55,13 +113,83 @@ function yamlQuotedString(value: string): string {
   return `"${escaped}"`;
 }
 
-/** Renders a `source`/`target` block for the scaffolded YAML. `where` is
- * omitted entirely when not provided (matches `ParitySide.where`'s
- * optional-field shape in `parseDefinition`). */
-function renderSide(connection: string, object: string, where: string | undefined): string {
-  const lines = [`  connection: ${yamlQuotedString(connection)}`, `  object: ${yamlQuotedString(object)}`];
-  if (where !== undefined && where.trim() !== "") {
-    lines.push(`  where: ${yamlQuotedString(where)}`);
+/** Resolves one side's answer into the `NewComparisonAnswerSide` shape,
+ * preferring the discriminated-union `source`/`target` field when present
+ * and falling back to synthesizing a `table`-kind side from the flat
+ * `sourceObject`/`sourceWhere` (or `targetObject`/`targetWhere`)
+ * convenience fields otherwise -- see `NewComparisonAnswers`'s header
+ * comment for the precedence rule. */
+function resolveSide(
+  side: NewComparisonAnswerSide | undefined,
+  flatObject: string | undefined,
+  flatWhere: string | undefined
+): NewComparisonAnswerSide {
+  if (side !== undefined) {
+    return side;
+  }
+  // Flat-field fallback is always `table`-kind (the only kind the flat
+  // fields can express); `flatObject` is required in this path since a
+  // side must resolve to *some* valid ParitySide shape.
+  return flatWhere !== undefined && flatWhere.trim() !== ""
+    ? { kind: "table", object: flatObject ?? "", where: flatWhere }
+    : { kind: "table", object: flatObject ?? "" };
+}
+
+/** Renders a `source`/`target` block for the scaffolded YAML, dispatching
+ * on `side.kind` to emit exactly the fields `parseSide` (T-35a,
+ * `definition.ts`) expects for that kind -- `kind: "table"` is always
+ * emitted explicitly (never relying on `parseSide`'s absent-kind-defaults-
+ * to-table backward-compatibility path, which exists only for documents
+ * written before T-35a), and `where` is omitted entirely when not provided
+ * or blank (matches `ParitySide.where`'s optional-field shape). */
+function renderSide(connection: string, side: NewComparisonAnswerSide): string {
+  const lines = [`  connection: ${yamlQuotedString(connection)}`];
+
+  if (side.kind === "query") {
+    lines.push(`  kind: "query"`);
+    lines.push(`  sql: ${yamlQuotedString(side.sql)}`);
+    return lines.join("\n");
+  }
+
+  if (side.kind === "sqlFile") {
+    lines.push(`  kind: "sqlFile"`);
+    lines.push(`  filePath: ${yamlQuotedString(side.filePath)}`);
+    return lines.join("\n");
+  }
+
+  // side.kind === "table"
+  lines.push(`  kind: "table"`);
+  lines.push(`  object: ${yamlQuotedString(side.object)}`);
+  if (side.where !== undefined && side.where.trim() !== "") {
+    lines.push(`  where: ${yamlQuotedString(side.where)}`);
+  }
+  return lines.join("\n");
+}
+
+/** Renders one `column_mapping` list entry, supporting both
+ * `ColumnMappingEntry` variants -- plain `{ source, target }` and derived
+ * `{ name, target, sourceExpression?, targetExpression? }` -- as the
+ * list-of-objects form `parseColumnMappingListEntry` (`definition.ts`)
+ * accepts. Uses the list form (not the flat string-map alternative form)
+ * per TASK-BRIEF.md Scope item 3, since it unambiguously covers both
+ * variants. `source_expression`/`target_expression` (the YAML field
+ * names `parseColumnMappingListEntry` reads) are only emitted when
+ * present, matching every other optional-field convention in this file. */
+function renderColumnMappingEntry(entry: ColumnMappingEntry): string {
+  const lines: string[] = [];
+  if ("source" in entry) {
+    lines.push(`  - source: ${yamlQuotedString(entry.source)}`);
+    lines.push(`    target: ${yamlQuotedString(entry.target)}`);
+    return lines.join("\n");
+  }
+
+  lines.push(`  - name: ${yamlQuotedString(entry.name)}`);
+  lines.push(`    target: ${yamlQuotedString(entry.target)}`);
+  if (entry.sourceExpression !== undefined) {
+    lines.push(`    source_expression: ${yamlQuotedString(entry.sourceExpression)}`);
+  }
+  if (entry.targetExpression !== undefined) {
+    lines.push(`    target_expression: ${yamlQuotedString(entry.targetExpression)}`);
   }
   return lines.join("\n");
 }
@@ -70,10 +198,11 @@ function renderSide(connection: string, object: string, where: string | undefine
  * Builds a minimal `.paritylens` YAML document from already-collected
  * wizard answers. Sets exactly the fields `parseDefinition` (T-08)
  * requires -- `version`, `name`, `source`, `target`, `keys` -- per
- * TASK-BRIEF.md Scope item 1. `column_mapping`/`exclude_columns`/`rules`/
- * `checks` are all left absent; `parseDefinition` treats each as optional
- * and defaults them (empty array/object), so the scaffold stays genuinely
- * minimal rather than pre-populating fields the user hasn't specified yet.
+ * TASK-BRIEF.md Scope item 1, plus `column_mapping` when non-empty
+ * (T-35b, Scope item 3). `exclude_columns`/`rules`/`checks` are all left
+ * absent; `parseDefinition` treats each as optional and defaults them
+ * (empty array/object), so the scaffold stays genuinely minimal rather
+ * than pre-populating fields the user hasn't specified yet.
  *
  * Free of any `vscode` API usage -- callers (the wizard, or a direct
  * caller/test) pass in already-resolved answers.
@@ -81,15 +210,25 @@ function renderSide(connection: string, object: string, where: string | undefine
 export function buildComparisonYaml(answers: NewComparisonAnswers): string {
   const keysYaml = answers.keys.map((key) => `  - ${yamlQuotedString(key)}`).join("\n");
 
-  return [
+  const sourceSide = resolveSide(answers.source, answers.sourceObject, answers.sourceWhere);
+  const targetSide = resolveSide(answers.target, answers.targetObject, answers.targetWhere);
+
+  const lines = [
     `version: 1`,
     `name: ${yamlQuotedString(answers.comparisonName)}`,
     `source:`,
-    renderSide(answers.sourceConnection, answers.sourceObject, answers.sourceWhere),
+    renderSide(answers.sourceConnection, sourceSide),
     `target:`,
-    renderSide(answers.targetConnection, answers.targetObject, answers.targetWhere),
+    renderSide(answers.targetConnection, targetSide),
     `keys:`,
-    keysYaml,
-    ``
-  ].join("\n");
+    keysYaml
+  ];
+
+  if (answers.columnMapping !== undefined && answers.columnMapping.length > 0) {
+    lines.push(`column_mapping:`);
+    lines.push(...answers.columnMapping.map(renderColumnMappingEntry));
+  }
+
+  lines.push(``);
+  return lines.join("\n");
 }
