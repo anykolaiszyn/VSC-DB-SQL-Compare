@@ -1,102 +1,79 @@
-# REVIEW-REPORT.md — T-45: npm audit fix for brace-expansion (M-01)
+# ParityLens — Review Report T-46
 
-## Review independence statement
+## Review independence
 
-This review was performed by a separate agent instance from the
-implementer, with no memory of authoring this change. All claims in
-`IMPLEMENTATION-REPORT.md` were treated as things to verify, not trust:
-every command cited there was re-run independently in this session, and
-the actual `package-lock.json` diff was read directly rather than
-summarized from the report.
+This review was performed by an independent reviewer instance with no
+memory of, or involvement in, implementing T-46. All findings below are
+based on the reviewer's own fresh reading of `TASK-BRIEF.md`, the actual
+diff, `eslint.config.mjs`'s current content, and the reviewer's own
+independently re-run commands — the implementer's `IMPLEMENTATION-REPORT.md`
+is treated as a claim to verify, not a source of truth. The reviewer did
+not edit `eslint.config.mjs`, `TASK-BRIEF.md`, or `IMPLEMENTATION-REPORT.md`
+(a temporary manual edit to `eslint.config.mjs` was made and reverted
+solely to reproduce the red state — see Verification performed).
 
-## Scope reviewed
+## Review scope
 
-- `package-lock.json` (regenerated dependency lock entries only)
-- `package.json` (confirmed unchanged — checked directly, not assumed)
-- `TASK-BRIEF.md`, `IMPLEMENTATION-REPORT.md` (task control files)
+- **Task objective:** Resolve finding T-27-01 (OPEN, accepted
+  non-blocking) by adding `"**/dist-bundle/**"` to `eslint.config.mjs`'s
+  `ignores` array, so `npm run bundle` (or `npm run package`) followed by
+  `npm run verify` in the same working tree no longer false-fails on the
+  generated, gitignored bundle.
+- **Files and interfaces reviewed:** `eslint.config.mjs` (repo root, the
+  only file the brief authorizes for edit); `TASK-BRIEF.md`,
+  `IMPLEMENTATION-REPORT.md`; `PROGRESS-LEDGER.md`'s T-27-01 row (verbatim
+  finding text, line 214) and its 2026-08-01/08-02 decision-log entries
+  referencing this gap; `.gitignore` (confirmed `dist-bundle/` is
+  gitignored, line 3); `packages/extension/package.json` (confirmed
+  `bundle`/`package` script locations, lines 70-71); root `package.json`
+  (confirmed no root-level `bundle` script exists).
+- **Evidence reviewed:** `git diff --stat main..task/T-46-eslint-dist-bundle-ignore`,
+  `git diff main..task/T-46-eslint-dist-bundle-ignore -- eslint.config.mjs`,
+  and independently re-run `npm run lint` / `npm run verify` in both the
+  reverted (red) and fixed (green) states, with `packages/extension/dist-bundle/`
+  physically present in the working tree throughout.
 
-Confirmed via my own
-`git diff --stat $(git merge-base main task/T-45-npm-audit-fix)..task/T-45-npm-audit-fix`:
-only `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`, and `package-lock.json`
-changed. No file under `packages/**` changed. `package.json` does not
-appear in the diff at all — a stricter result than the brief's own
-expected "package.json/package-lock.json/IMPLEMENTATION-REPORT.md" list,
-and consistent with the report's own claim that no manifest edit was
-needed.
+## Critical findings
 
-## Findings
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-### Critical
+## Important findings
 
-NONE.
+| ID | Finding | Evidence | Required resolution |
+| --- | --- | --- | --- |
+| NONE | — | — | — |
 
-### Important
-
-NONE.
-
-### Minor
+## Minor findings
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-45-01 | The implementation report frames all four resolved `brace-expansion` installs as belonging to "ESLint's dependency chain," but one of the four (the top-level `node_modules/brace-expansion`, `5.0.8`→`5.0.9`) actually resolves under `@vscode/vsce`'s `minimatch@10.2.6`, a separate dependency subtree unrelated to ESLint. This does not change the outcome — it is still one of the four installs M-01's advisory covered, and it is still fully resolved within its existing semver range — but the provenance description in the report is imprecise. | `npm ls eslint @eslint/config-array @eslint/eslintrc brace-expansion` (run fresh in this review) shows the tree: `@vscode/vsce@3.9.2 > minimatch@10.2.6 > brace-expansion@5.0.9` as a sibling branch, distinct from the `eslint@9.39.5 > @eslint/config-array\|@eslint/eslintrc > minimatch@3.1.5 > brace-expansion@1.1.18` subtree. | No action required to close M-01. Worth a one-line correction if this report's provenance description is ever cited as authoritative for a future advisory triage. |
+| NONE | — | — | — |
 
-## Verification performed (my own, independent of the implementation report)
+## Verification performed
 
-| # | Check | Method | Result |
-| --- | --- | --- | --- |
-| 1 | Scope diff | `git diff --stat $(git merge-base main task/T-45-npm-audit-fix)..task/T-45-npm-audit-fix`, run by me | Exactly 3 files: `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`, `package-lock.json`. Nothing under `packages/**`. |
-| 2 | package-lock.json diff content | `git diff ...task/T-45-npm-audit-fix -- package-lock.json`, read in full | Exactly 4 `brace-expansion` entries changed: `@eslint/config-array` nested install `1.1.16→1.1.18`, `@eslint/eslintrc` nested install `1.1.16→1.1.18`, `eslint` nested install `1.1.16→1.1.18`, top-level install `5.0.8→5.0.9`. Matches the report's changed-files table line-for-line, including the version numbers. |
-| 3 | package.json diff | `git diff ...task/T-45-npm-audit-fix -- package.json`, run by me | Empty. Confirms the report's claim of zero manifest edits. |
-| 4 | Fresh dependency install | `npm ci` on this checkout | Succeeds; install-time audit summary already reports `found 0 vulnerabilities`. |
-| 5 | Audit (fresh, standalone) | `npm audit`, run by me | Exit 0, `found 0 vulnerabilities`. Matches the report's claimed green state exactly (report claims: "found 0 vulnerabilities"). |
-| 6 | Full verification (fresh) | `npm run verify` (typecheck + lint + test), run by me on this checkout | Exit 0. `Test Files 34 passed \| 2 skipped (36)`, `Tests 598 passed \| 27 skipped (625)` — exact match to the report's claimed pre- and post-change counts, and to `main`'s last recorded state (598/27) per the brief's requirement. |
-| 7 | ESLint major-version check | `grep '"eslint"' package.json`; `npm ls eslint @eslint/config-array @eslint/eslintrc brace-expansion` | `package.json` still declares `"eslint": "^9.9.0"` — unchanged range. Installed resolves to `eslint@9.39.5`, same major line (9.x), not bumped to a new major. `@eslint/config-array@0.21.2` and `@eslint/eslintrc@3.3.6` both still resolve `brace-expansion` via `minimatch@3.1.5` to `1.1.18` — still on the `1.x` line the original `1.1.16` install was on, a patch bump only. No `--force`-style major jump anywhere in the ESLint subtree. |
-| 8 | Provenance/adversarial check on the 4th bumped install | `npm ls brace-expansion` (full tree, not filtered) | Confirmed the top-level `brace-expansion@5.0.9` install traces to `@vscode/vsce > minimatch@10.2.6`, not the ESLint subtree — see Minor finding T-45-01. Functionally correct regardless: still resolved, in-range, non-breaking. |
-| 9 | Original M-01 advisory text cross-check | Read `PROGRESS-LEDGER.md` line 190 (M-01 entry) directly | Confirms the brief's citation is accurate: M-01 as last recorded describes "1 high-severity `brace-expansion` finding (ESLint's transitive dependency, `GHSA-mh99-v99m-4gvg`, DoS via unbounded expansion)... non-breaking fix available via `npm audit fix`, not yet applied." The brief's second cited advisory, `GHSA-rgw5-rvv9-x895`, is the sibling advisory under the same `npm audit` grouping (both cleared together by the same fix — confirmed by the pre-fix `npm audit` text pasted in the implementation report listing both IDs under one finding). |
-| 10 | Working-tree cleanliness (no probe residue) | `git status`, run by me after all checks | Clean working tree — no throwaway files left from this review. |
+| Check | Exact command or inspection | Result |
+| --- | --- | --- |
+| Diff scope (repo-wide) | `git diff --stat main..task/T-46-eslint-dist-bundle-ignore` | Exactly 3 files changed: `eslint.config.mjs` (+1/-0), `IMPLEMENTATION-REPORT.md`, `TASK-BRIEF.md`. No implementation-owned code file, `.vscodeignore`, `package.json`, or bundler config touched. |
+| Diff scope (eslint.config.mjs only) | `git diff main..task/T-46-eslint-dist-bundle-ignore -- eslint.config.mjs` | Single-line addition `+ "**/dist-bundle/**",` inserted between the existing `"**/out/**"` and `"**/*.d.ts"` entries. All five pre-existing `ignores` entries (`node_modules`, `dist`, `out`, `*.d.ts`, `coverage`) unchanged. New entry matches the brief's required glob exactly — not a bare `"dist-bundle"`, not widened. |
+| Working-tree precondition | `ls packages/extension/dist-bundle/` | `extension.js` and `extension.js.map` present in the working tree for the entire review, satisfying the brief's "bundle still present" requirement for green-state evidence without needing to rebuild it. |
+| Green state (fix as committed) | `npm run lint` | Exit 0, no output beyond the npm script header — bundle not linted. |
+| **Red-state reproduction (independent)** | Manually removed the `"**/dist-bundle/**"` line from `eslint.config.mjs` via Edit, then ran `npm run lint` | Exit 1, 1772 problems (1768 errors, 4 warnings), with errors concentrated at line numbers 95000-97800+ referencing `require()`/`module is not defined` — consistent with linting the minified bundle, not authored source. This independently reproduces the implementer's reported red-state numbers (1772 problems) exactly, not merely a similar count. |
+| Fix restoration | `git checkout -- eslint.config.mjs` then re-read file | File restored byte-for-byte to the committed fixed state (`ignores` array with all 6 entries including `dist-bundle`); `git status` showed working tree clean immediately after, confirming no stray diff was left. |
+| Full fresh verify (fix in place, bundle present) | `npm run verify` (run twice independently) | Exit 0 both times. `typecheck` (`tsc -b --force`) and `lint` (`eslint .`) both ran and passed with no errors; test run: `Test Files 34 passed \| 2 skipped (36)`, `Tests 598 passed \| 27 skipped (625)` — matches the pre-task baseline and the task's specified expected baseline (598/27/625) exactly. |
+| Bundle invocation path claim | `grep -n '"bundle"\|"package"' package.json packages/extension/package.json` | Confirmed root `package.json` has no `bundle` script; only `packages/extension/package.json` defines `"bundle": "node esbuild.config.mjs"` and `"package": "npm run bundle && vsce package --no-dependencies"`. The implementer's disclosed use of `npm run bundle --workspace=packages/extension` (rather than a literal root-level `npm run bundle`, which does not exist) is the only viable way to produce the named artifact and was explicitly disclosed as an assumption in the report, not hidden. |
+| Residue check | `git status` after all probing | Clean — no leftover scratch files, no stray diff, before writing this report. |
 
-## Prior findings this task was meant to resolve
+## Prior-finding disposition
 
-M-01 (`PROGRESS-LEDGER.md`, MINOR, originally opened at T-01's review):
-"Remaining: 1 high-severity `brace-expansion` finding (ESLint's transitive
-dependency, `GHSA-mh99-v99m-4gvg`...) — non-breaking fix available via
-`npm audit fix`, not yet applied." Re-verified directly by reproducing the
-original failing case's *absence*: a fresh `npm audit` run in this review
-(not copied from the implementation report) shows `found 0
-vulnerabilities` — both `GHSA-mh99-v99m-4gvg` and `GHSA-rgw5-rvv9-x895`
-are gone, and no other advisory has appeared in their place.
+| Finding ID | Disposition | Evidence of resolution |
+| --- | --- | --- |
+| T-27-01 | **RESOLVED** | Independently reproduced the original red state (lint fails against `dist-bundle/extension.js` with 1772 problems when the ignore entry is absent) and independently confirmed the green state (lint and full `npm run verify` both pass cleanly, exit 0, with the bundle physically present in the working tree and the new `"**/dist-bundle/**"` ignore entry in place). Test counts (598 passed / 27 skipped / 625 total) match the pre-existing baseline with no regression. The fix is exactly the single-entry `ignores` array addition the finding's own recorded recommended resolution specified — no other `ignores` entry, `.vscodeignore`, `package.json` script, or bundler config was touched. |
 
-## Overall assessment
+## Approval status
 
-- File-ownership diff is exactly `package-lock.json` plus the two task
-  control files — no file under `packages/**` touched, confirmed
-  independently. `package.json` itself is untouched, which is stricter
-  than the brief anticipated and consistent with the brief's own
-  instruction not to hand-edit version numbers when no side effect
-  requires it.
-- `npm audit fix` (no `--force`) fully resolved M-01's remaining
-  `brace-expansion` finding within existing semver ranges — confirmed by
-  a fresh `npm audit` run showing 0 vulnerabilities, not by trusting the
-  report's pasted output.
-- No major-version bump occurred anywhere in the ESLint subtree —
-  `package.json`'s `"eslint": "^9.9.0"` range is unchanged, and the
-  resolved `eslint@9.39.5` / `@eslint/config-array@0.21.2` /
-  `@eslint/eslintrc@3.3.6` versions are all consistent with that range.
-- `npm run verify` reproduces the exact pre-change test/skip counts
-  (598/27, exit 0) on a fresh independent run, satisfying the brief's
-  strict "must match exactly, not just close enough" requirement.
-- One Minor finding (T-45-01): the report's prose slightly
-  mischaracterizes the provenance of one of the four bumped
-  `brace-expansion` installs (it comes from `@vscode/vsce`'s
-  `minimatch@10.2.6`, not ESLint's chain). This does not affect
-  correctness, scope, or the resolution of M-01, and is not blocking.
-
-## Disposition
-
-**APPROVED**
-
-0 Critical, 0 Important, 1 Minor (T-45-01 — non-blocking, informational
-correction only). M-01 is confirmed resolved by independent re-verification
-(fresh `npm audit` shows 0 vulnerabilities). Safe to merge to `main`; no
-further action required for M-01 beyond updating its `PROGRESS-LEDGER.md`
-status to CLOSED.
+- **Status:** APPROVED
+- **Reviewer:** Independent Reviewer subagent (Claude Sonnet 5), separate instance from the T-46 implementer
+- **Date:** 2026-08-03
+- **Release or dependency impact:** Closes T-27-01 (the only open finding blocking nothing but itself). No behavioral, interface, or test-surface change — this is a lint-configuration-only fix. Safe to merge into `main` immediately; no downstream task depends on this change beyond removing the false-verify-failure hazard for any future `npm run package` → `npm run verify` sequence (e.g. a future release checklist).

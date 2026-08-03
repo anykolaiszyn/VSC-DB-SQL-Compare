@@ -1,85 +1,102 @@
-# TASK-BRIEF.md — T-45: npm audit fix for brace-expansion (M-01)
+# TASK-BRIEF.md — T-46: eslint `dist-bundle` ignore fix
 
 ## Objective
 
-Close M-01's remaining `npm audit` findings — `brace-expansion`
-(transitive via ESLint's dependency chain: `@eslint/config-array`,
-`@eslint/eslintrc`, `eslint` itself), 2 high-severity advisories
-(`GHSA-mh99-v99m-4gvg`, `GHSA-rgw5-rvv9-x895`) — via a non-breaking
-`npm audit fix`. This mirrors T-23's exact precedent (bump a
-dev-tooling dependency range, no code changes, verify green,
-independently confirm the audit output afterward).
+Resolve finding **T-27-01** (OPEN, accepted non-blocking, recorded in
+`PROGRESS-LEDGER.md`'s Open findings table): add
+`"**/dist-bundle/**"` to `eslint.config.mjs`'s `ignores` array so that
+running `npm run bundle` (or `npm run package`, which runs it first)
+followed by `npm run verify` in the same working tree does not lint the
+generated, gitignored `packages/extension/dist-bundle/extension.js`
+bundle as source.
+
+The finding's own recorded text (verbatim, from `PROGRESS-LEDGER.md`):
+
+> `npm run bundle` (and `npm run package`, which now runs it first)
+> produces `packages/extension/dist-bundle/extension.js`, which is
+> `.gitignore`'d but not added to `eslint.config.mjs`'s `ignores` list
+> (only `**/dist/**`/`**/out/**` are excluded, no `**/dist-bundle/**`
+> entry). Reviewer reproduced twice: run `npm run bundle` then `npm run
+> verify` → exit 1, 221 lint problems (the minified bundle linted as
+> source); delete `dist-bundle/` and re-run → exit 0, 404/27/431.
+> ... the gap means `npm run package` followed by `npm run verify` in
+> the same working tree (a plausible release-checklist ordering)
+> produces a false verify failure unrelated to actual code correctness.
+
+Recorded recommended resolution: add `"**/dist-bundle/**"` to
+`eslint.config.mjs`'s `ignores` array.
 
 ## Scope
 
-1. Run `npm audit fix` (no `--force`) at the repo root. Confirm it
-   resolves within existing semver ranges — do not accept a fix that
-   requires `--force` or that bumps ESLint to a new major version; if
-   `npm audit fix` alone cannot close these findings without `--force`,
-   stop and report that back rather than forcing a breaking bump.
-2. Regenerate `package-lock.json` as a natural consequence of step 1
-   (do not hand-edit it).
-3. Re-run `npm run verify` and confirm it is still green with the same
-   test count as before this change (no source code should need to
-   change — this is a dev-dependency-only bump).
-4. Re-run `npm audit` and confirm `brace-expansion`'s findings are gone
-   (or reduced — document exactly what remains, if anything).
-
-## Dependencies
-
-None — this is an isolated dependency bump, same shape as T-23.
+1. Edit `eslint.config.mjs`'s existing `ignores` array (currently:
+   `"**/node_modules/**"`, `"**/dist/**"`, `"**/out/**"`, `"**/*.d.ts"`,
+   `"**/coverage/**"`) to add one new entry: `"**/dist-bundle/**"`.
+2. Reproduce the finding's red state first: run `npm run bundle` (from
+   repo root, builds `packages/extension/dist-bundle/extension.js`),
+   then run `npm run lint` (or `npm run verify`) and confirm it fails
+   with lint errors against the generated bundle — this is the
+   red-state evidence the finding itself already describes; capture the
+   actual exit code and problem count you observe (may differ slightly
+   from the finding's originally recorded 221/404/27/431 numbers since
+   the codebase has grown since T-27 — that's expected and fine, record
+   what you actually see).
+3. Apply the one-line `ignores` array edit.
+4. Re-run `npm run lint` (or `npm run verify`) with the bundle still
+   present in the working tree — confirm it now passes cleanly (bundle
+   no longer linted).
+5. Run the full `npm run verify` one more time to confirm no regression
+   elsewhere.
 
 ## Files owned
 
-- `package.json` (root `devDependencies`/`dependencies` ranges only, as
-  a side effect of `npm audit fix` — do not hand-edit version numbers
-  yourself outside of what the tool changes)
-- `package-lock.json`
+- `eslint.config.mjs` (repo root) — the only file this task may edit.
+
+## Interfaces consumed
+
+- None. This is a standalone lint-config change with no code interface
+  dependency.
 
 ## Prohibited changes
 
-- Do not touch any file under `packages/**` — this task should require
-  zero source code changes.
-- Do not run `npm audit fix --force` or manually bump ESLint to a new
-  major version. If the non-breaking path doesn't fully close the
-  finding, document what's left rather than forcing a breaking change.
-- Do not touch `vitest`'s version (already fixed by T-23) or any other
-  dependency not implicated by the `brace-expansion` advisory chain.
+- Do not touch any other `ignores` entry already present.
+- Do not touch `packages/extension/.vscodeignore`, `package.json`
+  scripts, or any bundling script (`esbuild`/bundle config) — the
+  bundle-generation process itself is out of scope; only the lint
+  config's blindness to its output is being fixed.
+- Do not delete or commit the generated `dist-bundle/` directory itself
+  (it is gitignored and must stay that way — do not add it to git, do
+  not remove it from `.gitignore`).
+- Do not widen the new ignore glob beyond `"**/dist-bundle/**"` (e.g. no
+  bare `"dist-bundle"` or overly broad wildcard that could accidentally
+  exempt unrelated source directories).
 
-## Interfaces consumed / produced
+## Red-state evidence required
 
-None — no code-level interface changes. Produces: an updated
-`package-lock.json` and a documented `npm audit` before/after diff in
-the implementation report.
+Actual command output (not paraphrased) showing:
+1. `npm run bundle` succeeding and producing
+   `packages/extension/dist-bundle/extension.js`.
+2. `npm run lint` (or `npm run verify`) failing with lint errors
+   specifically against files under `dist-bundle/`, confirming the
+   currently-unfixed gap is real and reproducible right now, before any
+   edit is made.
 
-## Red/Green/Full verification evidence required
+## Green-state evidence required
 
-- **Red**: `npm audit` output today, showing the `brace-expansion`
-  findings (2 advisories) as M-01 currently documents.
-- **Green**: `npm audit` output after the fix, showing those specific
-  findings resolved (paste the full before/after `npm audit` summary
-  line counts in the implementation report).
-- **Full**: `npm run verify` (typecheck + lint + test) green, with the
-  exact same test/skip counts as `main`'s last recorded state (598
-  non-skipped, 27 skipped) — since no source code changes, counts must
-  match exactly, not just "close enough."
+1. The one-line `eslint.config.mjs` diff.
+2. `npm run lint` (or `npm run verify`) passing cleanly with
+   `dist-bundle/` still present in the working tree (bundle no longer
+   generates lint errors).
+3. A full fresh `npm run verify` run (typecheck + lint + test) passing
+   with no regression in test counts versus the pre-task baseline.
 
-## Handoff note for the reviewer
+## Handoff
 
-Please independently confirm:
-
-1. `npm audit` genuinely shows the `brace-expansion` findings resolved
-   (re-run it yourself, don't trust the pasted output alone).
-2. No package under `packages/**` changed — `git diff --stat main..<branch>`
-   should show only `package.json`/`package-lock.json`/
-   `IMPLEMENTATION-REPORT.md`.
-3. `npm run verify`'s test count matches `main`'s exactly (598/27) —
-   any deviation here would indicate an unexpected transitive behavior
-   change from the dependency bump, not just a lint/type issue.
-4. No major-version bump snuck in for ESLint or any of its plugins —
-   check `package.json`'s version ranges are still semver-compatible
-   with what was there before, not silently widened.
-
-## Branch
-
-`task/T-45-npm-audit-fix`
+- Write `IMPLEMENTATION-REPORT.md` using
+  `multi-agent-idea-to-app/templates/IMPLEMENTATION-REPORT.md`.
+- Commit on branch `task/T-46-eslint-dist-bundle-ignore`.
+- Recommend independent review as the next step.
+- Reviewer should specifically re-verify: (1) the red-state reproduction
+  is genuine (lint actually fails against the bundle before the fix),
+  (2) the fix is scoped to exactly the one new ignore entry, (3) no
+  other file was touched, (4) a fresh full `npm run verify` is green
+  with the bundle present.
