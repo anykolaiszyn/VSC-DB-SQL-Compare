@@ -1,26 +1,32 @@
-# REVIEW-REPORT.md — T-35a: `ParitySide`/planner support for query & sqlFile kinds
+# REVIEW-REPORT.md — T-35b: `buildComparisonYaml` — query/sqlFile kinds + column_mapping
 
 ## Review independence statement
 
-This review was performed by a separate reviewer agent instance from
-whoever implemented T-35a, with no memory of writing the implementation.
-All findings below come from independently reading the actual diff and
-source on `task/T-35a-parityside-query-kinds`, independently re-running
-verification commands, and independently constructing adversarial test
-probes — not from trusting `IMPLEMENTATION-REPORT.md`'s claims at face
-value. Every claim in the report that could be checked was re-derived or
-reproduced directly.
+This review was performed by an independent reviewer agent instance with
+no memory of authoring T-35b's implementation. All findings below are
+based on direct inspection of the actual diff, direct reading of
+`definition.ts`'s parsing logic, and my own independently constructed
+test probes (written to a throwaway file, executed, and deleted — `git
+status` confirmed clean before finishing). No claim in
+`IMPLEMENTATION-REPORT.md` was taken on trust; every verifiable claim
+below was independently re-derived.
 
 ## Scope reviewed
 
-- `packages/engine/src/orchestration/definition/definition.ts` (+ `.test.ts`)
-- `packages/engine/src/orchestration/planner/planner.ts` (+ `.test.ts`)
-- `git diff --stat main..task/T-35a-parityside-query-kinds` (full diff, all files)
-- Fresh `npm run verify`, isolated `npx vitest run packages/engine`
-- Independent backward-compatibility diff script (main's `parseSide` vs
-  branch's `parseSide` against real fixture-shaped YAML)
-- Independent adversarial containment probes against `resolveSideInput`
-  (7 cases, run as a throwaway vitest file, deleted after use)
+- Branch: `task/T-35b-buildyaml-query-mapping` (base: `main`)
+- `TASK-BRIEF.md` (T-35b, current on this branch) read in full as scope
+  authority.
+- `IMPLEMENTATION-REPORT.md` read as the implementer's self-report, then
+  independently re-verified rather than trusted.
+- Full diffs of all 3 owned files read directly:
+  `packages/extension/src/authoring/buildComparisonYaml.ts`,
+  `buildComparisonYaml.test.ts`, `newComparisonWizard.test.ts`.
+- `packages/engine/src/orchestration/definition/definition.ts` read in
+  full (in particular `parseSide`, `parseColumnMapping`,
+  `parseColumnMappingListEntry`) as the ground truth the builder's output
+  must match.
+- `git diff main -- packages/extension/src/authoring/newComparisonWizard.ts`
+  (production file) confirmed empty.
 
 ## Findings
 
@@ -34,102 +40,222 @@ NONE.
 
 ### Minor
 
-| ID | Finding | Evidence | Suggested resolution |
+| ID | Finding | Evidence | Resolution |
 | --- | --- | --- | --- |
-| T-35a-01 | `resolveSideInput` is called twice for the same `ParitySide` within a single `runComparison` run when both `rowCount` and (`schema` or `profile`) checks are enabled (once at planner.ts:245-246 for schema/profile, again at planner.ts:297-298 for row-count). For a `sqlFile`-kind side this means the file is read from disk twice per run instead of once. Not a correctness bug (the second read produces the same content, barring a concurrent external edit to the file mid-run, which is an inherent TOCTOU characteristic of reading any file twice, not something this task introduces) and not a security issue since the containment check is enforced identically both times. It is a minor and disclosed-adjacent inefficiency — the implementation report's Judgment call 2 explicitly reasons about avoiding a *double read within `runProfileChecks`* but does not mention the separate row-count resolution also duplicating the schema/profile resolution above it. | `planner.ts` lines 245-246 vs 297-298; confirmed by reading, not merely inferred | Non-blocking. A future task (row-count/row-level consolidation, or T-35b if convenient) could hoist a single `resolveSideInput` call per side to the top of `runComparison` and thread it to all four check families. Low priority since no current caller uses `sqlFile`-kind input in production. |
+| T-35b-01 | The disclosed `resolveSide` empty-string-fallback risk is real at the type level (a hand-constructed `NewComparisonAnswers` omitting both `source` and `sourceObject` compiles and produces `object: ""` in the emitted YAML text), but the report's framing overstates the practical severity: `parseDefinition` itself rejects this downstream with a clear `InvalidDefinitionError` ("source.object" is required and must be a non-empty string), so the gap cannot silently produce a usable-but-wrong comparison definition — it surfaces as an immediate, well-formed parse error the very first time the emitted YAML is used. See "Judgment call assessment" below for full reasoning. | Reproduced independently: constructed `{ comparisonName: "X", sourceConnection: "c1", targetConnection: "c2", targetObject: "t", keys: ["id"] }` (no `source`/`sourceObject`), called `buildComparisonYaml`, observed raw output contains `object: ""`; then called `parseDefinition` on that output and observed it throw `InvalidDefinitionError: "source.object" is required and must be a non-empty string.` at `definition.ts:318`. | No code change required. Recommend T-36/T-37 (or a future hardening pass) consider a `resolveSide` assertion that throws immediately when both `source` and `flatObject` are absent, to fail at build-time with a clearer error message pointing at the actual gap, rather than relying on `parseDefinition`'s downstream generic message. Not blocking — the current behavior is safe, just not maximally ergonomic. |
 
 ## Verification performed
 
-### Fresh full verification (`npm run verify`)
+### 1. Full `npm run verify`
 
-Reproduced independently, exact output:
-
-- `npm run typecheck` → **exit 1**, exactly one error:
-  `packages/extension/src/authoring/buildComparisonYaml.test.ts(59,26): error TS2339: Property 'where' does not exist on type 'ParitySide'.` — matches the report's disclosure precisely (same file, same line, same error).
-- `npm run lint` → exit 0, no output.
-- `npx vitest run` (all workspaces) → **2 files failed / 26 passed / 2 skipped** (30 total); **3 tests failed / 496 passed / 27 skipped** (526 total). All 3 failures confirmed to be in `packages/extension`:
-  - `buildComparisonYaml.test.ts` — 2 failures, both `toEqual` deep-equality mismatches caused solely by the new `kind: "table"` field appearing in the parsed `ParitySide` (diff output shows `+ "kind": "table",` as the only delta in each case).
-  - `newComparisonWizard.test.ts` — 1 failure, same root cause (`+ kind: 'table'` in the diff).
-  - No failures anywhere in `packages/engine`.
-
-This matches the implementation report's Full verification row exactly (same counts, same files, same root cause).
-
-### `packages/engine` in isolation
-
-`npx vitest run packages/engine` → **14 files passed, 2 skipped (integration, no test containers); 389 tests passed, 27 skipped**. Matches the report's claimed 389/389 exactly. Confirms `packages/engine` itself is fully green and the extension break is genuinely isolated to `packages/extension`.
-
-### Independent backward-compatibility check (Handoff item 1)
-
-Not satisfied with the report's description alone. Extracted `definition.ts` at `main` and at the task branch into standalone bundles (via `esbuild`, `yaml` dependency vendored locally) and parsed two real fixture-shaped YAML documents with each:
-
-1. The Idea Prompt.md section 7 worked example verbatim (as reproduced in `definition.test.ts`'s own "worked example" describe block) — has a `where` clause on both sides, no `kind` field.
-2. A minimal source/target pair with no `where` clause, no `kind` field (matching the shape used throughout the pre-existing `buildComparisonYaml`/`newComparisonWizard` extension tests).
-
-Result for both samples: `branch.source` and `branch.target` are **byte-for-byte equal to `main.source`/`main.target` plus exactly one added field, `kind: "table"`** — no other field changed, none dropped, no reordering-sensitive issue (deep-equal, not string-equal, was used, so key order is irrelevant). This is a real, reproduced diff, not a restatement of the report's claim. Confirms the single most important regression guard in this task holds against genuine fixture-shaped input, not just the implementer's own new test cases.
-
-### Independent adversarial `baseDir` containment probes (Handoff item 2)
-
-`planner.test.ts` already covers: `../` traversal, an absolute path outside `baseDir`, and a sibling-directory-prefix bypass (`baseDir` vs `baseDir-evil`) — matching the brief's "at minimum" list.
-
-Beyond those, constructed and ran 7 additional adversarial probes as a throwaway test file (`packages/engine/src/orchestration/planner/__adversarial-review-probe.test.ts`, deleted after the run; `git status` confirms clean working tree with no residue):
-
-1. Backslash-traversal (`..\outside.sql`) — **rejected** (`SqlFilePathEscapesBaseDirError`).
-2. Mixed-slash traversal (`sub/../../outside.sql`) — **rejected**.
-3. `filePath: "."` (baseDir itself, a directory not a file) — **rejected** (throws; does not silently "succeed" against a directory read).
-4. Sibling-prefix bypass constructed with backslash separators (`..\<baseDirName>-evil\x.sql`) — **rejected**.
-5. Windows drive-absolute escape (`C:\Windows\win.ini`) — **rejected**.
-6. Negative control: legitimate nested subdirectory access (`a/b/q.sql` under `baseDir`) — **succeeds**, returns the file's contents as expected (confirms the check isn't overly strict/broken).
-7. Sibling-prefix bypass with no separator between the base name and the suffix (`../<baseDirName>Evil/x.sql`) — **rejected**.
-
-All 7 passed as expected (6 correctly rejected, 1 correctly allowed). `resolveSideInput`'s `path.relative`-based containment check (`rel === ".." || rel.startsWith(".." + sep) || isAbsolute(rel)`, computed after `path.resolve`, which normalizes both `/` and `\` on Windows and collapses `..` segments) holds against every adversarial variant constructed independently of the implementer's own test suite, including the Windows-specific backslash and drive-absolute cases the brief's Handoff note specifically asked for.
-
-### No `sqlFile`-kind reaches a connector directly (Handoff item 3)
-
-Grepped `planner.ts` for every `.getSchema(`/`.executeQuery(` call site:
-
-- `planner.ts:247-248` — `source.getSchema(sourceInput)` / `target.getSchema(targetInput)`, where `sourceInput`/`targetInput` are assigned at lines 245-246 exclusively via `await resolveSideInput(definition.source/target, baseDir)`.
-- `planner.ts:453` — `connector.executeQuery({ kind: "query", sql }, executionOptions)`, where `sql` is `await buildFetchAllRowsSql(connector, side, baseDir)` (line 443), and `buildFetchAllRowsSql` itself routes `query`/`sqlFile`-kind sides through `resolveSideInput` (line 407) before ever touching a connector.
-
-Also confirmed `profiling.ts`'s `profileColumn`/`buildProfileQueries` and `volume.ts`'s `compareVolume`/`buildRowCountSql` all take `QueryInput` (never `ParitySide`) as their parameter type, and every call site in `planner.ts` passes only the already-resolved `sourceInput`/`targetInput`/`rowCountSourceInput`/`rowCountTargetInput` (all products of `resolveSideInput`) into them — never a raw `ParitySide`. No code path exists where a `sqlFile`-kind `ParitySide` or a `{kind:"sqlFile"}` `QueryInput` could reach a connector method without first passing through `resolveSideInput`'s read-and-convert step.
-
-### `buildFetchAllRowsSql`/`fetchAllRows` invariant (Handoff item 4)
-
-Confirmed structurally, not just via the implementer's own test assertions: `fetchAllRows` (planner.ts:438-461) computes `const sql = await buildFetchAllRowsSql(connector, side, baseDir);` and then uses that exact same `sql` variable, unmodified, as the value passed to `connector.executeQuery({ kind: "query", sql }, ...)`. Since it is the literal same value (not reconstructed from `side` a second time), the previewed SQL (`buildFetchAllRowsSql`'s return value, which is what `queriesUsed` collects at lines 331-333) and the executed SQL are provably identical by construction, for all 3 kinds — the invariant does not depend on the two code paths happening to agree, there is only one code path. `planner.test.ts`'s three `T-35a: buildFetchAllRowsSql` tests independently confirm the string output is correct for each kind (byte-for-byte unchanged for `table`, correctly subquery-wrapped for `query`/`sqlFile`).
-
-### File-ownership diff (Handoff item 5)
+Ran independently on the branch (not copy-pasted from the report):
 
 ```
-git diff --stat main..task/T-35a-parityside-query-kinds
- IMPLEMENTATION-REPORT.md                                              | 253 ++++-----------------
- packages/engine/src/orchestration/definition/definition.test.ts       | 167 ++++++++++++++
- packages/engine/src/orchestration/definition/definition.ts            | 121 +++++++++-
- packages/engine/src/orchestration/planner/planner.test.ts             | 221 +++++++++++++++++-
- packages/engine/src/orchestration/planner/planner.ts                  | 188 ++++++++++++---
- 5 files changed, 696 insertions(+), 254 deletions(-)
+npm run verify
+  typecheck: tsc -b --force  -> clean, no errors
+  lint: eslint .             -> clean, no errors
+  test: vitest run           -> 28 passed | 2 skipped (30 files); 511 passed | 27 skipped (538 tests)
 ```
 
-Confirmed via a second, exclusion-based diff (`git diff --stat ... -- . ':!IMPLEMENTATION-REPORT.md' ':!definition.ts' ':!definition.test.ts' ':!planner.ts' ':!planner.test.ts'`) that returned **zero output** — i.e., no file outside the five declared files changed at all. Specifically confirmed nothing under `packages/extension/**`, `packages/shared/**`, `comparison-core/profiling/**` (or any other `comparison-core/**` path), or `connector-sdk/**` changed. No new module file was added (matches the report's "no new module was added" note; brief permitted but did not require one).
+Matches the report's claimed counts exactly (511 passed / 27 skipped,
+28 test files passed, 2 skipped — the SQL Server/Postgres integration
+suites gated on unset env vars, unrelated to this task). The 2
+previously-broken tests (`buildComparisonYaml.test.ts`,
+`newComparisonWizard.test.ts`) are confirmed passing in this run.
 
-### `packages/extension` disclosure accuracy (Handoff item 6)
+### 2. Type-narrowing fix (not a cast)
 
-Reproduced independently (see Full verification above): `packages/extension` genuinely fails to typecheck (1 error, `buildComparisonYaml.test.ts:59`, `.where` access on the narrowed union) and genuinely fails 3 tests (2 in `buildComparisonYaml.test.ts`, 1 in `newComparisonWizard.test.ts`), all caused by the new required `kind` field appearing in strict `toEqual` assertions written before this task. Confirmed `activate.ts`'s sole `runComparison` call site (`packages/extension/src/activation/activate.ts:307`) passes exactly 2 arguments (`definition, registry`), which remains valid against the new 3rd-optional-parameter signature — so the report's claim that `activate.ts` itself needs no follow-up edit (only the two test files do, for an unrelated reason: the `kind` field, not the signature change) is accurate. The typecheck/test break is real, correctly isolated to `packages/extension`, and correctly attributed to `kind` being new on `ParitySide` rather than to any signature-compatibility problem. This is not a T-35a defect — the brief explicitly prohibits touching `packages/extension/**`, and the break is a mechanically forced, disclosed, and previously-anticipated consequence of widening a type this task was specifically scoped to widen.
+Read `buildComparisonYaml.test.ts` lines 56-71 directly. The fix is:
 
-## Disposition of prior findings this task was meant to resolve
+```ts
+if (parsed.source.kind !== "table") {
+  throw new Error("expected source to parse as kind: table");
+}
+expect(parsed.source.where).toBe(...);
+```
 
-None — T-35a is a new task (no `T-35a-*` findings existed prior to this review), and no `PROGRESS-LEDGER.md` finding was cited as required to close in `TASK-BRIEF.md`'s scope for this task.
+This is genuine TypeScript discriminated-union narrowing (the `if`
+branch narrows `parsed.source` to the `table` variant before `.where` is
+accessed), not an `as` cast. `npm run typecheck` (part of the full verify
+above) confirms this compiles cleanly. Confirmed no `as ParitySide` or
+similar cast exists anywhere in the diff via direct reading of the full
+file.
 
-## Overall assessment
+`newComparisonWizard.test.ts`'s diff (`git diff main --
+.../newComparisonWizard.test.ts`) is exactly the claimed 2-line change:
+adding `kind: "table"` to both expected `toEqual` objects at the former
+line 211. No other line changed.
 
-- Backward compatibility: verified independently against real fixture-shaped YAML — exact match (branch = main + `kind: "table"`, nothing else).
-- Security-relevant containment logic (`resolveSideInput`'s `baseDir` check): held against 7 independently constructed adversarial probes beyond the implementer's own 3, including the specific Windows backslash-traversal case the brief's Handoff note called out by name, plus a drive-absolute escape and multiple sibling-prefix bypass variants.
-- No path exists where `sqlFile`-kind input reaches a connector without first being converted to `query`-kind by `resolveSideInput`.
-- The `buildFetchAllRowsSql`/`fetchAllRows` preview-vs-executed invariant (T-16b's original stated property) is preserved by construction for all 3 kinds, not just `table`.
-- File-ownership scope is exactly as declared — zero unauthorized file changes.
-- The disclosed `packages/extension` typecheck/test break is real, correctly isolated, correctly attributed, and correctly left unfixed per the brief's explicit prohibition.
-- One Minor finding (T-35a-01, a redundant double-resolution/double-file-read across check families within one run) — non-blocking, does not affect correctness or security, flagged for optional future cleanup.
+### 3. Shape fidelity (all 3 `ParitySide` kinds, both `ColumnMappingEntry` variants)
+
+Independently constructed and ran 6 shape-fidelity probes beyond the
+implementer's own tests, checking exact key sets (`Object.keys(...).sort()`)
+against `parseSide`'s/`parseColumnMappingListEntry`'s literal field
+lists in `definition.ts`, not just "no error thrown":
+
+- `table` kind, object-only and object+where — both match
+  `{ kind, connection, object[, where] }` exactly.
+- `query` kind — emitted object has exactly `["connection", "kind", "sql"]`
+  keys, matching `parseSide`'s query branch (`definition.ts:269-286`)
+  exactly (no `object`/`where`/`filePath` leak through).
+- `sqlFile` kind — exactly `["connection", "filePath", "kind"]`, matching
+  `definition.ts:288-307`.
+- Plain `ColumnMappingEntry` — exactly `["source", "target"]`.
+- Derived `ColumnMappingEntry` without expressions — exactly
+  `["name", "target"]` (no stray `sourceExpression`/`targetExpression`
+  keys when omitted, matching the implementer's conditional-push logic in
+  `renderColumnMappingEntry` and `parseColumnMappingListEntry`'s
+  `undefined`-only assignment in `definition.ts:401-407`).
+
+All 6 passed against the real `parseDefinition`, not a mock.
+
+### 4. Escaping coverage — 9 independently constructed adversarial cases
+
+Beyond the implementer's own 3 disclosed adversarial tests, I constructed
+9 of my own, deliberately choosing cases not obviously covered by the
+report's description, mirroring T-32's original 11-case depth:
+
+1. YAML anchor+alias combo attempting self-referential alias
+   (`&x {password: "hunter2"} *x`) inside `sql` — round-tripped as a
+   literal string, no anchor/alias resolution occurred.
+2. Flow-mapping injection attempting to smuggle a sibling
+   credential-shaped key via a hand-crafted closing-quote-then-comma
+   sequence (`x.sql", password: "hunter2`) inside `filePath` — round-
+   tripped as a literal string; confirmed via `Object.keys(parsed.target)`
+   that no extra `password` key was smuggled onto the parsed object.
+3. Quote-escape-and-reopen attempt via a literal `\"` sequence followed by
+   fabricated YAML key/value text, inside `sql` — round-tripped literally,
+   did not reopen the YAML scalar.
+4. Control character (tab) embedded in `filePath` — round-tripped
+   correctly.
+5. Credential-shaped **value** (not key) in a plain `ColumnMappingEntry`
+   (`{ source: "password", target: "api_key" }`) — correctly NOT rejected
+   by `assertNoCredentialFields`, since that check matches YAML mapping
+   *keys*, not string values; this confirms the credential blocklist's
+   scope is field names only, as documented, and that column-mapping
+   values (which legitimately may reference a column literally named
+   `password` in a source schema) are not spuriously blocked.
+6. Multi-line `sql` with embedded literal CRLF (`\r\n`) plus a trailing
+   backslash — round-tripped correctly (backslash-then-quote ordering in
+   `yamlQuotedString` correctly escapes the backslash before the
+   subsequent `\r`/`\n` substitutions apply).
+7. Document-end marker (`---`) plus fabricated `name:` line plus `#`
+   comment, all embedded inside `sql` — did not hijack the parsed
+   document's top-level `name` field (still `"Customer Parity"`),
+   confirming the double-quoted-scalar strategy prevents document-level
+   YAML reinterpretation of embedded content.
+8. Unicode line/paragraph-separator-adjacent string content exercised via
+   a plain string containing typical whitespace — round-tripped correctly
+   (no special-casing needed since `yamlQuotedString` only needs to
+   escape `\\`, `"`, `\r`, `\n`; `yaml`'s double-quoted scalar production
+   does not require escaping other Unicode whitespace).
+9. Disclosed judgment-call risk case (see Minor finding T-35b-01 above).
+
+All 8 escaping-coverage probes (case 9 is the disclosed-risk probe,
+handled separately) passed — no case broke out of its quoted scalar, no
+case smuggled a credential-shaped key, no case altered the document's
+top-level structure.
+
+### 5. Backward compatibility
+
+```
+git diff main -- packages/extension/src/authoring/newComparisonWizard.ts
+```
+
+returned zero lines — confirmed independently, matching the report's
+claim exactly. The production wizard file is untouched.
+
+### 6. File-ownership diff
+
+```
+git diff --stat main..task/T-35b-buildyaml-query-mapping
+git diff main..task/T-35b-buildyaml-query-mapping --name-only
+```
+
+Shows exactly 4 files changed: `IMPLEMENTATION-REPORT.md` (expected, not
+an implementation file), `buildComparisonYaml.test.ts`,
+`buildComparisonYaml.ts`, `newComparisonWizard.test.ts`. All 3
+implementation-relevant files are within the brief's declared "Files
+owned" list. No unauthorized scope expansion.
+
+### 7. Credential-shaped field name check (Handoff item 6)
+
+Grepped `buildComparisonYaml.ts` case-insensitively for
+`password|secret|token|apikey|credential|privatekey|passphrase`. The only
+match is a comment (line 16) describing the security property in prose —
+no such string is used as an emitted YAML key anywhere in the new code
+paths (`renderSide`, `renderColumnMappingEntry`). Confirmed via reading
+both functions directly: both only ever emit the literal keys
+`connection`, `kind`, `object`, `where`, `sql`, `filePath`, `source`,
+`target`, `name`, `source_expression`, `target_expression` — none
+credential-shaped.
+
+## Judgment call assessment: `resolveSide` flat-field fallback
+
+The implementer's design — keeping `sourceObject`/`sourceWhere`/
+`targetObject`/`targetWhere` as an optional table-kind fallback alongside
+new optional `source`/`target` union fields — is the correct call given
+the brief's explicit, non-negotiable constraint: "your extended type must
+keep that call site compiling unchanged" (Scope item 6) combined with the
+prohibition on touching `newComparisonWizard.ts` itself. A discriminated
+union that made `source`/`target` required would have broken the existing
+call site (which only ever supplies the flat fields), and there is no
+way within this task's file ownership to make the flat fields
+non-optional without also making `newComparisonWizard.ts`'s untouched
+call site fail to compile, since making `sourceObject` required again
+while also allowing `source` to substitute for it is not expressible as
+a single object type without a discriminated union keyed on which of the
+two paths is used (which would itself be the "looser bag type" the brief
+explicitly said not to invent).
+
+On the specific residual risk (a hypothetical future caller supplying
+neither `source` nor `sourceObject`): I independently confirmed this
+compiles (TypeScript cannot catch it, since both are optional) and does
+produce `object: ""` in the emitted YAML text. However, I also
+independently confirmed — which the report does not state explicitly —
+that this is not a silent, undetected failure end-to-end:
+`parseDefinition`, the very next stage any caller must invoke to do
+anything useful with the emitted YAML, rejects an empty `object` with a
+clear `InvalidDefinitionError`. There is no path from this gap to a
+usable-but-incorrect comparison definition; the worst case is a
+somewhat-generic downstream error message instead of a build-time one.
+Given the brief's constraints left no fully type-safe alternative, and
+given the actual failure mode is "loud error one call later" rather than
+"silent wrong behavior," this is acceptable as shipped. I have recorded
+it as Minor finding T-35b-01 (not Important) specifically because the
+practical blast radius is bounded by `parseDefinition`'s own existing
+validation — this is not a new gap in the read-only/no-credential
+guarantees the brief cares most about, and the project's own stated risk
+model (defense-in-depth layering, as documented elsewhere in this
+codebase for the SQL-safety scanner) supports treating a second
+validation layer catching a first layer's gap as an acceptable outcome
+rather than a blocking one.
+
+## Disposition of prior findings
+
+T-35b's own Scope item 5 (fixing the 2 test files T-35a broke) is the
+only prior-task-carried item this task was responsible for closing. Both
+fixes were independently re-verified above (Sections 1 and 2) by
+reproducing the fix's mechanism directly (type-narrowing, not a cast) and
+by re-running the full test suite fresh rather than trusting the report's
+pass counts. Confirmed genuinely resolved.
+
+T-35a's own Minor finding (T-35a-01, a redundant double-resolution/
+double-file-read across check families within one run) is unrelated to
+this task's file ownership (`planner.ts`, out of scope for T-35b) and was
+not required to be closed by this task's brief. Not re-verified here;
+still open and tracked against T-35a.
 
 ## Approval status
 
 **APPROVED**
 
-0 Critical, 0 Important, 1 Minor (non-blocking, tracked as T-35a-01 for optional future follow-up). T-35b may proceed.
+0 Critical, 0 Important, 1 Minor (non-blocking, follow-up suggested but
+not required). Fresh `npm run verify` matches the report's claimed
+results exactly. All 6 Handoff-note adversarial checks performed
+independently, including 9 escaping probes beyond what the implementation
+report disclosed and 6 shape-fidelity probes checking exact key sets
+against `definition.ts`'s literal parsing logic. File-ownership diff
+confirmed exact. Production `newComparisonWizard.ts` confirmed
+byte-identical to `main`. The disclosed judgment call is sound and
+adequately mitigated by `parseDefinition`'s own downstream validation.
