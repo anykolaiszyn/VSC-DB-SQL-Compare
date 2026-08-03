@@ -46,6 +46,10 @@
       {
         "command": "paritylens.deleteConnection",
         "title": "ParityLens: Delete Connection"
+      },
+      {
+        "command": "paritylens.newComparison",
+        "title": "ParityLens: New Comparison"
       }
     ]
   },
