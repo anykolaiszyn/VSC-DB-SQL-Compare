@@ -1,5 +1,6 @@
 import * as vscode from "vscode";
-import { readFile } from "node:fs/promises";
+import { readFile, writeFile, stat } from "node:fs/promises";
+import { join } from "node:path";
 import type { ComparisonResult } from "@paritylens/shared";
 import {
   parseDefinition,
@@ -16,6 +17,7 @@ import { ConnectionProfileStore, secretKeyFor } from "../connections/connectionP
 import { addConnectionCommand, editConnectionCommand, deleteConnectionCommand } from "../connections/connectionCommands";
 import { resolveConnector } from "../connections/resolveConnector";
 import type { ConnectionProfile } from "../connections/connectionProfile";
+import { runNewComparisonCommand } from "../authoring/newComparisonWizard";
 
 /** View ID the tree data provider registers against (matches `package.json`'s `contributes.views`). */
 export const PARITY_TREE_VIEW_ID = "paritylens.dataParityView";
@@ -29,6 +31,10 @@ export const RUN_COMPARISON_COMMAND_ID = "paritylens.runComparison";
 export const ADD_CONNECTION_COMMAND_ID = "paritylens.addConnection";
 export const EDIT_CONNECTION_COMMAND_ID = "paritylens.editConnection";
 export const DELETE_CONNECTION_COMMAND_ID = "paritylens.deleteConnection";
+
+/** Command ID for the new comparison-authoring scaffold command (T-32),
+ * matching `package.json`'s `contributes.commands` entry. */
+export const NEW_COMPARISON_COMMAND_ID = "paritylens.newComparison";
 
 export interface ActivationResult {
   treeDataProvider: ParityTreeDataProvider;
@@ -337,21 +343,62 @@ function registerDeleteConnectionCommand(store: ConnectionProfileStore): vscode.
 }
 
 /**
+ * Registers `paritylens.newComparison` (T-32) against the live `vscode`
+ * API, delegating to `runNewComparisonCommand`
+ * (`packages/extension/src/authoring/newComparisonWizard.ts`) for the
+ * actual wizard/scaffold logic. `resolveTargetPath` joins the user-entered
+ * file name against the first open workspace folder (falling back to the
+ * file name as-is if no workspace folder is open, matching
+ * `registerRunComparisonCommand`'s own `defaultUri` fallback pattern
+ * above); `fileExists`/`writeFile` are backed by `node:fs` so the pure
+ * wizard module never imports `fs`/`path`/`vscode` itself.
+ */
+function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileStore): vscode.Disposable {
+  return vscode.commands.registerCommand(NEW_COMPARISON_COMMAND_ID, async () => {
+    await runNewComparisonCommand({
+      showInputBox: vscode.window.showInputBox.bind(vscode.window),
+      showQuickPick: vscode.window.showQuickPick.bind(vscode.window),
+      showInformationMessage: vscode.window.showInformationMessage,
+      showErrorMessage: vscode.window.showErrorMessage,
+      connectionProfileStore,
+      fileExists: async (path: string) => {
+        try {
+          await stat(path);
+          return true;
+        } catch {
+          return false;
+        }
+      },
+      writeFile: async (path: string, contents: string) => {
+        await writeFile(path, contents, "utf8");
+      },
+      resolveTargetPath: (fileName: string) => {
+        const workspaceFolders = vscode.workspace.workspaceFolders;
+        const baseUri = workspaceFolders && workspaceFolders.length > 0 ? workspaceFolders[0]?.uri : undefined;
+        return baseUri !== undefined ? join(baseUri.fsPath, fileName) : fileName;
+      }
+    } as never);
+  });
+}
+
+/**
  * Extension activation entry point. Registers the "DATA PARITY" tree view,
  * constructs the `SecretStore` wrapper around `context.secrets`, and (T-22)
- * registers the `paritylens.runComparison` command, and (T-29) registers the
+ * registers the `paritylens.runComparison` command, (T-29) registers the
  * `paritylens.addConnection`/`paritylens.editConnection`/
- * `paritylens.deleteConnection` commands against a `ConnectionProfileStore`
- * wrapping `context.globalState` and the same `secretStore` constructed
- * above.
+ * `paritylens.deleteConnection` commands, and (T-32) registers the
+ * `paritylens.newComparison` scaffold command, all against a
+ * `ConnectionProfileStore` wrapping `context.globalState` and the same
+ * `secretStore` constructed above.
  *
  * Per `TASK-BRIEF.md` T-10: no comparison logic, no connection management,
  * no results rendering lived here originally — T-22 is the first task to
  * extend this file's command registration beyond what T-10 needed for the
  * tree view, per T-22's own brief ("the only permitted edit is adding the
  * new command registration; do not restructure `activate()`'s existing
- * tree-view/SecretStore wiring"). T-29 follows that exact same precedent
- * for its own three commands, per its own brief's identical instruction.
+ * tree-view/SecretStore wiring"). T-29 and T-32 each follow that exact same
+ * precedent for their own commands, per their own briefs' identical
+ * instruction.
  */
 export function activate(context: vscode.ExtensionContext): ActivationResult {
   const treeDataProvider = new ParityTreeDataProvider();
@@ -374,6 +421,7 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(registerAddConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerEditConnectionCommand(connectionProfileStore));
   context.subscriptions.push(registerDeleteConnectionCommand(connectionProfileStore));
+  context.subscriptions.push(registerNewComparisonCommand(connectionProfileStore));
 
   return { treeDataProvider, treeView, secretStore };
 }
