@@ -68,8 +68,8 @@ Before/after `npm audit` summary line:
 
 ## Patch or commit identity
 
-- **Patch or commit:** see `git log -1` on this branch after commit
-  (recorded post-commit below)
+- **Patch or commit:** `2a6ac71f434b192cf2f6ed063aa77f0a5004ce61` —
+  "T-45: npm audit fix for brace-expansion (M-01)"
 - **Branch or workspace:** `task/T-45-npm-audit-fix`
 
 ## Recommended next step
