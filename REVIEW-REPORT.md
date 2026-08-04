@@ -1,40 +1,37 @@
-# ParityLens — Review Report T-40
+# ParityLens — Review Report T-41
 
 ## Review independence
 
-This review was performed by an independent reviewer instance with no
-memory of authoring this change. All claims in `IMPLEMENTATION-REPORT.md`
-were re-derived from the actual diff and fresh command output rather than
-accepted at face value. No implementation-owned file, `TASK-BRIEF.md`, or
-`IMPLEMENTATION-REPORT.md` was edited by this review.
+This review was performed by an independent reviewer instance, not the
+implementer. No implementation-owned file (`packages/extension/package.json`,
+`packages/extension/src/views/treeViewMenus.test.ts`) was edited during this
+review. Findings below are derived from the actual diff, the actual current
+source of every changed file, a fresh `npm run verify` run in this session,
+and independent web verification of the VS Code codicon and manifest-schema
+claims — not from trusting `IMPLEMENTATION-REPORT.md`'s characterization of
+its own work.
 
 ## Review scope
 
-- **Task objective:** Add a `contributes.viewsWelcome` entry to
-  `packages/extension/package.json` for the `paritylens.dataParityView`
-  tree, gated by a new `paritylens.hasNoContent` VS Code context key
-  (true iff zero `.paritylens` files AND zero saved connection profiles),
-  computed at activation and recomputed after every mutation that can
-  change either input.
+- **Task objective:** Per `TASK-BRIEF.md` — add two `contributes.menus`
+  entries providing an inline "add" affordance (codicon `add`) on the
+  "Connections" and "Comparisons" tree sections of the Data Parity view,
+  invoking `paritylens.addConnection` / `paritylens.newComparison`,
+  addressing self-service gap-analysis Finding 2 (command-palette-only
+  discovery).
 - **Files and interfaces reviewed:**
-  - `packages/extension/package.json` (`contributes.viewsWelcome` diff)
-  - `packages/extension/src/activation/activate.ts` (full diff: new
-    `HAS_NO_CONTENT_CONTEXT_KEY`, `HasNoContentDeps`,
-    `computeHasNoContent`, `refreshHasNoContentContext`, and all wiring
-    call sites)
-  - `packages/extension/src/activation/hasNoContent.test.ts` (new file,
-    read in full, 335 lines)
-  - `packages/extension/src/views/parityTreeDataProvider.ts` (to confirm
-    `getChildren`'s contract was untouched)
-  - `packages/extension/src/connections/connectionProfileStore.ts` /
-    `connectionProfile.ts` (to confirm `list()` accessor and
-    `ConnectionProfile` shape used correctly, no CRUD logic modified)
-- **Evidence reviewed:** `git diff main..task/T-40-onboarding-welcome-view`
-  (full, all four changed files), a fresh `npm run verify` run by this
-  reviewer, targeted `grep` for `.refresh(` across
-  `packages/extension/src`, `grep` of `contributes.commands` for both
-  referenced command IDs, `git status`/`git diff --stat` for scope
-  confirmation.
+  - `packages/extension/package.json` (full diff against `main`)
+  - `packages/extension/src/views/treeViewMenus.test.ts` (new file, read in
+    full)
+  - `packages/extension/src/views/parityTreeDataProvider.ts` (read in full,
+    confirmed untouched — read-only reference per the brief)
+  - `IMPLEMENTATION-REPORT.md`
+  - `TASK-BRIEF.md`, `AGENTS.md`
+- **Evidence reviewed:** `git diff main..task/T-41-tree-view-title-buttons`
+  (full diff and `--stat`/`--name-only`), a fresh `npm run verify` run in
+  this session, VS Code codicon reference and contribution-points
+  documentation fetched independently, VS Code `viewsWelcome` entry from
+  T-40 read directly from the current `package.json`.
 
 ## Critical findings
 
@@ -52,80 +49,55 @@ accepted at face value. No implementation-owned file, `TASK-BRIEF.md`, or
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-40-01 | No manual VS Code Extension Development Host check was performed to confirm `viewsWelcome` actually renders/hides correctly at runtime; the sole green-state evidence is the `package.json`-shape test. This is explicitly disclosed in both the brief (which anticipates it) and the implementation report, and is a reasonable choice given the automated-test constraint, but it remains an unverified runtime-rendering assumption. | `IMPLEMENTATION-REPORT.md` "Assumptions" section; `hasNoContent.test.ts` lines 160–173 | Track as a follow-up manual smoke check (e.g. next time the extension is run in a dev host) rather than blocking this task; the shape test plus this reviewer's own VS Code `when`-clause syntax check (operator precedence: `==` binds tighter than `&&`, confirmed against VS Code's documented context-key grammar) substantially de-risk it. |
-| T-40-02 | `refreshHasNoContentContext` is invoked unconditionally after every `addConnection`/`editConnection`/`deleteConnection`/`newComparison` callback, including on user-cancelled flows where neither input actually changed (e.g. `editConnection` never changes profile count at all). This is intentional per the implementer's own comments ("safe no-op... keeps this call site simple") and is functionally harmless — one extra `findFiles`/`list()` call and one extra `setContext` per command invocation — but is a minor efficiency/precision gap worth noting. | `activate.ts` diff, `registerEditConnectionCommand`/`registerAddConnectionCommand` comments | No action required; acceptable given the low cost and the simplicity benefit of not conditionally branching on each command's internal success/failure. |
+| T-41-01 | No manual Extension Development Host visual check was performed to confirm the inline button actually renders as expected in a live VS Code window; the only evidence is a manifest-shape unit test. This is explicitly disclosed by the implementer (matching T-40's precedent) rather than hidden, and `contributes.menus` genuinely has no unit-testable runtime rendering hook in this repo's plain Vitest suite, so it is not a blocking gap — but it remains a real, undischarged verification gap for a declarative UI contribution (a typo in a codicon name or a `when`-clause syntax error could still slip through a shape test that only checks the JSON's own internal consistency, not that VS Code accepts and renders it). | `IMPLEMENTATION-REPORT.md` "Risks or limitations"; `treeViewMenus.test.ts` only parses/asserts on the raw JSON, never loads it through `vscode`'s extension host. | Track as follow-up debt (e.g. add to a future manual-smoke-test pass before release, or the next task that already opens an Extension Development Host for another reason) rather than blocking this task. |
 
 ## Verification performed
 
 | Check | Exact command or inspection | Result |
 | --- | --- | --- |
-| Fresh full verification | `npm run verify` (run by this reviewer, not copied from the report) | **Pass** — typecheck clean, lint clean, `637 tests passed`, `27 skipped` (664 total), `35 test files passed`, `2 skipped` (37 total). Matches `IMPLEMENTATION-REPORT.md`'s claimed post-change numbers exactly, and matches the claimed baseline arithmetic (624 baseline + 13 new = 637). |
-| AND-logic adversarial probe (case 1: one `.paritylens` file, zero profiles) | Read `hasNoContent.test.ts` lines 132–139 (`computeHasNoContent` unit test) plus manual re-derivation of `computeHasNoContent`'s body (`comparisonFiles.length === 0 && profiles.length === 0`) | **Correctly stays hidden (returns `false`)** — one file makes `comparisonFiles.length === 0` false, short-circuiting the AND to `false` regardless of profile count. Confirmed both by the existing test and by independently re-reading the implementation. |
-| AND-logic adversarial probe (case 2: zero files, one profile) | `hasNoContent.test.ts` lines 141–148, cross-checked against `computeHasNoContent`'s body | **Correctly stays hidden (returns `false`)** — symmetric case, `profiles.length === 0` is false. Confirmed. |
-| Combined case (one file AND one profile) | `hasNoContent.test.ts` lines 150–157 | **Correctly stays hidden** — this is the test the brief explicitly asks for to rule out an accidental OR; independently re-derived and correct. |
-| `when`-clause AND-vs-OR at the VS Code manifest level | `grep '"when"' packages/extension/package.json` → `"view == paritylens.dataParityView && paritylens.hasNoContent"` | Standard VS Code `when`-clause grammar: `==` has higher precedence than `&&`, so this parses as `(view == paritylens.dataParityView) && (paritylens.hasNoContent)` — a genuine AND scoped to the correct view, not an accidental OR or unscoped clause. |
-| Both `command:` URIs reference real, registered command IDs | `grep -n '"command"' packages/extension/package.json \| grep -E "addConnection\|newComparison"` → both present at lines 46 and 58 of `contributes.commands` | Confirmed independently (not just trusting the report's own shape-test assertion). `paritylens.addConnection` and `paritylens.newComparison` are both real, pre-existing, already-registered command IDs; no typo. |
-| `refresh()` call-site claim (Scope item 3c premise) | `grep -n "\.refresh(" -r packages/extension/src` → only hit is `packages/extension/src/views/parityTreeDataProvider.test.ts:119: provider.refresh();` | **Confirmed independently.** The brief's premise ("`ParityTreeDataProvider.refresh()` is already called after add/edit/delete-connection... elsewhere in the codebase") does not hold — the implementer's disclosure is accurate, not a misreading of the brief. See judgment call below. |
-| Coverage of every content-mutating command | Read all `COMMAND_ID` constants and all `register*Command` functions in `activate.ts`; grepped for the only `.paritylens`-file-writing call (`writeFile`, line 751, inside `registerNewComparisonCommand`) | Only five commands exist total (`runComparison`, `addConnection`, `editConnection`, `deleteConnection`, `newComparison`, `reopenRun`). Of these, only the four wired ones can change `computeHasNoContent`'s inputs. `runComparison` requires an *existing* `.paritylens` file (via `showOpenDialog`/tree click) and never creates one — confirmed by reading `runComparisonCommand`'s signature and the only file-write call site being inside `registerNewComparisonCommand`. No unwired mutation path exists. |
-| Fire-and-forget activation call — race/uncaught-rejection probe | Read `activate.ts` lines 1004–1013: `void refreshHasNoContentContext(connectionProfileStore).catch(() => undefined);` | No uncaught-rejection risk — the `.catch(() => undefined)` swallows any rejection from `findFiles`/`setContext`. The four command-wrapper call sites use `await` inside the command's own async callback, so any rejection there propagates through the command promise exactly as any other command error already would (not a new pattern introduced by this task). Worst case at activation is a stale/absent context key for one microtask tick, as disclosed — a cosmetic gap, not a functional one, consistent with VS Code's context-key default-falsy behavior. |
-| `package.json`-shape test validity | Read `hasNoContent.test.ts` lines 175–241 in full | The test loads the real `package.json` from disk (`readFileSync`, not a fixture copy), asserts exactly one `viewsWelcome` entry targeting the correct view, asserts the exact `when` string, extracts `command:` URIs via regex and cross-references them against the real `contributes.commands` array, and asserts the explanatory-sentence-then-links shape. This is a legitimate proof of manifest shape and command-ID correctness (which is what it claims), not a proof of runtime rendering (which it explicitly disclaims) — no overstatement found. |
-| Scope / file-ownership check | `git diff main..task/T-40-onboarding-welcome-view --name-only` | Exactly four files changed: `IMPLEMENTATION-REPORT.md`, `packages/extension/package.json`, `packages/extension/src/activation/activate.ts`, `packages/extension/src/activation/hasNoContent.test.ts`. All within brief's "Files owned" list. No `connections/**` CRUD logic touched, no `ParityTreeDataProvider.getChildren` modification, no new dependency in `package.json` (only `contributes.viewsWelcome` added). |
-| Residue check | `git status` | Clean working tree; no throwaway probe files left behind (none were created — all adversarial checks were read-only `grep`/`git diff` inspections). |
+| Fresh full verification | `npm run verify` (this session, on `task/T-41-tree-view-title-buttons`) | Exit 0. Typecheck clean, lint clean. `Test Files: 36 passed \| 2 skipped (38)`; `Tests: 645 passed \| 27 skipped (672)`. Matches the implementer's claimed count exactly — no discrepancy. |
+| Diff scope | `git diff main..task/T-41-tree-view-title-buttons --name-only` | Exactly 3 files changed: `IMPLEMENTATION-REPORT.md`, `packages/extension/package.json`, `packages/extension/src/views/treeViewMenus.test.ts`. `package.json` is the sole declared "Files owned" entry; the new test file is disclosed in the report as a brief-mandated addition (the brief's own "Green-state evidence required" item 2 requires a shape test, and T-41 owned no pre-existing test file to extend) — judged a minimal, brief-forced consequence, not unauthorized scope expansion. |
+| `parityTreeDataProvider.ts` untouched | `git diff main..task/T-41-tree-view-title-buttons -- packages/extension/src/views/parityTreeDataProvider.ts` | Empty diff — confirmed read-only, as the brief requires (Prohibited changes). |
+| `contextValue` strings, read directly from source | Read `parityTreeDataProvider.ts` in full | `ParityTreeItem.contextValue = \`paritylens.section.${section.id}\`` → exactly `paritylens.section.connections` / `paritylens.section.comparisons` for the two `PARITY_SECTIONS` entries of those IDs. `ParityComparisonTreeItem.contextValue = "paritylens.comparisonFile"` (child row under Comparisons). `ParityRecentRunTreeItem.contextValue = "paritylens.recentRun"` (child row under Recent Runs). All four strings are distinct; the new `when` clauses use plain `==` equality (not a prefix/regex match), so a child row's `contextValue` can never satisfy `viewItem == paritylens.section.connections` or `viewItem == paritylens.section.comparisons` — confirmed by direct string comparison, not assumption. |
+| `when`-clause correctness, read directly from the diff | `git diff main..task/T-41-tree-view-title-buttons -- packages/extension/package.json` | `paritylens.addConnection`: `"when": "view == paritylens.dataParityView && viewItem == paritylens.section.connections"`, `"group": "inline"`. `paritylens.newComparison`: `"when": "view == paritylens.dataParityView && viewItem == paritylens.section.comparisons"`, `"group": "inline"`. Both scoped to the correct view AND the correct, distinct section — not the whole view, not each other's section, not any child-row contextValue. |
+| T-40 `viewsWelcome` orthogonality | `grep -n "viewsWelcome" -A 15` / `grep -n "dataParityView"` on the current `package.json` | T-40's `viewsWelcome` entry: `"when": "view == paritylens.dataParityView && paritylens.hasNoContent"` — a separate custom context key (`paritylens.hasNoContent`) gates a whole-tree-body replacement overlay shown only when the tree provider yields zero content. `ParityTreeDataProvider.getChildren()` (read in full) always returns the three `PARITY_SECTIONS` top-level items regardless of content state, so the section rows (and therefore the new inline buttons) and the welcome overlay are mutually exclusive render states driven by different VS Code mechanisms (`viewsWelcome` vs. per-item `view/item/context`) — genuinely orthogonal, not just presumed so. |
+| Codicon `add` is real and published | Fetched `https://microsoft.github.io/vscode-codicons/dist/codicon.html` and cross-checked via web search | Confirmed: `add` (`codicon-add` / `$(add)`) is a real, published codicon in the VS Code codicon set, listed alongside `add-small`/`add-compact` as a distinct base icon — matches its documented use elsewhere in VS Code (e.g. Source Control's inline per-repository add button), consistent with the implementer's and brief's claim. |
+| `contributes.menus`/`contributes.commands` icon-field schema | Fetched `https://code.visualstudio.com/api/references/contribution-points` | Confirmed: an individual `contributes.menus` entry supports only `command`/`when`/`group`/`alt`(/`submenu`) — no `icon` field of its own. `contributes.commands` entries support `icon` as either a light/dark path-pair object or a bare `"$(codiconName)"` string, applied wherever the command renders as a button (including inline `view/item/context` group entries). The implementation places `"icon": "$(add)"` on the `contributes.commands` entries for the two target commands only (verified via `grep -n "\"icon\""` — exactly 2 new `$(add)` occurrences, plus one pre-existing, unrelated `media/icon.svg` extension icon at a different key) — matches this confirmed schema. |
+| `view/title` vs. `view/item/context` API-constraint reasoning | Independent reasoning from VS Code extension API knowledge, cross-checked against the fetched contribution-points documentation | Confirmed real: VS Code's `view/title` menu group is keyed only by `view ==` in its `when` clause — there is no `viewItem`-equivalent scoping for `view/title` entries, so a `view/title` button cannot be restricted to one specific top-level tree item within a single view. `view/item/context` (optionally with `group: "inline"` to render as a row-level icon rather than only in the right-click context menu) is the only contribution point that can key off a specific item's `contextValue`. The brief's own Scope item 2 already resolves this in favor of `view/item/context`/`inline`, and the implementer's report correctly follows and documents that resolution rather than second-guessing or silently deviating from it. |
+| Command IDs referenced are real, already-registered, unmodified | `packages/extension/package.json` `contributes.commands` array (read in full via diff and grep) | `paritylens.addConnection` and `paritylens.newComparison` both pre-exist in `contributes.commands` (T-29/T-32); only their `icon` field changed, no `command` ID, `title`, or registration/behavior changed. Matches the brief's "Interfaces consumed... read-only reference — do not modify their registration." |
+| Adversarial probe: could any other `contextValue` in the codebase accidentally collide with the two new `when` clauses | Read `parityTreeDataProvider.ts` in full — it is the sole file that sets `contextValue` for Data Parity tree items | Only four `contextValue` values exist in the tree provider: `paritylens.section.connections`, `paritylens.section.comparisons`, `paritylens.section.recentRuns` (implicit, via the `ParityTreeItem` constructor for the third section, not targeted by either menu entry), `paritylens.comparisonFile`, `paritylens.recentRun`. None collide with either new `when` clause's exact-match target. |
+| Test file correctness | Read `treeViewMenus.test.ts` in full | 8 tests: exactly-two-entries, both commands registered, each `when` clause's exact string (not just substring/contains), a negative assertion that neither `when` clause contains the child-row contextValues, both entries' `group === "inline"`, both commands' `icon === "$(add)"`, and a negative assertion that no other command gained an `icon` field. All 8 pass in the fresh run; assertions are exact-equality on the parsed JSON, not loosely shaped — no test-quality gap found. |
 
 ## Prior-finding disposition
 
-No prior findings from an earlier review round were assigned to T-40 (this
-is this task's first review cycle). The brief's own stated premise for
-Scope item 3c ("refresh() is already called elsewhere") is not a prior
-finding but a false premise baked into the brief text itself; see judgment
-call below rather than a "prior finding" table entry.
+No prior open finding was assigned to this task for resolution (T-41 is new
+scope, not a fix for a previously disclosed defect). `PROGRESS-LEDGER.md`'s
+existing open findings (I-01/I-02, statement-safety residual gaps; T-34-01,
+resolved by T-47 per `parityTreeDataProvider.ts`'s own comments) are
+unrelated to this task's file ownership and are not touched or claimed
+resolved here.
 
 | Finding ID | Disposition | Evidence of resolution |
 | --- | --- | --- |
-| NONE | N/A — first review round for T-40 | — |
-
-## Judgment call: Scope item 3c wiring-point discrepancy
-
-The brief instructed the implementer to find existing
-`ParityTreeDataProvider.refresh()` call sites in `activate.ts` and add the
-context-key recomputation alongside each one. This reviewer independently
-confirmed via `grep -n "\.refresh(" -r packages/extension/src` that no such
-call site exists anywhere in `packages/extension/src` outside of
-`parityTreeDataProvider.test.ts`'s own unit test — the brief's premise does
-not hold, and the implementer's disclosure of this is accurate rather than
-a misreading.
-
-Given that, the implementer's actual choice — wiring
-`refreshHasNoContentContext` directly into the tail of
-`registerAddConnectionCommand`, `registerEditConnectionCommand`,
-`registerDeleteConnectionCommand`, and `registerNewComparisonCommand`'s
-registered callbacks, plus once at `activate()` — satisfies the brief's
-actual intent (the context key must transition stale-to-fresh after every
-relevant mutation) at least as well as the brief's literal instruction
-would have, and arguably more precisely: it ties the recompute directly to
-the exact command handlers whose outcomes can change `computeHasNoContent`'s
-inputs, rather than depending on a `refresh()` call site whose own
-relationship to those mutations this task doesn't own or control. This
-reviewer's own coverage check (above) confirms no content-mutating command
-was left unwired. The implementer did not invent a nonexistent call site,
-did not silently drop the requirement, and did not touch
-`ParityTreeDataProvider` itself (respecting the brief's prohibited-changes
-section). This is judged a correct and appropriately conservative
-resolution of a brief premise that did not match the codebase's actual
-state — not a deviation requiring rework.
+| NONE | N/A — first review round for T-41 | — |
 
 ## Approval status
 
 - **Status:** APPROVED
-- **Reviewer:** Independent Reviewer (T-40)
+- **Reviewer:** Independent Reviewer (T-41)
 - **Date:** 2026-08-03
-- **Release or dependency impact:** None blocking. Two Minor findings
-  recorded (T-40-01: no manual Extension Development Host smoke check
-  performed — recommend as a lightweight follow-up whenever the extension
-  is next run in a dev host, not a blocker; T-40-02: unconditional
-  recompute on cancelled/no-op command paths — accepted as harmless by
-  design). No Critical or Important findings. Fresh `npm run verify`
-  independently reproduced by this reviewer: 637 tests passed, 27 skipped,
-  35/37 test files passed, matching the implementation report's claimed
-  numbers exactly. The Scope-item-3c premise mismatch was independently
-  confirmed real and the implementer's alternative wiring judged sound.
+- **Release or dependency impact:** None blocking. Zero Critical, zero
+  Important findings. One Minor finding (T-41-01, no manual Extension
+  Development Host visual smoke test) is disclosed, non-blocking, and
+  recommended for tracking as follow-up debt — consistent with the
+  project's own risk framing that `contributes.menus` has no in-repo
+  unit-testable runtime rendering hook, and the shape test plus independent
+  schema/codicon verification performed in this review provide sufficient
+  confidence for approval. Fresh `npm run verify` reproduced the
+  implementer's claimed 645 passed / 27 skipped (672 total) exactly, with
+  no regression from the 637/637 T-40-inclusive baseline (net +8 tests, all
+  from the new shape test file). Scope, file ownership, `contextValue`
+  matching, codicon validity, manifest-schema field placement, and
+  orthogonality with T-40's `viewsWelcome` were all independently
+  re-derived from source rather than accepted from the implementation
+  report.
