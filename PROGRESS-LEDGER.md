@@ -50,19 +50,49 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE — **Phase 6 (T-40–T-44,
-  self-service gap follow-ups) is fully COMPLETE and merged**, 2026-08-04.
-  All 5 tasks done: T-40 (onboarding `viewsWelcome`), T-41 (tree view
-  title command buttons), T-42 (connection-test-on-add feedback), T-43
-  (results webview legend/glossary — required one CHANGES REQUIRED round,
-  fixed directly by the orchestrator, re-reviewed APPROVED), T-44
-  (fixture-fallback disambiguation, clean first-round APPROVED). See Task
-  register and Open findings (T-40-01, T-40-02, T-41-01, T-42-01,
-  T-42-02) for detail. No remaining scheduled work in
-  `IMPLEMENTATION-PLAN.md` besides the still-blocked T-18 (Snowflake, no
-  trial account) and the unscoped Backlog items (custom comparison
-  editor/CodeLens/SQL-preview panel — all already delivered by Phase 5,
-  so effectively superseded/closed; see that section's own text).
+- **Release in progress (prompt 07), started 2026-08-04**, candidate
+  scope: Phase 5 (comparison authoring UI) + Phase 6 (self-service gap
+  follow-ups), immediately after integration (prompt 06) closed clean.
+  Fresh `npm run verify` at candidate revision `3fe69c2`: 667 passed, 27
+  pre-existing skips, exit 0. `npm audit`: 0 vulnerabilities. Dependency
+  inventory unchanged from the prior release (4 direct runtime deps:
+  `@duckdb/node-api`, `mssql`, `pg`, `yaml`). Packaged `paritylens-0.0.1.vsix`
+  built fresh (20 files, 13.68 MB, `LICENSE.txt` present per T-52's fix),
+  SHA-256 `3363CB76228DE03335B07F44583CDD90B0DCD00937C445902105A44CC7E1E948`.
+  Package-contents scan: no test/source/`.git`/`.env` files, no
+  credential-shaped literals, no owner PII. A fresh adversarial
+  `assertReadOnlyStatement` probe against T-35a's new `query`/`sqlFile`
+  execution kinds (not previously tested at a prior release boundary)
+  confirmed no new mutating-statement bypass — 6 hand-built bypass
+  attempts all correctly rejected, one genuine read-only query correctly
+  allowed. **Human-driven smoke test (owner-driven, isolated
+  `--user-data-dir`/`--extensions-dir` profile, 2026-08-04) found 2 real
+  defects** (T-53, T-54 below) and 1 non-blocking UX finding (Add
+  Connection's one-field-at-a-time native prompts are hard to recognize
+  as active input — not release-blocking, tracked as a future polish
+  item, no task ID assigned yet). Release is **paused pending T-53/T-54's
+  remediation and a repeat smoke test** — per the release prompt's own
+  "If evidence fails, return the issue to a bounded task loop" and "Do
+  not consider step 5 satisfied ... if a defect is found" instructions.
+- **Exactly one task may be active:** T-53 (Connections tree lists saved
+  profiles + missing tree-refresh wiring) — found during release (prompt
+  07) human-driven smoke test, 2026-08-04. T-54 (CodeLens unreachable
+  through the custom editor's default priority) is queued next, same
+  release cycle, independent file ownership.
+- **Phase 6 (T-40–T-44, self-service gap follow-ups) is fully COMPLETE
+  and merged, 2026-08-04.** All 5 tasks done: T-40 (onboarding
+  `viewsWelcome`), T-41 (tree view title command buttons), T-42
+  (connection-test-on-add feedback), T-43 (results webview
+  legend/glossary — required one CHANGES REQUIRED round, fixed directly
+  by the orchestrator, re-reviewed APPROVED), T-44 (fixture-fallback
+  disambiguation, clean first-round APPROVED). See Task register and
+  Open findings (T-40-01, T-40-02, T-41-01, T-42-01, T-42-02) for
+  detail. No remaining scheduled work in `IMPLEMENTATION-PLAN.md`
+  besides the still-blocked T-18 (Snowflake, no trial account), the
+  release-blocking T-53/T-54 above, and the unscoped Backlog items
+  (custom comparison editor/CodeLens/SQL-preview panel — all already
+  delivered by Phase 5, so effectively superseded/closed; see that
+  section's own text).
 - **Backlog cleanup sweep (owner-directed 2026-08-03):** owner asked to
   complete all open backlog items except T-18 (blocked, no trial account)
   before proceeding to Phase 6. Scope: all 27 `OPEN` rows in this
@@ -99,7 +129,7 @@
   growth, not scope creep). **The backlog-cleanup sweep is now fully
   closed.** Phase 6 (T-40–T-44) is unblocked and ready to start whenever
   the owner confirms.
-- **Last updated:** 2026-08-04, Claude Code (Lead Orchestrator) — Integration (prompt 06) CLOSED with no findings across Phase 5 + Phase 6
+- **Last updated:** 2026-08-04, Claude Code (Lead Orchestrator) — Release (prompt 07) smoke test found T-53/T-54, T-53 active
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
 ## Task register
@@ -161,6 +191,8 @@
 | T-42 | Phase 6 (self-service gap follow-ups): connection-test-on-add feedback — `addConnectionCommand` now calls `resolveConnector(profile, password).testConnection()` (T-29's already-defined connector resolver) under a blocking `withProgress` notification before `store.add`; on failure, `showWarningMessage` offers "Save Anyway" (persists, preserving the prior unconditional behavior as an opt-in) or "Don't Save"/dismissal (aborts, nothing persisted). Both thrown and resolved-`{success:false}` failure shapes are normalized identically (`ConnectionTestResult`'s contract documents no throw-free guarantee) so neither is swallowed by the outer generic catch. Addresses gap-analysis Finding 3 | T-29 | Claude Code Implementer subagent | `packages/extension/src/connections/connectionCommands.ts` (add-flow + shared `ConnectionCommandDeps` extension only), `packages/extension/src/connections/connectionCommands.test.ts`, `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/T-30/T-32/T-33/T-40, only `buildConnectionCommandDeps`'s real-`vscode` wiring for the two new injected deps) | COMPLETE | APPROVED | `npm run verify` exit 0, 650/650 tests (677 total, 27 pre-existing live-DB-container skips, up from 645/645 T-41-inclusive baseline), 2026-08-03; reviewed independently (0 Critical/Important, 2 accepted Minor: T-42-01 malformed commit-hash citation in the implementation report — cosmetic transcription error only; T-42-02 no dedicated unit test for the new real-`vscode` wiring in `activate.ts`, matching that file's pre-existing untested-wiring pattern); reviewer independently traced the Save-Anyway code path to confirm original profile fields/password are never reassigned before persisting, grepped every new string literal for password leakage (none found), confirmed `editConnectionCommand`/`deleteConnectionCommand` bodies are byte-for-byte untouched, and confirmed both thrown and resolved-failure `testConnection()` shapes are genuinely tested and reach the same choice; re-verified post-merge on `main` |
 | T-43 | Phase 6 (self-service gap follow-ups): results webview actionability — a static plain-language legend/glossary (native `<details>`/`<summary>`, script-free) covering all 6 real `Severity` values from `@paritylens/shared` (`Pass`/`Informational`/`Warning`/`Failure`/`Error`/`Skipped`), plus a short "what this tab shows and what to do about a finding" caption on each of the 4 check-family tab panels (Schema/Profile/Volume/Row-Level, not SQL Preview). **Disclosed premise correction**: no separate `Compatible`/`Review`/`Risk` label is ever rendered in this file — that `TypeCompatibility` classification is an internal engine input folded into `SchemaDifference.severity`/`.message` by `compareSchemas`, not its own UI element; the legend covers the real `Severity` union instead. `renderResultsHtml`'s pure-function contract and `enableScripts:false` preserved exactly; no new `escapeHtml` calls (all new copy is static). Addresses gap-analysis Finding 7 — explicitly the one item Phase 5's own Non-goals named as out of scope | T-11, T-16, T-34 | Claude Code Implementer subagent, with a direct orchestrator fix after first review round | `packages/extension/src/webview/resultsWebview.ts` (visual/copy-only), `packages/extension/src/webview/resultsWebview.test.ts` | COMPLETE | APPROVED (2nd round) | `npm run verify` exit 0, 659/659 tests (686 total, 27 pre-existing live-DB-container skips, up from 650/650 T-42-inclusive baseline), 2026-08-03. **First review round: CHANGES REQUIRED** — reviewer found the `Error` severity legend text factually wrong (described an infrastructure/connection failure; the only real producer, `row-level.ts`'s `"unable-to-compare"` category, is actually a per-row value-comparison/normalization failure) — Important, blocking; plus a Minor test-soundness gap (SQL-panel-has-no-caption test's boundary check searched for a marker that could never recur, passing by coincidence of ordering). Orchestrator applied a direct fix (commit `e24ab8c`, not a new implementer cycle — small, well-understood copy + test-logic correction): rewrote the `Error` explanation to accurately describe a per-item comparison failure, rewrote the SQL-panel test with an explicit ordering assertion. **Re-review: APPROVED**, 0 Critical/Important/Minor remaining — reviewer independently re-read `row-level.ts` fresh to confirm the corrected copy's accuracy, confirmed the rewritten test would genuinely fail if a future caption were added to the SQL panel, and did a fresh pass over the other 5 legend entries and all 4 captions (untouched by the fix) finding no further issues; re-verified post-merge on `main` |
 | T-44 | Phase 6 (self-service gap follow-ups), **final task, closes Phase 6**: fixture-fallback disambiguation — a new optional `RunComparisonCommandDeps.confirmFixtureFallback` gate, distinct from T-38's `confirmRun` SQL-preview gate, blocks on an explicit `vscode.window.showWarningMessage("...", "Continue", "Cancel")` confirmation whenever `buildRunNotice` returns a fixture-fallback notice (`MIXED_CONNECTION_NOTICE`/`FIXTURE_ONLY_NOTICE`), replacing the passive `showInformationMessage` toast (not shown in addition, to avoid double-prompting) before `runComparison` is ever called; defaults to "proceed" when unsupplied, preserving every pre-existing caller. **Verified premise**: `buildRunNotice`'s body is a plain binary with no third "all-real" return value representable today — both its possible outputs are fixture-fallback cases, so the low-friction "stays unblocked" case has nothing to test against yet; the `isFixtureFallback` check is written explicitly anyway so a future all-real case is handled correctly without further changes. Composes cleanly with T-38's `confirmRun` (independent early-return branches, neither can suppress the other). Addresses gap-analysis Finding 9 | T-22, T-30 | Claude Code Implementer subagent | `packages/extension/src/activation/activate.ts` (`runComparisonCommand`'s notice/confirmation step, `RunComparisonCommandDeps` extension, `registerRunComparisonCommand`'s real-`vscode` wiring), `packages/extension/src/activation/activate.test.ts`, `packages/extension/src/activation/runComparisonCommand.test.ts` (one pre-existing test rewritten in place — its old assertion, "discloses the fixture-only limitation via `showInformationMessage` on every run," was directly falsified by this task's required behavior change; disclosed as a necessary, mechanically-forced deviation from the brief's declared file list, independently judged sound by the reviewer, not a scope violation) | COMPLETE | APPROVED | `npm run verify` exit 0, 667/667 tests (694 total, 27 pre-existing live-DB-container skips, up from 659/659 T-43-inclusive baseline), 2026-08-03/04; reviewed independently (0 Critical/Important/Minor — clean first round); reviewer independently confirmed `buildRunNotice`'s binary-return claim by direct source read, traced the actual call order confirming the new gate and T-38's `confirmRun` are structurally separate early-return branches that cannot suppress each other, traced the decline-aborts-before-any-connector-call claim at the control-flow level (not just via mock-call-count trust), independently ran `main`'s own baseline fresh to confirm the claimed +8 test delta rather than trusting the arithmetic, and judged the `runComparisonCommand.test.ts` deviation a minimal, honestly-disclosed, necessary consequence rather than scope creep; re-verified post-merge on `main`. **This is Phase 6's final task — all 5 tasks (T-40–T-44) are now COMPLETE and merged, closing Phase 6.** |
+| T-53 | Release (prompt 07) remediation: Connections tree lists saved profiles + missing tree-refresh wiring. `ParityTreeDataProvider.getChildren`'s "connections" branch always hardcodes `[]` (T-33's own documented, correct-at-the-time scope boundary, never picked up by a later task); separately, `treeDataProvider.refresh()` is never called anywhere in production code, so even a populated "Connections" section would not visually update after an add/edit/delete without a window refocus. Found via a real, human-driven Extension Development Host smoke test during release evidence-gathering, 2026-08-04 — not a regression from any single task, a gap that fell between T-33's scope and every later task that mutates connection/comparison/run state | T-29, T-33, T-40 | Not yet assigned | `packages/extension/src/views/parityTreeDataProvider.ts`, `packages/extension/src/views/parityTreeDataProvider.test.ts`, `packages/extension/src/activation/activate.ts` (refresh wiring only), `packages/extension/src/activation/activate.test.ts` | ACTIVE | NOT REQUESTED | NONE |
+| T-54 | Release (prompt 07) remediation: CodeLens actions are unreachable through the normal UI. `contributes.customEditors[0].priority` is `"default"` for `*.paritylens`, so opening the file always resolves to T-36's custom tabbed editor; `vscode.languages.registerCodeLensProvider` only renders in the standard text editor, which a `CustomTextEditorProvider`-backed view never is — so T-39's 4 CodeLens actions never appear through the file's normal click-to-open path. The Phase 5 design brainstorm (2026-08-02 decision-log entry) explicitly assumed "CodeLens registers for `.paritylens` files regardless of which editor has them open, not superseded by editor UI" — that assumption was never re-verified once both T-36 and T-39 shipped, and is incorrect. Found via the same human-driven smoke test as T-53, 2026-08-04 | T-36, T-39 | Not yet assigned | Likely `packages/extension/package.json` (`customEditors[0].priority`) and/or `packages/extension/src/authoring/comparisonEditorProvider.ts` — exact fix approach (lower priority to `"option"` so CodeLens-first access remains available via the default text editor, add an explicit "Open in Text Editor"-style affordance, or another approach) needs its own scoping pass before a brief is written; not yet briefed | NOT STARTED | NOT REQUESTED | NONE |
 
 ## Integration evidence summary (prompt 06, 2026-08-04, Phase 5 + Phase 6)
 
