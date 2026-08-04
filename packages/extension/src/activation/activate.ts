@@ -58,6 +58,71 @@ export const NEW_COMPARISON_COMMAND_ID = "paritylens.newComparison";
 export const REOPEN_RUN_COMMAND_ID = "paritylens.reopenRun";
 
 /**
+ * T-40: VS Code context key `package.json`'s `contributes.viewsWelcome`
+ * entry's `when` clause gates on (`view == paritylens.dataParityView &&
+ * paritylens.hasNoContent`). `ParityTreeDataProvider.getChildren()` with no
+ * `element` always returns the three fixed section nodes
+ * (`parityTreeDataProvider.ts`), so VS Code's own automatic empty-tree
+ * `viewsWelcome` behavior never fires for this view — this context key is
+ * the deliberate substitute, computed by `computeHasNoContent` below and
+ * pushed via `vscode.commands.executeCommand("setContext", ...)`.
+ */
+export const HAS_NO_CONTENT_CONTEXT_KEY = "paritylens.hasNoContent";
+
+/**
+ * Dependencies `computeHasNoContent` needs. Deliberately narrow and
+ * `vscode`-free (only a `Promise<unknown[]>`-returning function and a
+ * synchronous list accessor) so this function stays testable under plain
+ * Vitest without a `vscode` mock, matching this codebase's established
+ * injected-dependency convention for anything touching `vscode`/filesystem
+ * APIs (see `ParityTreeDataProviderDeps.findComparisonFiles`'s own header
+ * comment for the same rationale).
+ */
+export interface HasNoContentDeps {
+  /** Same injected dependency `ParityTreeDataProviderDeps.findComparisonFiles` uses — discovers `.paritylens` files in the current workspace. */
+  findComparisonFiles: () => Promise<unknown[]>;
+  /** T-29's `ConnectionProfileStore.list` (read-only accessor), or an equivalent zero-arg function returning the same shape. */
+  listProfiles: () => ConnectionProfile[];
+}
+
+/**
+ * Computes whether the "DATA PARITY" tree view currently has no meaningful
+ * content for a brand-new user: zero `.paritylens` files discovered in the
+ * workspace AND zero saved connection profiles (T-40 Scope item 3a).
+ *
+ * Deliberately an AND, not an OR: a workspace with one `.paritylens` file
+ * and zero saved profiles (or the reverse) already has *some* actionable
+ * content in the tree, so the welcome overlay must not show — only the
+ * "nothing at all yet" case should. (This is the exact adversarial case
+ * TASK-BRIEF.md's Handoff section calls out for reviewer probing.)
+ */
+export async function computeHasNoContent(deps: HasNoContentDeps): Promise<boolean> {
+  const [comparisonFiles, profiles] = await Promise.all([deps.findComparisonFiles(), Promise.resolve(deps.listProfiles())]);
+  return comparisonFiles.length === 0 && profiles.length === 0;
+}
+
+/**
+ * Recomputes `computeHasNoContent` against the live `vscode` API and pushes
+ * the result to the `paritylens.hasNoContent` context key via
+ * `vscode.commands.executeCommand("setContext", ...)`. Called once at
+ * activation and again after every mutation that can change either input
+ * (`findComparisonFiles`'s result or `connectionProfileStore.list()`'s
+ * result) — see this file's own `activate()` for the activation call site,
+ * and each `register*Command` function below for the post-mutation call
+ * sites (add/edit/delete connection, new-comparison scaffold, and after a
+ * comparison run completes, since a fresh `.paritylens` file can appear as
+ * a result of scaffolding and a run itself doesn't create one but is
+ * grouped with the other tree-affecting commands for consistency).
+ */
+async function refreshHasNoContentContext(connectionProfileStore: ConnectionProfileStore): Promise<void> {
+  const hasNoContent = await computeHasNoContent({
+    findComparisonFiles: async () => vscode.workspace.findFiles("**/*.paritylens"),
+    listProfiles: () => connectionProfileStore.list()
+  });
+  await vscode.commands.executeCommand("setContext", HAS_NO_CONTENT_CONTEXT_KEY, hasNoContent);
+}
+
+/**
  * Run-history safe output root convention (T-33 Scope item 5): the first
  * open workspace folder's path, joined with a fixed `.paritylens/runs`
  * subdirectory. No existing command wires a concrete `safeOutputRoot`
@@ -602,24 +667,49 @@ function buildConnectionCommandDeps() {
   };
 }
 
-/** Registers `paritylens.addConnection` against the live `vscode` API, delegating to `addConnectionCommand`. */
+/**
+ * Registers `paritylens.addConnection` against the live `vscode` API,
+ * delegating to `addConnectionCommand`. T-40: adding a connection can
+ * change `computeHasNoContent`'s result (zero saved profiles -> one), so
+ * the `paritylens.hasNoContent` context key is recomputed afterward
+ * regardless of whether the add actually succeeded (a cancelled/failed add
+ * leaves the profile count unchanged, so recomputing is a safe no-op in
+ * that case, and keeps this call site simple rather than conditional on
+ * `addConnectionCommand`'s return value).
+ */
 function registerAddConnectionCommand(store: ConnectionProfileStore): vscode.Disposable {
   return vscode.commands.registerCommand(ADD_CONNECTION_COMMAND_ID, async () => {
     await addConnectionCommand(store, buildConnectionCommandDeps() as never);
+    await refreshHasNoContentContext(store);
   });
 }
 
-/** Registers `paritylens.editConnection` against the live `vscode` API, delegating to `editConnectionCommand`. */
+/**
+ * Registers `paritylens.editConnection` against the live `vscode` API,
+ * delegating to `editConnectionCommand`. T-40: an edit never changes the
+ * saved-profile *count*, but the context key is still recomputed afterward
+ * for consistency with the other two connection commands (cheap, and keeps
+ * this trio uniform rather than special-casing edit as "count-preserving
+ * therefore skippable").
+ */
 function registerEditConnectionCommand(store: ConnectionProfileStore): vscode.Disposable {
   return vscode.commands.registerCommand(EDIT_CONNECTION_COMMAND_ID, async () => {
     await editConnectionCommand(store, buildConnectionCommandDeps() as never);
+    await refreshHasNoContentContext(store);
   });
 }
 
-/** Registers `paritylens.deleteConnection` against the live `vscode` API, delegating to `deleteConnectionCommand`. */
+/**
+ * Registers `paritylens.deleteConnection` against the live `vscode` API,
+ * delegating to `deleteConnectionCommand`. T-40: deleting the last saved
+ * profile (with zero `.paritylens` files also present) is exactly the case
+ * that should bring the welcome view back, so the context key is
+ * recomputed afterward.
+ */
 function registerDeleteConnectionCommand(store: ConnectionProfileStore): vscode.Disposable {
   return vscode.commands.registerCommand(DELETE_CONNECTION_COMMAND_ID, async () => {
     await deleteConnectionCommand(store, buildConnectionCommandDeps() as never);
+    await refreshHasNoContentContext(store);
   });
 }
 
@@ -633,6 +723,13 @@ function registerDeleteConnectionCommand(store: ConnectionProfileStore): vscode.
  * `registerRunComparisonCommand`'s own `defaultUri` fallback pattern
  * above); `fileExists`/`writeFile` are backed by `node:fs` so the pure
  * wizard module never imports `fs`/`path`/`vscode` itself.
+ *
+ * T-40: scaffolding a new `.paritylens` file changes `computeHasNoContent`'s
+ * result (zero `.paritylens` files -> one), so the `paritylens.hasNoContent`
+ * context key is recomputed afterward -- this is the first-action case
+ * TASK-BRIEF.md's Handoff section calls out by name ("not just at
+ * activation, which would leave a stale welcome view showing after a
+ * user's first action").
  */
 function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileStore): vscode.Disposable {
   return vscode.commands.registerCommand(NEW_COMPARISON_COMMAND_ID, async () => {
@@ -659,6 +756,7 @@ function registerNewComparisonCommand(connectionProfileStore: ConnectionProfileS
         return baseUri !== undefined ? join(baseUri.fsPath, fileName) : fileName;
       }
     } as never);
+    await refreshHasNoContentContext(connectionProfileStore);
   });
 }
 
@@ -902,6 +1000,17 @@ export function activate(context: vscode.ExtensionContext): ActivationResult {
   context.subscriptions.push(registerComparisonEditorProvider(connectionProfileStore, secretStore));
   context.subscriptions.push(registerNoRunsYetCommand());
   context.subscriptions.push(registerComparisonCodeLensProvider());
+
+  // T-40: computes and pushes the initial paritylens.hasNoContent context
+  // key at activation time. activate() itself stays synchronous (its
+  // signature is part of the extension host's activation contract, and
+  // TASK-BRIEF.md's "Prohibited changes" don't authorize changing it), so
+  // this is a fire-and-forget call -- the same pattern is unavoidable for
+  // any one-time async setup performed from a sync activate(). A rejection
+  // here (e.g. workspace.findFiles failing) is swallowed rather than
+  // crashing activation, since a stale/absent welcome-view context key is
+  // a purely cosmetic gap, never a functional one.
+  void refreshHasNoContentContext(connectionProfileStore).catch(() => undefined);
 
   return { treeDataProvider, treeView, secretStore };
 }

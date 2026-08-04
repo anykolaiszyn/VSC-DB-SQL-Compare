@@ -1,107 +1,176 @@
-# ParityLens — Implementation Report T-52
+# ParityLens — Implementation Report T-40
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
-- **Objective:** Resolve finding T-26-02 (`vsce package` printing a "LICENSE,
-  LICENSE.md, or LICENSE.txt not found" warning even though the root
-  `LICENSE` file exists, because `vsce` only checks for a license file
-  alongside the manifest it packages, `packages/extension/package.json`,
-  never at the monorepo root) by making the root `LICENSE`'s content
-  reachable to `vsce` at `packages/extension/LICENSE`, kept in sync
-  automatically rather than relying on a human to remember to update both.
+- **Objective:** Implement the `viewsWelcome` contribution for
+  `paritylens.dataParityView`, per TASK-BRIEF.md: "when the
+  `paritylens.dataParityView` tree has no `.paritylens` files in the
+  workspace and no saved connection profiles, show short guidance text with
+  command-linked buttons for `paritylens.addConnection` and
+  `paritylens.newComparison`." Addresses self-service gap-analysis Finding
+  1 (no onboarding surface).
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/package.json` | Added a `copy-license` npm script (`node -e` one-liner using `fs.copyFileSync` to copy `../../LICENSE` to `./LICENSE`) and inserted it into `scripts.package` between `bundle` and `vsce package --no-dependencies` | Brief scope item 3, option (a): a `prepackage`-style copy step wired into the existing packaging script so the packaged copy can never silently drift stale, per the brief's stated preference for (a) over (b) |
-| `.gitignore` | Added `packages/extension/LICENSE` (with an explanatory comment) to the ignore list | Brief scope item / Files-owned note: since option 3(a) was chosen, `packages/extension/LICENSE` is a build-time-generated artifact and need not be committed — documented per the brief's instruction to record which choice was made and why |
-| `packages/extension/LICENSE` | New file, not committed (gitignored) — generated fresh by `copy-license` immediately before every `vsce package` run | Brief scope item 2: makes the root `LICENSE`'s content available at the location `vsce` actually checks (alongside `packages/extension/package.json`) |
-
-`packages/extension/.vscodeignore` was read and left unmodified: no existing
-glob (`src/**`, `**/*.test.ts`, `dist/**`, `native/**/*.md`, etc.) matches a
-root-level `LICENSE` file, so no exclusion rule risked catching it and no
-edit was needed. `packages/extension/.gitignore` does not exist and was not
-created — the root `.gitignore` was the natural place for the one-line
-addition since the root already governs other generated/ignored paths
-(`dist/`, `*.vsix`, etc.) for this package.
-
-No `vsce` CLI flag was found that points it at an out-of-tree license file
-without a copy/symlink — `npx vsce package --help` was run and inspected in
-full; the only license-related flag is `--skip-license` ("Allow packaging
-without license file"), which suppresses the check rather than fixing what
-ships. Per the brief, proceeded with the copy approach.
+| `packages/extension/package.json` | Added `contributes.viewsWelcome`: one entry targeting `paritylens.dataParityView`, with an explanatory sentence plus two `command:` links, gated by `when: "view == paritylens.dataParityView && paritylens.hasNoContent"`. | TASK-BRIEF.md Scope items 2–3b. |
+| `packages/extension/src/activation/activate.ts` | Added `HAS_NO_CONTENT_CONTEXT_KEY` constant, `HasNoContentDeps` interface, `computeHasNoContent(deps)` (pure, `vscode`-free, exported), `refreshHasNoContentContext(connectionProfileStore)` (calls `vscode.workspace.findFiles`/`connectionProfileStore.list()` and pushes the result via `vscode.commands.executeCommand("setContext", ...)`). Wired a call to `refreshHasNoContentContext` into `activate()` (fire-and-forget, since `activate()` itself is synchronous) and into the tail of `registerAddConnectionCommand`, `registerEditConnectionCommand`, `registerDeleteConnectionCommand`, and `registerNewComparisonCommand`'s registered callbacks. | TASK-BRIEF.md Scope item 3a–3c. |
+| `packages/extension/src/activation/hasNoContent.test.ts` (new) | New test file: 4 tests for `computeHasNoContent`'s AND logic, 4 tests asserting the `package.json` `viewsWelcome` shape/command-ID validity, 5 tests asserting `setContext` recomputation actually fires at activation and after each of the four wired command callbacks. | TASK-BRIEF.md's "Files owned" list — new test file(s) colocated with the module owning the computation function (`activate.ts`). |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** Running `npm run package --workspace=packages/extension`
-  (equivalently, `npm run package` from inside `packages/extension`) now
-  bundles, copies the root `LICENSE` into `packages/extension/LICENSE`, then
-  packages — no "LICENSE ... not found" warning, and the produced `.vsix`
-  contains a genuine license file (`vsce` internally names it
-  `extension/LICENSE.txt` in the package tree; content is unmodified from
-  the root `LICENSE`, byte-for-byte). The copy step re-executes on every
-  invocation of `scripts.package`, so it always reflects the current root
-  `LICENSE` content and cannot silently go stale.
-- **Interfaces consumed:** `@vscode/vsce` (existing devDependency, installed
-  by T-25; used read-only, no version change) and the root `LICENSE` file's
-  content (read-only; its content was never modified by this task).
-- **Interfaces produced:** None new for other tasks to consume — this is a
-  packaging-script-only change internal to `packages/extension`.
+- **Behavior delivered:** A brand-new user with zero `.paritylens` files
+  in their workspace and zero saved connection profiles sees the "DATA
+  PARITY" tree view's welcome overlay: one sentence of guidance plus two
+  buttons ("Add a Connection", "Create a Comparison") that invoke the
+  existing `paritylens.addConnection`/`paritylens.newComparison` commands.
+  The overlay disappears (per VS Code's own `viewsWelcome` `when`-clause
+  evaluation) as soon as either condition becomes false — one saved
+  profile, or one `.paritylens` file, or both.
+- **Interfaces consumed:**
+  - `findComparisonFiles` — read-only, via `vscode.workspace.findFiles("**/*.paritylens")`, the same call `activate()`'s `ParityTreeDataProvider` construction already makes.
+  - `ConnectionProfileStore.list()` (T-29) — read-only accessor, used as-is; no CRUD logic in `connections/**` was touched.
+  - `paritylens.addConnection` (T-29) / `paritylens.newComparison` (T-32) command IDs — referenced only, both already registered in `contributes.commands` before this task.
+- **Interfaces produced:**
+  - `HAS_NO_CONTENT_CONTEXT_KEY` (`"paritylens.hasNoContent"`, exported) — the VS Code context key `contributes.viewsWelcome`'s `when` clause gates on.
+  - `computeHasNoContent(deps: HasNoContentDeps): Promise<boolean>` (exported, pure) — `true` iff zero comparison files AND zero profiles.
+  - `contributes.viewsWelcome[0]` in `package.json`.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Red state | `npm run package --workspace=packages/extension` (run against the unmodified script, before any edit) | Exit 0, but printed ` WARNING  LICENSE, LICENSE.md, or LICENSE.txt not found` (alongside a pre-existing, unrelated `repository` field warning); the produced `.vsix` file listing had no `LICENSE` entry | Captured directly in this session's transcript |
-| Focused green state | `npm run package --workspace=packages/extension` (run after the edit, with `packages/extension/LICENSE` and the stale `.vsix` first deleted to force a clean run) | Exit 0; the "LICENSE ... not found" warning is gone; `vsce`'s own `INFO Files included in the VSIX` listing shows `LICENSE.txt [1.07 KB]` at the top level of `extension/`; only the pre-existing unrelated `repository`-field warning remains | Captured directly in this session's transcript |
-| Byte-identical content check | `sha256sum LICENSE packages/extension/LICENSE` | Both files hashed to `d2efb2bd26dcb518f770e68d31feeb9f62cec1cb8b40d84729c269ae5c19f14b` (identical); `diff LICENSE packages/extension/LICENSE` produced no output | Captured directly in this session's transcript |
-| Direct `.vsix` content listing | `unzip -l packages/extension/paritylens-0.0.1.vsix \| grep -i license` | `extension/LICENSE.txt` present, 1094 bytes, alongside the pre-existing third-party `native/node_modules/**/LICENSE` files | Captured directly in this session's transcript (also cross-checked with `npx vsce ls --no-dependencies` run from inside `packages/extension`, which listed `LICENSE` at the top of its output) |
-| Copy-freshness (anti-drift) check | Appended a marker line to root `LICENSE`, ran `npm run copy-license --workspace=packages/extension`, confirmed the marker appeared in `packages/extension/LICENSE`, then restored the root `LICENSE` from a backup and re-ran `copy-license` to confirm it picked the reverted content back up | Marker appeared after first run (proving the copy is not a stale one-time artifact); root `LICENSE` verified restored via `diff` against the pre-edit backup; second `copy-license` run brought `packages/extension/LICENSE` back in sync (`diff` after restore produced no output) | Captured directly in this session's transcript |
-| Full verification | `npm run verify` (run once before any change, once after) | Exit 0 both times. Before: 34 test files passed / 2 skipped (36), 624 tests passed / 27 skipped (651). After: identical counts — 34 passed / 2 skipped (36) files, 624 passed / 27 skipped (651) tests. Typecheck and lint stages (which run before test in `npm run verify`) both completed with no errors both times | Captured directly in this session's transcript |
+| Baseline (pre-change) | `npm run verify` | Pass — 624 tests passed, 27 skipped, 34 test files passed / 2 skipped | Command run before any edit (see transcript) |
+| Red state | `npx vitest run packages/extension/src/activation/hasNoContent.test.ts` (with `hasNoContent.test.ts` written, `computeHasNoContent` not yet exported by `activate.ts`) | **Fail** — all 4 `computeHasNoContent` tests threw `TypeError: computeHasNoContent is not a function`, the predicted missing-function reason | Command run before implementing `computeHasNoContent` (see transcript) |
+| Focused green state | `npx vitest run packages/extension/src/activation/hasNoContent.test.ts` | Pass — 13/13 tests passed (4 AND-logic cases, 4 `package.json`-shape assertions, 5 context-key-recomputation-wiring assertions) | Command run after implementation (see transcript) |
+| `npm run typecheck` | `npm run typecheck` | Pass — `tsc -b --force`, no errors | Command run after implementation |
+| `npm run lint` | `npm run lint` | Pass — `eslint .`, no errors | Command run after implementation |
+| Full verification | `npm run verify` | Pass — **637 tests passed** (up from 624 baseline, +13 new), 27 skipped, 35 test files passed / 2 skipped (37 total) | Command run after implementation (see transcript) |
 
 ## Assumptions and risks
 
-- **Assumptions:** Interpreted the "Files owned" item `packages/extension/LICENSE
-  (new file...)`'s note that "this file need not be committed to git at all
-  if it's purely a build-time-generated artifact — your call, document which
-  you chose and why" as explicit authorization to leave it untracked once
-  option 3(a) was chosen; documented that choice above and in the
-  `.gitignore` comment.
-- **Risks or limitations:** The `copy-license` script uses a Node one-liner
-  (`fs.copyFileSync`) rather than a cross-platform shell utility or an added
-  dependency, per the brief's prohibition on adding new devDependencies —
-  this keeps it dependency-free and portable across Windows/macOS/Linux
-  (no reliance on `cp`, which is not universally available in a Windows
-  `cmd.exe`-invoked `npm run` context). The pre-existing, unrelated "A
-  'repository' field is missing from the 'package.json' manifest file"
-  warning from `vsce` still appears in both red- and green-state output;
-  this is out of scope per the brief (only the LICENSE-specific warning was
-  in scope) and was left untouched.
+- **Assumptions:**
+  - The context-key computation function belongs in `activate.ts` itself
+    (not a new source module) per the brief's "Files owned" list, which
+    authorizes only `package.json`, `activate.ts`, and a new *test* file —
+    not a new source module under `connections/**` or `views/**`. A new
+    pure-logic source file was briefly drafted, then removed once this
+    reading of the brief was confirmed, to stay strictly inside declared
+    ownership.
+  - `computeHasNoContent`'s AND-vs-OR shape ("both conditions must be zero,
+    not either") is read directly from the brief's own wording ("checking
+    whether `findComparisonFiles()` returns zero URIs AND the connection
+    profile store... has zero saved profiles") — not inferred.
+  - The `viewsWelcome`-shape test approach (asserting on the parsed
+    `package.json` object plus a regex over `contents` for `command:`
+    links) was chosen over a documented manual Extension Development Host
+    check, per the brief's own explicit disclosure requirement
+    ("`viewsWelcome` rendering itself is declarative JSON with no
+    unit-testable runtime behavior — disclose which approach was used").
+    **No manual VS Code Extension Development Host check was performed**
+    for this task; the automated shape test above is the sole green-state
+    evidence for the manifest contribution actually rendering correctly at
+    runtime. This is a real, disclosed limitation: the automated test
+    cannot prove VS Code itself parses the Markdown/`when` clause exactly
+    as intended, only that the JSON shape and referenced command IDs are
+    correct.
+
+- **Risks or limitations:**
+  - **Discrepancy with the brief's Scope item 3c premise, disclosed
+    explicitly rather than silently worked around:** the brief states
+    "`ParityTreeDataProvider.refresh()` is already called after add/edit/
+    delete-connection and after scaffold/run commands elsewhere in the
+    codebase — read `activate.ts` to find every existing `refresh()` call
+    site and add the context-key recomputation alongside each one." I
+    checked this directly: as of this task's start, `refresh()` is
+    defined on `ParityTreeDataProvider` (`parityTreeDataProvider.ts`) but
+    is **never called anywhere in `activate.ts`** — the only call site in
+    the entire `packages/extension/src` tree is
+    `parityTreeDataProvider.test.ts`'s own unit test
+    (`provider.refresh()`), confirmed via a full-repo grep for
+    `.refresh()`. No command handler in the current `activate.ts` invokes
+    it. Rather than silently inventing call sites that don't exist or
+    leaving the recomputation unwired because the brief's stated premise
+    didn't hold, I wired `refreshHasNoContentContext` into the same
+    logical points the brief names by intent — the tail of
+    `registerAddConnectionCommand`, `registerEditConnectionCommand`,
+    `registerDeleteConnectionCommand`, and `registerNewComparisonCommand`'s
+    registered callbacks, plus once at `activate()` — since those are
+    exactly the command handlers whose outcomes can change
+    `computeHasNoContent`'s inputs (profile count, comparison file count).
+    I did **not** add a `.refresh()` call to `ParityTreeDataProvider`
+    anywhere, since doing so would be an undeclared, unrequested behavior
+    change to a class this task doesn't own (the brief's own "Prohibited
+    changes" section forbids touching `ParityTreeDataProvider.getChildren`'s
+    contract, and adding new `refresh()` call sites goes beyond
+    `viewsWelcome`/context-key wiring). **This is a judgment call a
+    reviewer should specifically re-check**: is wiring the context-key
+    recompute directly into the four command-registration functions
+    (rather than piggybacking on a `refresh()` call site that doesn't
+    exist) the correct interpretation of Scope item 3c's intent?
+  - `runComparisonCommand` (the `paritylens.runComparison` handler) was
+    deliberately **not** wired with a recompute call: running a comparison
+    against an *existing* `.paritylens` file does not change the
+    `.paritylens` file count or the profile count, so `computeHasNoContent`'s
+    result cannot change as a result of a run. The brief's Handoff section
+    lists "run a comparison that creates the first `.paritylens` file" as
+    a reviewer-probe item, but no such flow exists in this codebase today
+    — running a comparison requires selecting an *already-existing*
+    `.paritylens` file (via `showOpenDialog` or a tree/CodeLens click); it
+    is `paritylens.newComparison` (the scaffold wizard) that creates a new
+    `.paritylens` file, and that command *is* wired. Flagging this
+    explicitly in case the brief intended a different, not-yet-built flow.
+  - `activate()` remains synchronous per its existing signature (unchanged,
+    per the brief's "Files owned" not authorizing an `ActivationResult`
+    shape change); the initial context-key push at activation is therefore
+    fire-and-forget (`void refreshHasNoContentContext(...).catch(() =>
+    undefined)`), so there is a brief window between activation completing
+    and the context key actually landing. This mirrors the same
+    async-fire-and-forget constraint every other one-time async setup in a
+    sync `activate()` would face in this codebase; not something this task
+    introduced as a new pattern, but worth naming as an accepted residual
+    gap (a cosmetic, not functional, one — VS Code's default context-key
+    value is falsy, so the welcome view briefly not rendering on a
+    cold-started brand-new workspace, then rendering a tick later, is the
+    worst case).
+
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** recorded in the commit created immediately after this
-  report is written (see the commit accompanying this file in the branch
-  history for `task/T-52-license-packaging-fix`)
-- **Branch or workspace:** `task/T-52-license-packaging-fix`
+- **Patch or commit:** (recorded after commit — see below)
+- **Branch or workspace:** `task/T-40-onboarding-welcome-view`
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent, per the brief's Handoff
-section. The brief specifically calls out five re-verification points for
-the reviewer: (1) independently reproduce the packaging run and confirm the
-warning is genuinely gone, not just trust this report's pasted output; (2)
-independently diff/hash `packages/extension/LICENSE` against the root
-`LICENSE` to confirm byte-identical content; (3) independently unzip/list
-the produced `.vsix` and confirm a `LICENSE` file is actually present
-inside it; (4) confirm the copy step genuinely re-runs every time
-`scripts.package` is invoked (not a stale one-time copy) — e.g. by
-modifying the root `LICENSE`'s content temporarily, re-running the
-packaging script, and confirming the packaged copy picked up the change,
-then reverting; (5) a fresh full `npm run verify` is green with an
-unchanged test count. This report does not constitute review or approval,
-and the task should not be marked complete in `PROGRESS-LEDGER.md` until
-that independent review has occurred.
+Independent review by a reviewer who did not author this change (per
+`AGENTS.md`: "Every implementation task receives an independent review by
+a reviewer who did not author the task's change"). The reviewer should, per
+TASK-BRIEF.md's Handoff section:
+
+1. Re-verify the `when` clause genuinely gates on emptiness — construct a
+   case with one `.paritylens` file and zero profiles, and a case with zero
+   files and one profile, confirming neither shows welcome content (the
+   `computeHasNoContent` AND-logic tests in `hasNoContent.test.ts` cover
+   this at the function level; the reviewer should independently confirm
+   the `package.json` `when`-clause string itself, `"view ==
+   paritylens.dataParityView && paritylens.hasNoContent"`, is a real AND in
+   VS Code `when`-clause syntax, not accidentally an OR).
+2. Confirm both `command:` URIs in `contents` reference real,
+   already-registered command IDs (the `package.json`-shape test in
+   `hasNoContent.test.ts` already asserts this against
+   `contributes.commands`, but independent confirmation is requested per
+   the brief).
+3. **Specifically evaluate the Scope-item-3c discrepancy disclosed above**
+   (no `refresh()` call sites existed in `activate.ts` prior to this task,
+   contrary to the brief's stated premise) and judge whether wiring
+   `refreshHasNoContentContext` directly into the four command-registration
+   functions is the correct resolution, or whether a revised brief/
+   different wiring point is warranted.
+4. Re-run `npm run verify` fresh and confirm the reported 637-tests-passed
+   (27 skipped) count independently.
+
+This implementer does not have authority to approve this task's own work;
+review and approval are a separate, later step owned by a different agent.
