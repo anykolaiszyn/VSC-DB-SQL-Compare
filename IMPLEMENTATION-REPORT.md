@@ -140,7 +140,7 @@
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see below)
+- **Patch or commit:** `58e8400`
 - **Branch or workspace:** `task/T-40-onboarding-welcome-view`
 
 ## Recommended next step
