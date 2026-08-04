@@ -76,9 +76,19 @@
   not consider step 5 satisfied ... if a defect is found" instructions.
 - **Exactly one task may be active:** T-53 (Connections tree lists saved
   profiles + missing tree-refresh wiring) — found during release (prompt
-  07) human-driven smoke test, 2026-08-04. T-54 (CodeLens unreachable
-  through the custom editor's default priority) is queued next, same
-  release cycle, independent file ownership.
+  07) human-driven smoke test, 2026-08-04. **PAUSED mid-implementation**:
+  the implementer subagent was stopped by the owner partway through: a
+  WIP checkpoint is committed on `task/T-53-connections-tree-and-refresh`
+  (commit `f66654d`, not merged to `main`) — confirmed compiling clean
+  and passing (`parityTreeDataProvider.test.ts` 22/22,
+  `activate.test.ts` 37/37, full `npm run verify` 677/677, up from the
+  667/667 baseline). **Not reviewed, not reconciled, no
+  `IMPLEMENTATION-REPORT.md` yet** — do not treat as COMPLETE. To
+  resume: re-read `TASK-BRIEF.md` (still at repo root) and the checkpoint
+  diff, confirm remaining scope coverage, then continue or re-dispatch
+  the implementer. T-54 (CodeLens unreachable through the custom
+  editor's default priority) is queued next after T-53, same release
+  cycle, independent file ownership — not yet started.
 - **Phase 6 (T-40–T-44, self-service gap follow-ups) is fully COMPLETE
   and merged, 2026-08-04.** All 5 tasks done: T-40 (onboarding
   `viewsWelcome`), T-41 (tree view title command buttons), T-42
@@ -129,7 +139,7 @@
   growth, not scope creep). **The backlog-cleanup sweep is now fully
   closed.** Phase 6 (T-40–T-44) is unblocked and ready to start whenever
   the owner confirms.
-- **Last updated:** 2026-08-04, Claude Code (Lead Orchestrator) — Release (prompt 07) smoke test found T-53/T-54, T-53 active
+- **Last updated:** 2026-08-04, Claude Code (Lead Orchestrator) — T-53 paused mid-implementation (owner stopped the session, WIP checkpoint committed to its branch); session ended here for a break
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
 ## Task register
