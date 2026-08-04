@@ -1,43 +1,42 @@
-# ParityLens — Review Report T-50
+# ParityLens — Review Report T-51
 
 ## Review independence
 
-This review was performed by an independent reviewer agent instance with no
-memory of authoring the T-50 implementation. All claims in
-`IMPLEMENTATION-REPORT.md` were independently re-verified against the actual
-diff, fresh command output, and constructed adversarial probes — none were
-accepted on the implementer's characterization alone. No implementation-owned
-file, `TASK-BRIEF.md`, or `IMPLEMENTATION-REPORT.md` was edited by this
-review.
+This review was performed by a separate agent instance from the implementer,
+with no memory of writing the code under review. All conclusions below are
+derived from reading the actual diff on `task/T-51-batch-a-trivial-fixes`
+(compared against `main`), running fresh verification commands myself, and
+constructing an independent adversarial probe for item 4 rather than reusing
+the implementer's own test. `IMPLEMENTATION-REPORT.md`'s claims were treated
+as assertions to verify, not facts to accept.
 
 ## Review scope
 
-- **Task objective:** Resolve finding T-20-03 (`compareByHash` surfaces a raw,
-  opaque connector/binder error on a genuine source/target column-name
-  mismatch instead of a clear, actionable message) without adding column-
-  name-mapping support and without adding a `getSchema` preflight call.
+- **Task objective:** Resolve four independent, low-risk, non-functional
+  findings from `PROGRESS-LEDGER.md`'s Open findings table (T-26-03,
+  T-12-01, T-36-01, T-39-01) in one batched task-loop cycle, per
+  `TASK-BRIEF.md`.
 - **Files and interfaces reviewed:**
-  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.ts`
-  (full diff read line-by-line: header-comment addition, `HashComparisonOptions`
-  doc-comment addition, `fetchNormalizedRows`'s `SELECT *` change and new
-  `side` parameter, new `assertFetchColumnsPresent` helper) and
-  `packages/engine/src/comparison-core/hash-comparison/hash-comparison.test.ts`
-  (full file read, including the two new T-50 tests and the
-  `fixtureWithMismatchedColumnName` builder). Confirmed via
-  `git diff --stat main..task/T-50-hash-comparison-column-mismatch-disclosure`
-  that only these two files plus `TASK-BRIEF.md`/`IMPLEMENTATION-REPORT.md`
-  changed — no scope expansion into `row-level/`, `profiling/`, `schema-diff/`,
-  `volume/`, `normalization/`, or `type-mapping/`.
-- **Evidence reviewed:** `AGENTS.md`, `TASK-BRIEF.md`,
-  `IMPLEMENTATION-REPORT.md`, `PROGRESS-LEDGER.md`'s T-20-03 finding row and
-  decision-log entries, the full diff of both owned files, a fresh
-  `npm run verify` run, a fresh focused
-  `npx vitest run packages/engine/src/comparison-core/hash-comparison` run, an
-  independent DuckDB reproduction of the binder-error claim (constructed and
-  run directly against `@duckdb/node-api`, not reusing implementer code), and
-  three original adversarial test cases (source-side mismatch, multiple
-  simultaneous missing columns, `keyColumns` mismatch) constructed fresh by
-  this review and deleted after use.
+  - `packages/extension/media/icon.svg` (T-26-03)
+  - `packages/engine/src/comparison-core/mapping/mapping.test.ts` (T-12-01)
+  - `packages/extension/src/authoring/comparisonEditorProvider.test.ts`
+    (T-36-01)
+  - `packages/extension/src/codelens/comparisonCodeLensProvider.ts` and
+    `comparisonCodeLensProvider.test.ts` (T-39-01)
+  - Confirmed untouched: `packages/engine/src/comparison-core/mapping/mapping.ts`,
+    `packages/extension/src/authoring/comparisonEditorProvider.ts`
+  - Confirmed the only files outside the five brief-owned paths that differ
+    from `main` are `IMPLEMENTATION-REPORT.md` (implementer's own report)
+    and `PROGRESS-LEDGER.md`/`TASK-BRIEF.md` — both traced via `git show`
+    to the orchestrator's separate activation commit (`c4003f0`), not the
+    implementer's commit (`6f87b3f`), consistent with "the orchestrator
+    updates [the ledger] during reconciliation, not the implementer."
+- **Evidence reviewed:** `TASK-BRIEF.md`, `IMPLEMENTATION-REPORT.md`, the
+  full `git diff main..task/T-51-batch-a-trivial-fixes`, `PROGRESS-LEDGER.md`'s
+  Open findings table entries for all four finding IDs, and a fresh full
+  `npm run verify` run plus a standalone `vitest run` of the codelens test
+  file with a self-authored adversarial probe (added, run, then removed;
+  `git status` confirmed clean afterward).
 
 ## Critical findings
 
@@ -55,33 +54,56 @@ review.
 
 | ID | Finding | Evidence | Suggested resolution |
 | --- | --- | --- | --- |
-| T-50-01 | The `SELECT * FROM <object>` change (replacing the prior named-column `SELECT`) is a genuine, disclosed behavioral widening beyond the brief's literal text. It now fetches every column of the source/target table on **every** `compareByHash` call, including the already-passing identical-column-name path, not just the mismatch path the brief targeted. For a wide table this is more bytes over the wire and more DuckDB-side materialization than the previous targeted `SELECT`, a cost the original T-20 design deliberately avoided. Independently reproduced: a named-column `SELECT` naming a nonexistent column throws `Binder Error: Referenced column "IS_ACTIVE" not found in FROM clause!` before any `RecordBatch` is returned (confirmed via a standalone `@duckdb/node-api` script run directly against a throwaway table, not the implementer's own test); `SELECT *` against the same table returns a `RecordBatch` with the real column list (`['ID','NAME','IS_ACTIVE_TARGET']`), confirming the stated reasoning is correct and validation is genuinely impossible against a `RecordBatch` with the old named-column query. No wide-table fixture currently exists in this repo (fixtures top out at ~5 columns), so no test exercises the cost concretely, but the implementer's own report discloses the trade-off explicitly rather than hiding it. | `IMPLEMENTATION-REPORT.md`'s Risks section; this review's own DuckDB repro (see Verification performed); `packages/engine/fixtures/sqlserver-customer.ts` (5-column widest fixture) | Accepted as documented, non-blocking debt. Track as a candidate for a future task if a real connector's wide tables make this measurably costly — e.g. reverting to a named-column `SELECT` for the identical-name case and only falling back to `SELECT *` after detecting a likely mismatch, or building the fetch column list defensively. No action required to close T-50. |
-| T-50-02 | Process observation (not a code defect): `IMPLEMENTATION-REPORT.md` was found uncommitted in the working tree at the start of this review's preparation and had to be committed separately as `8228ef0` before the review could proceed against a clean tree. This is a deviation from the implementer's own standing hard rule (`AGENTS.md` Handoff contract / this project's task-loop discipline) to commit all work, including the report itself, before finishing. | `git log --oneline`: `8228ef0 T-50: commit implementation report (was left uncommitted)` immediately following `fdb7595 T-50: disclose hash-comparison column-name-mismatch limitation clearly` | No code action required — already remediated by the separate commit. Flag to the orchestrator as a reminder that the implementer's finishing checklist should include `git status` before declaring COMPLETE. |
+| NONE | — | — | — |
+
+No new findings. One pre-existing, out-of-scope observation is noted for
+context only (not a T-51 finding, since T-51's brief explicitly prohibits
+touching this test and it is unrelated to any of the four items): the
+"internal validation bypass" test at
+`comparisonEditorProvider.test.ts:215-251` has the same title/body mismatch
+pattern as the T-36-01 test T-51 just fixed — its own inline comment
+(lines 235-238) admits the constructed input "correctly fails required-field
+validation and is rejected BEFORE ever reaching
+buildComparisonYaml/parseDefinition," i.e. it also exercises the
+required-field precheck, not the round-trip guard its title claims. This is
+pre-existing (present on `main`, untouched by this branch) and out of
+T-51's declared scope; flagging only so a future backlog sweep can consider
+it, not as a T-51 blocker.
 
 ## Verification performed
 
 | Check | Exact command or inspection | Result |
 | --- | --- | --- |
-| Scope check | `git diff --stat main..task/T-50-hash-comparison-column-mismatch-disclosure` | Exactly `hash-comparison.ts` + `hash-comparison.test.ts` (2 owned files) + `TASK-BRIEF.md` + `IMPLEMENTATION-REPORT.md` changed. No unauthorized files. |
-| `getSchema`/mapping grep | `grep -n "getSchema\|columnMapping\|column-name-mapping\|columnMap" hash-comparison.ts` | No matches — confirms no `getSchema` preflight call and no column-mapping capability were added, matching the brief's Prohibited-changes section. |
-| Independent DuckDB repro of binder-error claim | Standalone script against `@duckdb/node-api` (deleted after use): named-column `SELECT "ID","NAME","IS_ACTIVE" FROM t` against a table with `IS_ACTIVE_TARGET` instead of `IS_ACTIVE` | `THREW: Binder Error: Referenced column "IS_ACTIVE" not found in FROM clause!` — confirms the query fails before any `RecordBatch` is returned, validating the implementer's stated reasoning for the `SELECT *` change. |
-| Independent DuckDB repro, `SELECT *` case | Same script, `SELECT * FROM t` against the same table | `SUCCESS, columns: [ 'ID', 'NAME', 'IS_ACTIVE_TARGET' ]` — confirms `SELECT *` returns a `RecordBatch` with the real column list, making post-fetch validation reachable exactly as claimed. |
-| Focused test suite | `npx vitest run packages/engine/src/comparison-core/hash-comparison` | 15 tests passed (13 pre-existing + 2 new), 1 file, 0 failures. All pre-existing tests pass unchanged — no regression. |
-| Full verification | `npm run verify` (typecheck + lint + test) | Typecheck clean, lint clean. 34 test files passed / 2 skipped, **623 tests passed / 27 skipped (650 total)** — exactly matches `IMPLEMENTATION-REPORT.md`'s claimed figures and is +2 over the stated 621/27/648 baseline (the two new T-50 tests, no other change). |
-| Adversarial probe 1: side attribution | Original test constructed by this review (deleted after use): source table missing a column the target has (`REGION`) | Error message: `column(s) "REGION" not found on the source side (actual source columns: "ID", "NAME"). ... no per-side mapping is supported ...` — correctly attributes the mismatch to **source**, not hardcoded to "target". Confirms the error isn't a copy-paste artifact that always says "target". |
-| Adversarial probe 2: multiple missing columns | Original test: two columns (`A`, `B`) both missing from target | Error message lists both: `column(s) "A", "B" not found on the target side ...` — confirms the message doesn't silently drop all-but-one missing column. |
-| Adversarial probe 3: `keyColumns` mismatch (not just `columns`) | Original test: `keyColumns: ["PK"]` where target's real key column is `ID` | Error message: `column(s) "PK" not found on the target side (actual target columns: "ID", "NAME"). ...` — confirms the validation covers the full `fetchColumns` union (`keyColumns`/`columns`/`partitionColumn`), not just `options.columns`, matching the brief's Scope item 2. |
-| Residue check | `git status --short` after each probe/script was deleted | Clean — no leftover scratch files in the repo. |
+| Item 1 diff scope | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/extension/media/icon.svg` | Single-line change, comment text only (`fill="currentColor"` → `stroke="currentColor"`/`fill="none"`). All three shapes (lines 5-7, unchanged) genuinely use `stroke="currentColor" ... fill="none"` — comment now accurately matches actual rendering technique. No rendering-relevant attribute touched. |
+| Item 2 diff scope | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/engine/src/comparison-core/mapping/mapping.test.ts` | All three `if (match) {...}` wrappers removed; each replaced with unconditional `expect(match).toBeDefined();` followed by unconditional `expect(match?.strategy).not.toBe(...)` × 3. `toBeDefined()` throws first if `match` is `undefined`, so a future regression that stopped `suggestMappings` from producing a match for any of the three fixture pairs would fail loudly, not silently pass. Inline reasoning comments preserved verbatim. |
+| Item 2 — mapping.ts untouched | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/engine/src/comparison-core/mapping/mapping.ts \| wc -l` | `0` — confirmed untouched. |
+| Item 3 diff scope | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/extension/src/authoring/comparisonEditorProvider.test.ts` | Only the test title (line 313) and its immediately preceding inline comment changed; body/assertions (lines 328-337) are byte-identical to `main`. New title accurately describes what the body exercises: an empty `keys` array caught by `handleApplyMessage`'s required-field precheck, not the round-trip guard. |
+| Item 3 — adjacent test untouched/distinct | Read `comparisonEditorProvider.test.ts:215-251` (the "internal validation bypass" test) and diffed against `main` | Byte-identical to `main` — untouched, as the brief prohibits. Still distinct from the renamed test: it constructs an object-shaped field value rather than an empty array. (See out-of-scope observation above re: its own title's accuracy — unaffected by this task and not a regression it introduces.) |
+| Item 3 — comparisonEditorProvider.ts untouched | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/extension/src/authoring/comparisonEditorProvider.ts \| wc -l` | `0` — confirmed untouched. |
+| Item 4 diff scope | `git diff main..task/T-51-batch-a-trivial-fixes -- packages/extension/src/codelens/comparisonCodeLensProvider.ts` | New `try/catch` wraps exactly `listRecentRuns()`, `findMostRecentRunForComparison`, and `buildLensesForValidDocument(document.uri, lastRun)` — the pre-existing `parseDefinition` try/catch (lines 166-171) is untouched and separate. On catch: `console.error(...)` then `return buildLensesForValidDocument(document.uri, undefined)`. No retry logic, no new dependency. |
+| Item 4 — implementer's own test | `npx vitest run packages/extension/src/codelens/comparisonCodeLensProvider.test.ts` | 12 tests, all pass. The new test (rejecting with `new Error(...)`) resolves with 4 lenses, "Open Last Result" routed to `NO_RUNS_YET_COMMAND_ID`. `console.error` output visible in stderr as expected. |
+| Item 4 — independent adversarial probe | Authored a temporary test (not the implementer's): `listRecentRuns: () => Promise.reject("plain string rejection, not an Error instance")` — a non-`Error` rejection value, a case the implementer's own test did not cover. Ran via `npx vitest run packages/extension/src/codelens/comparisonCodeLensProvider.test.ts`, then removed the test and confirmed `git status --short` was empty. | Passed: `provideCodeLenses` resolved cleanly with all 4 lenses, correct titles, "Open Last Result" in its no-prior-run form (`NO_RUNS_YET_COMMAND_ID`). `console.error` logged the plain-string reason without crashing (the `catch (err)` binding logs whatever value was thrown/rejected, not just `Error` instances). Confirms the fix is robust to non-`Error` rejection shapes, not just the implementer's one scripted case. |
+| Full fresh verify (post-change) | `npm run verify` | Exit 0. `tsc -b --force` and `eslint .` both completed with no errors. Test stage: **34 test files passed, 2 skipped (36); 624 tests passed, 27 skipped (651)** — matches the implementer's claimed post-change numbers exactly, and is exactly baseline (623/27, confirmed against the report's stated pre-change baseline) + 1 new test (the item-4 rejection test), with no regressions. |
+| Scope/ownership check | `git diff main..task/T-51-batch-a-trivial-fixes --name-only`; `git show 6f87b3f --stat`; `git show c4003f0 --stat` | Implementer's commit (`6f87b3f`) touches exactly the five brief-owned files plus `IMPLEMENTATION-REPORT.md`. `PROGRESS-LEDGER.md`/`TASK-BRIEF.md` changes are isolated to the orchestrator's separate prior commit (`c4003f0`, task activation) — not implementer scope creep. |
 
 ## Prior-finding disposition
 
 | Finding ID | Disposition | Evidence of resolution |
 | --- | --- | --- |
-| T-20-03 | RESOLVED | The finding's own recorded probe scenario (source/target column-name mismatch, e.g. `IsActive` vs `IS_ACTIVE`) now throws a clear `Error` naming the missing column(s), the affected side, and a pointer to `HashComparisonOptions`'s doc comment, instead of a raw DuckDB binder error — reproduced independently by this review (see Verification performed) with three variations beyond the implementer's own single test case (source-side mismatch, multi-column mismatch, `keyColumns` mismatch), all producing correctly-attributed, actionable messages. Column-name-mapping support was explicitly NOT added (confirmed by grep), matching the finding's own recorded resolution direction ("disclose," not "add mapping"). No `getSchema` preflight call was added (confirmed by grep) — validation runs purely against the already-fetched `RecordBatch.columns`, per the brief's Scope item 3 and Prohibited-changes section. |
+| T-26-03 | RESOLVED | `icon.svg` header comment now reads `stroke="currentColor"`/`fill="none"`, matching the actual technique used by all three shapes (lines 5-7, unchanged). Verified by direct diff and reading the current file. |
+| T-12-01 | RESOLVED | All three `if (match) {...}` guards in `mapping.test.ts` removed; assertions are now genuinely unconditional (preceded by an unconditional `expect(match).toBeDefined();`), so a future regression producing `match === undefined` would fail the test rather than silently skip the assertions. Verified by diff and re-running the test file green (12/12). |
+| T-36-01 | RESOLVED | Test title at line 313 renamed to accurately describe the required-field precheck it actually exercises; body/assertions unchanged (byte-identical). The adjacent "internal validation bypass" test (~line 215) remains untouched and still tests a structurally distinct input (an object-shaped value vs. an empty array), matching the brief's requirement that it stay distinct. Note: that adjacent test's own title has a pre-existing, separate accuracy gap (documented above) — out of T-51's scope, not introduced by this task, and not a regression. |
+| T-39-01 | RESOLVED | `provideCodeLenses` now wraps `listRecentRuns` and its two consumers in a dedicated `try/catch`, separate from the pre-existing `parseDefinition` catch, falling back to `buildLensesForValidDocument(document.uri, undefined)` and logging via `console.error` on rejection. Verified both via the implementer's own test and my own independently-constructed adversarial probe (non-`Error` rejection value) — in both cases `provideCodeLenses` resolved cleanly with all four lenses and the correct no-prior-run fallback for "Open Last Result." The method now genuinely fulfills its documented "never throws" contract. |
 
 ## Approval status
 
 - **Status:** APPROVED
-- **Reviewer:** Independent Reviewer (Claude Code subagent, Sonnet 5), separate instance from the T-50 implementer
+- **Reviewer:** Claude Code Independent Reviewer subagent (Sonnet 5)
 - **Date:** 2026-08-03
-- **Release or dependency impact:** Closes finding T-20-03 in `PROGRESS-LEDGER.md`'s Open findings table. No exported signature, `HashComparisonOptions`, `HashMismatch`, or `HashComparisonResult` shape changed — no downstream consumer impact. The one non-blocking Minor (T-50-01, `SELECT *` wide-table cost) should be carried forward into `PROGRESS-LEDGER.md`'s Open findings table as accepted, non-blocking debt, consistent with how T-20-02 and other accepted-tradeoff findings are already tracked in this project.
+- **Release or dependency impact:** None blocking. All four changes are
+  either pure comment/title corrections or a narrowly-scoped defensive
+  `try/catch` addition with no interface changes. No downstream task
+  depends on anything that changed here beyond the four now-resolved
+  findings. `PROGRESS-LEDGER.md`'s Open findings table entries for
+  T-26-03, T-12-01, T-36-01, and T-39-01 can be marked resolved during
+  reconciliation.

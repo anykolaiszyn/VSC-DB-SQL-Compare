@@ -44,7 +44,7 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE
+- **Exactly one task may be active:** T-51 (batch A: trivial doc/comment/test-rigor fixes, covering T-26-03/T-12-01/T-36-01/T-39-01)
 - **Backlog cleanup sweep (owner-directed 2026-08-03):** owner asked to
   complete all open backlog items except T-18 (blocked, no trial account)
   before proceeding to Phase 6. Scope: all 27 `OPEN` rows in this

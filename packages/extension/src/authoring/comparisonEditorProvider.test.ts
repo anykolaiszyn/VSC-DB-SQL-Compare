@@ -310,7 +310,7 @@ describe("ComparisonEditorProvider.resolveCustomTextEditor", () => {
     expect(panel.__posted).toEqual([{ type: "apply-result", ok: true }]);
   });
 
-  it("NEVER calls applyEdit when the Apply message would fail the provider-side round-trip guard -- document stays untouched", async () => {
+  it("NEVER calls applyEdit when the Apply message fails the required-field precheck (empty key columns) -- document stays untouched", async () => {
     const applyEdit = vi.fn(async () => true);
     const provider = new ComparisonEditorProvider(makeDeps({ applyEdit }));
     const document = makeFakeDocument(VALID_YAML);
@@ -319,8 +319,12 @@ describe("ComparisonEditorProvider.resolveCustomTextEditor", () => {
     provider.resolveCustomTextEditor(document as never, panel as never, {} as never);
 
     // Simulates a client-side-validation bypass: an Apply message with no
-    // key columns, which handleApplyMessage's provider-side check rejects
+    // key columns, which handleApplyMessage's own required-field precheck
+    // rejects before ever reaching buildComparisonYaml/parseDefinition --
     // regardless of whatever the webview's own script would have done.
+    // (The round-trip guard itself -- parseDefinition re-validation after
+    // buildComparisonYaml -- is separately exercised by the adjacent
+    // "internal validation bypass" test above.)
     await panel.__simulateMessage({
       type: "apply",
       draft: { ...VALID_APPLY_MESSAGE.draft, keys: [] }
