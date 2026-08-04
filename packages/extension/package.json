@@ -68,7 +68,8 @@
   "scripts": {
     "test": "vitest run",
     "bundle": "node esbuild.config.mjs",
-    "package": "npm run bundle && vsce package --no-dependencies"
+    "copy-license": "node -e \"require('fs').copyFileSync(require('path').join('..','..','LICENSE'), require('path').join('LICENSE'))\"",
+    "package": "npm run bundle && npm run copy-license && vsce package --no-dependencies"
   },
   "dependencies": {
     "@paritylens/engine": "*",
