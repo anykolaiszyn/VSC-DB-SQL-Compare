@@ -1,6 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { ConnectionProfile } from "./connectionProfile";
 import type { ConnectionProfileStore } from "./connectionProfileStore";
+import { resolveConnector } from "./resolveConnector";
+import type { ConnectionTestResult } from "@paritylens/shared";
 
 /** The two supported platforms, in the order offered to `showQuickPick`. */
 const PLATFORM_OPTIONS: ReadonlyArray<ConnectionProfile["platform"]> = ["sqlserver", "postgres"];
@@ -25,6 +27,20 @@ export interface ConnectionCommandDeps {
   ) => Promise<string | undefined>;
   showInformationMessage: (message: string) => unknown;
   showErrorMessage: (message: string) => unknown;
+  /**
+   * Narrow projection of `vscode.window.withProgress` (T-42): shows a
+   * blocking progress notification with `title` while `task` runs, resolving
+   * to whatever `task` resolves to. Only the title + async-callback shape
+   * this task needs is injected, not the full `withProgress` signature, per
+   * this file's existing narrow-injected-dependency style.
+   */
+  withProgress: <T>(title: string, task: () => Promise<T>) => Promise<T>;
+  /**
+   * Narrow projection of `vscode.window.showWarningMessage` (T-42): shows a
+   * warning with `message` and the given item labels, resolving to the
+   * clicked item's label or `undefined` if dismissed.
+   */
+  showWarningMessage: (message: string, ...items: string[]) => Promise<string | undefined>;
 }
 
 /** Parses a user-entered port string into a positive integer, or `undefined` if invalid. */
@@ -111,10 +127,39 @@ async function promptForProfileFields(
 }
 
 /**
+ * Runs `testConnection()` against the connector resolved for `profile` +
+ * `password`, wrapped in the injected `withProgress` dependency (T-42).
+ * `DataPlatformConnector.testConnection()` (`@paritylens/shared`) is typed
+ * to resolve a `ConnectionTestResult`, not documented as throw-free, so a
+ * thrown/rejected call is caught here and normalized into the same
+ * `{ success: false, message }` shape a resolved failure would produce --
+ * per TASK-BRIEF.md Scope item 5, both shapes must reach the same
+ * save-anyway/don't-save choice, never the outer catch's generic error
+ * message.
+ */
+async function testConnectionProfile(
+  deps: ConnectionCommandDeps,
+  profile: ConnectionProfile,
+  password: string
+): Promise<ConnectionTestResult> {
+  return deps.withProgress("Testing connection...", async () => {
+    try {
+      return await resolveConnector(profile, password).testConnection();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return { success: false, message };
+    }
+  });
+}
+
+/**
  * `paritylens.addConnection` command handler, extracted as a directly
  * testable function per TASK-BRIEF.md Scope item 3. Prompts for every
- * profile field, generates a new `id`, and stores the result via
- * `ConnectionProfileStore.add`.
+ * profile field, tests the resulting connection (T-42), and stores the
+ * result via `ConnectionProfileStore.add` -- either because the test
+ * succeeded, or because the user explicitly chose to save an unreachable
+ * profile anyway (e.g. a VPN-gated host that is legitimately unreachable at
+ * add-time; this is not meant to become a hard block).
  */
 export async function addConnectionCommand(
   store: ConnectionProfileStore,
@@ -127,6 +172,20 @@ export async function addConnectionCommand(
     }
 
     const profile: ConnectionProfile = { id: randomUUID(), ...prompted.fields };
+
+    const testResult = await testConnectionProfile(deps, profile, prompted.password);
+    if (!testResult.success) {
+      const reason = testResult.message ?? "unknown reason";
+      const choice = await deps.showWarningMessage(
+        `ParityLens: connection test failed for "${profile.name}" — ${reason}`,
+        "Save Anyway",
+        "Don't Save"
+      );
+      if (choice !== "Save Anyway") {
+        return undefined;
+      }
+    }
+
     await store.add(profile, prompted.password);
     deps.showInformationMessage(`ParityLens: added connection "${profile.name}"`);
     return profile;

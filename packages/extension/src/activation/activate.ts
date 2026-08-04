@@ -663,7 +663,14 @@ function buildConnectionCommandDeps() {
     showInputBox: vscode.window.showInputBox.bind(vscode.window),
     showQuickPick: vscode.window.showQuickPick.bind(vscode.window),
     showInformationMessage: vscode.window.showInformationMessage,
-    showErrorMessage: vscode.window.showErrorMessage
+    showErrorMessage: vscode.window.showErrorMessage,
+    // T-42: narrow projections of vscode.window.withProgress / showWarningMessage,
+    // covering only the title+async-callback / message+choice shapes
+    // ConnectionCommandDeps declares, not the full vscode signatures.
+    withProgress: <T>(title: string, task: () => Promise<T>) =>
+      vscode.window.withProgress({ location: vscode.ProgressLocation.Notification, title }, task),
+    showWarningMessage: (message: string, ...items: string[]) =>
+      Promise.resolve(vscode.window.showWarningMessage(message, ...items))
   };
 }
 

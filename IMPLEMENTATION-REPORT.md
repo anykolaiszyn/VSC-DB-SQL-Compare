@@ -1,179 +1,131 @@
-# ParityLens — Implementation Report T-41
+# ParityLens — Implementation Report T-42
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
-- **Objective:** Per `TASK-BRIEF.md`: implement the `contributes.menus` entries
-  named in `IMPLEMENTATION-PLAN.md`'s Phase 6 table for T-41 — a `+`-style
-  icon (built-in codicon) on the "Connections" and "Comparisons" tree
-  sections, invoking `paritylens.addConnection` and `paritylens.newComparison`
-  respectively, addressing self-service gap-analysis Finding 2
-  (command-palette-only discovery of these two commands).
-
-## Interpretation of "navigation buttons" vs. VS Code's actual menu contribution points
-
-The brief's Scope item 2 requires this reasoning to be documented here
-before describing the change.
-
-`IMPLEMENTATION-PLAN.md`'s T-41 row and the brief's Objective both use the
-phrase "`view/title` navigation button." However, VS Code's `view/title`
-menu group is scoped to the *view as a whole* (`paritylens.dataParityView`),
-not to one specific top-level tree item inside that view — there is no
-`package.json`-declarable way to make a `view/title` button appear only
-next to the "Connections" row versus the "Comparisons" row; a `view/title`
-entry would render once, in the view's title bar, regardless of which
-section is expanded/selected.
-
-The brief itself (Scope item 2, verbatim) resolves this in favor of
-`view/item/context` with `"group": "inline"`:
-
-> "Since the brief calls for 'navigation buttons on the Connections/
-> Comparisons sections' (not the whole view), use `view/item/context` with
-> `"group": "inline"` (renders as an inline icon button on the specific tree
-> row, VS Code's standard pattern for 'add' affordances on tree sections —
-> e.g. how the built-in Source Control view adds inline `+` buttons per
-> repository row) and a `when` clause matching each section's exact
-> `contextValue`."
-
-This is what was implemented: two `view/item/context` entries, each with
-`group: "inline"` and a `when` clause combining the view ID with the
-section's exact `contextValue` (confirmed by reading
-`parityTreeDataProvider.ts`'s `ParityTreeItem` constructor:
-`this.contextValue = \`paritylens.section.${section.id}\`;`, giving
-`paritylens.section.connections` and `paritylens.section.comparisons`
-exactly, for the two `PARITY_SECTIONS` entries of those IDs). No
-`view/title` entry was added — it would not have satisfied the
-section-scoped requirement.
-
-## Icon field placement: command-level, not menu-item-level
-
-The brief's Scope item 4 required verifying against VS Code's actual
-schema which field carries the codicon reference, rather than guessing.
-Fetched VS Code's `contributes.menus`/`contributes.commands` documentation
-(`https://code.visualstudio.com/api/references/contribution-points`) and
-confirmed: an individual `contributes.menus` entry supports only
-`command`/`when`/`group`/`alt` — no `icon` field of its own. A contributed
-command's icon is declared once on its `contributes.commands` entry (either
-a `{ "light": ..., "dark": ... }` path pair, or a bare codicon reference
-string, e.g. `"icon": "$(add)"`), and VS Code applies that icon wherever the
-command is rendered as a button, including inline `view/item/context`
-group entries. The `icon` field was therefore added to the
-`contributes.commands` entries for `paritylens.addConnection` and
-`paritylens.newComparison` only — no other command's `icon` field was
-touched, and no `icon` field was added to either menu entry itself.
-
-`add` was used as specified by the brief ("Do not invent a codicon name —
-`add` is confirmed real and commonly used for exactly this 'add new item'
-affordance") — this is a real, published VS Code codicon ID (a plus-sign
-glyph), consistent with its use elsewhere in VS Code (e.g. Source Control's
-inline repository-add button) for exactly this "add new item" affordance.
+- **Objective:** Extend `paritylens.addConnection`'s flow
+  (`addConnectionCommand` in
+  `packages/extension/src/connections/connectionCommands.ts`) to call the
+  resolved connector's `testConnection()` after collecting profile fields and
+  before persisting, showing a blocking "Testing connection..." progress
+  notification, then either persisting on success or showing the failure
+  reason with an explicit choice to re-enter (don't save) or save anyway —
+  addressing self-service gap-analysis Finding 3 (no connection-test
+  feedback at add-time).
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/package.json` | Added `contributes.menus["view/item/context"]` (two entries: `paritylens.addConnection` scoped to `paritylens.section.connections`, `paritylens.newComparison` scoped to `paritylens.section.comparisons`, both `group: "inline"`); added `"icon": "$(add)"` to the `contributes.commands` entries for those same two commands only. | T-41 objective — inline "add" affordances on the Connections/Comparisons tree sections, addressing gap-analysis Finding 2. |
-| `packages/extension/src/views/treeViewMenus.test.ts` (new) | Shape test asserting: exactly two `view/item/context` entries exist; each references a real registered command ID; each `when` clause scopes to the correct view AND the correct section's `contextValue` (not the whole view, not the wrong section, not a child-row `contextValue` like `paritylens.comparisonFile`/`paritylens.recentRun`); each `group` is `"inline"`; the `add` codicon is declared via `$(add)` on the two commands' `contributes.commands` entries and no other command's `icon` field was touched. | Required green-state evidence per the brief's "Green-state evidence required" item 2 — `contributes.menus` is declarative JSON with no unit-testable runtime rendering hook, so (per the same disclosed-approach pattern T-40 used for `viewsWelcome` in `hasNoContent.test.ts`) this test asserts on the manifest shape itself. |
-
-**Note on file ownership, disclosed rather than silently expanded:** the
-brief's "Files owned" section lists only `packages/extension/package.json`.
-The brief's own "Green-state evidence required" item 2, however, explicitly
-mandates a test proving the menu-contribution shape (following T-40's
-disclosed pattern). Since `contributes.menus` has no unit-testable runtime
-hook to attach to an *existing* owned test file (T-41 owns no `.ts` test
-file at all), satisfying the brief's own evidence requirement necessitated
-creating one new test file. `treeViewMenus.test.ts` was placed alongside
-the read-only-reference `parityTreeDataProvider.ts` in `src/views/` (the
-directory whose contract this test verifies against) as the smallest
-reasonable judgment call, and is called out here explicitly rather than
-folded in silently, per the operating contract's rule that a
-brief-mandated edit outside the literal file list must be flagged for a
-reviewer's judgment. `parityTreeDataProvider.ts` itself was **not**
-modified — read-only reference only, as the brief requires.
+| `packages/extension/src/connections/connectionCommands.ts` | Added `withProgress`/`showWarningMessage` to `ConnectionCommandDeps`; added a `testConnectionProfile()` helper; extended `addConnectionCommand` to call `resolveConnector(profile, prompted.password).testConnection()` under `withProgress`, and on failure (resolved-`{success:false}` or thrown) offer "Save Anyway"/"Don't Save" via `showWarningMessage` before persisting. `editConnectionCommand`/`deleteConnectionCommand` bodies unchanged (confirmed by diff against `main` — see Verification evidence). | TASK-BRIEF.md Scope items 1–5 |
+| `packages/extension/src/connections/connectionCommands.test.ts` | Extended the existing success-path test to mock a successful `testConnection()`; added 5 new tests: failed-resolved + "Save Anyway" persists; failed-resolved + "Don't Save" does not persist; failed-resolved + dismissal (`undefined`) does not persist; thrown/rejected `testConnection()` handled the same as a resolved failure (not swallowed by the generic catch); no plaintext password in any new progress/failure/success message string. Added a `mockTestConnection()` helper spying on `resolveConnector`. | TASK-BRIEF.md Red/Green-state evidence requirements |
+| `packages/extension/src/activation/activate.ts` | `buildConnectionCommandDeps()` only: added real-`vscode`-backed `withProgress` (via `vscode.window.withProgress` with `ProgressLocation.Notification`) and `showWarningMessage` (via `vscode.window.showWarningMessage`, wrapped in `Promise.resolve` to match the injected `Promise<string \| undefined>` return type). No other function in this file touched. | TASK-BRIEF.md Files owned — "only `buildConnectionCommandDeps`'s ... implementation of the new injected dependencies" |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** In the "Data Parity" activity-bar tree view, an
-  inline `+` (codicon `add`) icon button now renders on the "Connections"
-  row, invoking `paritylens.addConnection` when clicked, and on the
-  "Comparisons" row, invoking `paritylens.newComparison` — both discoverable
-  without opening the command palette, addressing gap-analysis Finding 2.
-  No other tree row (including comparison-file and recent-run child rows)
-  gains a button, since the `when` clauses are scoped to the exact section
-  `contextValue`s only.
-- **Interfaces consumed:** `paritylens.addConnection` / `paritylens.newComparison`
-  command IDs (T-29/T-32, referenced only — registration untouched);
-  `ParitySectionId`/`PARITY_SECTIONS`/`contextValue` shape from
-  `parityTreeDataProvider.ts` (T-10/T-33, read only — file untouched).
-- **Interfaces produced:** None — this is a declarative manifest addition
-  with no new exported TypeScript symbol. The two new `contributes.commands`
-  `icon` fields and the new `contributes.menus["view/item/context"]` array
-  are the only new manifest-level surface.
+- **Behavior delivered:** After the user finishes the profile-field prompts
+  in `paritylens.addConnection`, ParityLens now resolves a real connector
+  (`resolveConnector`) and calls its `testConnection()` under a blocking
+  "Testing connection..." notification before persisting anything. On
+  success, behavior is unchanged from before this task (persist + success
+  message). On failure — whether `testConnection()` resolves
+  `{ success: false }` or throws/rejects — the user sees the failure reason
+  and is offered "Save Anyway" (persists, same as today's prior
+  unconditional behavior, now an explicit opt-in) or "Don't Save" (aborts,
+  nothing persisted; dismissing the prompt behaves the same as "Don't
+  Save").
+- **Interfaces consumed:** `resolveConnector`
+  (`connections/resolveConnector.ts`, read-only, unmodified),
+  `DataPlatformConnector.testConnection(): Promise<ConnectionTestResult>`
+  (`@paritylens/shared`, read-only usage), `ConnectionProfileStore.add`
+  (read-only, unmodified).
+- **Interfaces produced:** `ConnectionCommandDeps` gains two new members:
+  `withProgress: <T>(title: string, task: () => Promise<T>) => Promise<T>`
+  and `showWarningMessage: (message: string, ...items: string[]) => Promise<string | undefined>`.
+  Both are narrow projections of `vscode.window.withProgress` /
+  `vscode.window.showWarningMessage`, matching this file's existing
+  narrow-injected-dependency style (only the shape this task needs, not the
+  full VS Code signatures).
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0. 637 passed \| 27 skipped (664 total), 35 test files passed \| 2 skipped (37). | Captured in this session before any edit. |
-| Red state | `npx vitest run packages/extension/src/views/treeViewMenus.test.ts` (test file written against the pre-change `package.json`, which had no `contributes.menus` key — confirmed by reading the file directly) | Exit 1. 5 of 8 tests failed for the predicted reason: `expected manifest.contributes.menus to be defined` (received `undefined`), `expected undefined to be 'view == paritylens.dataParityView && viewItem == paritylens.section.connections'`, `expected undefined to be 'view == paritylens.dataParityView && viewItem == paritylens.section.comparisons'`, and `expected undefined to be '$(add)'` (icon field, twice). 3 of 8 passed trivially (assertions over an empty/undefined menus object, e.g. "does not scope to comparisonFile/recentRun" vacuously true). | Captured in this session's transcript. |
-| Focused green state | `npx vitest run packages/extension/src/views/treeViewMenus.test.ts` (after the `package.json` edit) | Exit 0. 8 of 8 tests passed. | Captured in this session's transcript. |
-| Full verification | `npm run verify` (`tsc -b --force` && `eslint .` && `vitest run`, in that order) | Exit 0. Typecheck clean, lint clean, tests: 36 test files passed \| 2 skipped (38 total); 645 tests passed \| 27 skipped (672 total). Net gain of exactly 8 tests over the 637/637 (T-40-inclusive) baseline — the 8 new `treeViewMenus.test.ts` cases — with zero shrinkage or other change elsewhere. | Captured in this session's transcript; also saved to `C:\Users\alexn\AppData\Local\Temp\claude\V--Secret-Projects-VSC-DB-SQL-Compare\46d87bff-0647-4762-9ba4-ee6c1f665978\scratchpad\verify_out.txt`. |
+| Baseline (pre-change) | `npm run verify` | Exit 0. 645 passed \| 27 skipped (672 total), 36 test files passed \| 2 skipped (38). | Captured in this session before any edit. |
+| Red state | `npx vitest run packages/extension/src/connections/connectionCommands.test.ts` (new/extended tests written against the pre-change implementation) | Exit 1. 5 of 13 tests failed for the predicted reasons: `expected "spy" to be called 1 times, but got 0 times` on `withProgress` (success test, thrown-error test) and on `showWarningMessage` (both failed-resolved-result tests); `expected {…profile…} to be undefined` on both "Don't Save"/dismiss tests (`store.add` was still called unconditionally, so a profile was returned instead of `undefined`). 8 of 13 passed (the 3 pre-existing untouched tests plus incidental early assertions). | Captured in this session's transcript. |
+| Focused green state | `npx vitest run packages/extension/src/connections/connectionCommands.test.ts` (after the implementation edit) | Exit 0. 13 of 13 tests passed. | Captured in this session's transcript. |
+| Full verification | `npm run verify` (`tsc -b --force` && `eslint .` && `vitest run`, in that order) | Exit 0. Typecheck clean, lint clean, tests: 36 test files passed \| 2 skipped (38 total); 650 tests passed \| 27 skipped (677 total). Net gain of exactly 5 tests over the 645/645 baseline (13 tests in `connectionCommands.test.ts`, up from 8), zero shrinkage or change elsewhere. | Captured in this session's transcript. |
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - `add` is the correct codicon ID for an "add new item" affordance. This
-    was not independently re-verified against the live codicon font/icon
-    reference site inside this task (only cross-checked against the
-    brief's own explicit confirmation and VS Code's documented convention
-    of using it for this exact affordance elsewhere, e.g. Source Control).
-    The brief's Handoff section explicitly flags this as a reviewer
-    spot-check item — see Recommended next step below.
-  - The VS Code contribution-points documentation fetched via `WebFetch`
-    (summarized, not the raw schema JSON) accurately reflects the current
-    manifest schema's field set for `contributes.menus` entries (no `icon`
-    field there) and `contributes.commands` entries (`icon` field
-    supported, string or light/dark object form). This is standard,
-    long-stable VS Code API surface, not a recent/beta feature, so drift
-    risk is low.
+  - `DataPlatformConnector.testConnection()`'s doc comment
+    (`packages/shared/src/connector.ts` line 6: "Result of
+    `DataPlatformConnector.testConnection()`") documents only its resolved
+    shape (`ConnectionTestResult { success: boolean; message?: string;
+    latencyMs?: number }`) and gives no explicit throw-vs-always-resolve
+    guarantee. Per TASK-BRIEF.md Scope item 5 ("if ambiguous, handle both
+    defensively"), `testConnectionProfile()` catches a thrown/rejected
+    `testConnection()` call and normalizes it into the same
+    `{ success: false, message }` shape a resolved failure would produce, so
+    both paths reach the identical "Save Anyway"/"Don't Save" branch. This
+    is a judgment call under genuine interface ambiguity, documented inline
+    in `testConnectionProfile()`'s header comment and flagged here for
+    reviewer attention.
+  - Button labels "Save Anyway" / "Don't Save" were left to my judgment per
+    TASK-BRIEF.md Scope item 4 ("exact wording your call, keep it clear").
+  - `withProgress`'s real-`vscode` implementation in `activate.ts` uses
+    `vscode.ProgressLocation.Notification` (a blocking, dismissable
+    notification) as the closest real-API match to the brief's "blocking
+    'Testing connection...' progress notification" — `vscode.window.withProgress`
+    has no simpler single-location signature to choose from.
 - **Risks or limitations:**
+  - `testConnectionProfile()` constructs a connector via `resolveConnector`
+    before the user has confirmed anything about network reachability. This
+    reuses the existing `resolveConnector` machinery unchanged and
+    introduces no new credential-handling path — the password is passed
+    through exactly as it already flows into `store.add`/`SecretStore`
+    elsewhere in this file, never logged.
+  - Verified by reading every new template-string literal in the diff that
+    none interpolates `password`/`prompted.password`. The only new literals
+    are the progress title (`"Testing connection..."`) and the warning
+    message (`` ParityLens: connection test failed for "${profile.name}" — ${reason} ``,
+    where `reason` comes from `ConnectionTestResult.message` or the caught
+    error's `.message`, never from `prompted.password`). A dedicated test
+    ("never includes the plaintext password in any progress/failure/success
+    message") asserts this against the literal password fixture value
+    `s3cr3t-password` across every injected message-producing mock's call
+    arguments.
   - No manual Extension Development Host check was performed to visually
-    confirm the inline button actually renders as expected in a live VS
-    Code window — per the brief's own framing (matching T-40's precedent),
-    this is disclosed as the accepted approach given `contributes.menus`
-    has no unit-testable runtime rendering hook in this repo's plain
-    Vitest suite, not an oversight.
-  - `treeViewMenus.test.ts` is a new file not listed in the brief's "Files
-    owned" section — disclosed explicitly above (not folded in silently)
-    as a brief-mandated minimal necessary addition, per the operating
-    contract's rule for exactly this situation.
+    confirm the progress notification/warning dialog render as expected in
+    a live VS Code window — consistent with this repo's established
+    disclosed-limitation pattern (T-40/T-41) for UI surface with no
+    unit-testable runtime rendering hook in the plain Vitest suite.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** `54b7077dee4354aa07136dd870e1643d2afc391e` ("T-41:
-  inline add-item buttons on Connections/Comparisons tree sections")
-- **Branch or workspace:** `task/T-41-tree-view-title-buttons`
+- **Patch or commit:** (recorded after commit — see follow-up commit message
+  below; branch tip at time of writing this report)
+- **Branch or workspace:** `task/T-42-connection-test-on-add`
 
 ## Recommended next step
 
 Independent review by a separate reviewer agent, per the brief's Handoff
 section, specifically re-verifying:
 
-1. Every referenced codicon name (`add`) is a real, published VS Code
-   codicon — spot-check against the codicon reference, same discipline
-   T-34's review applied to `ThemeIcon`/`ThemeColor` IDs.
-2. The `when` clauses genuinely scope to the correct section and don't
-   accidentally show both buttons on both sections or on every tree row —
-   adversarially reason through whether a `ParityComparisonTreeItem` child
-   row under "Comparisons" (`contextValue = "paritylens.comparisonFile"`)
-   could ever match `viewItem == paritylens.section.comparisons` (it must
-   not, since it's a different string).
-3. The `when` clauses don't clash with T-40's `viewsWelcome` state (both
-   should coexist correctly since an inline `view/item/context` button is
-   per-row and orthogonal to `viewsWelcome`'s whole-view-empty overlay —
-   confirm this reasoning rather than assuming it).
-4. A fresh full `npm run verify` is green with the reported test count.
+1. `testConnection()` failures never silently discard a user's typed
+   input — the "Save Anyway" path must still persist the profile and
+   credential correctly.
+2. No credential is logged/displayed anywhere in the new messaging (grep
+   every new string literal touching `password`/`prompted.password`).
+3. `editConnectionCommand`/`deleteConnectionCommand` remain genuinely
+   untouched (diff against `main`).
+4. The thrown-vs-resolved-failure handling for `testConnection()` is
+   adversarially probed with both shapes — a mocked rejection AND a mocked
+   resolved-failure result — not just one.
+5. A fresh full `npm run verify` is green with the reported 650/650 test
+   count.
 
 This report does not itself constitute review, approval, or a claim that
 the task is complete beyond implementation-and-evidence scope.

@@ -3,6 +3,8 @@ import { addConnectionCommand, editConnectionCommand, deleteConnectionCommand } 
 import { ConnectionProfileStore, secretKeyFor } from "./connectionProfileStore";
 import { SecretStore } from "../secrets/secretStore";
 import type { ConnectionCommandDeps } from "./connectionCommands";
+import * as resolveConnectorModule from "./resolveConnector";
+import type { ConnectionTestResult } from "@paritylens/shared";
 
 function createMockSecretStorage() {
   const store = new Map<string, string>();
@@ -43,9 +45,13 @@ function createStore() {
 function createDeps(answers: {
   inputBoxes?: Array<string | undefined>;
   quickPicks?: Array<string | undefined>;
+  /** Resolves to the clicked item's label, or `undefined` on dismissal. Defaults to always resolving `undefined`. */
+  warningChoice?: string | undefined;
 }): ConnectionCommandDeps & {
   showInformationMessage: ReturnType<typeof vi.fn>;
   showErrorMessage: ReturnType<typeof vi.fn>;
+  withProgress: ReturnType<typeof vi.fn>;
+  showWarningMessage: ReturnType<typeof vi.fn>;
 } {
   const inputQueue = [...(answers.inputBoxes ?? [])];
   const quickPickQueue = [...(answers.quickPicks ?? [])];
@@ -54,17 +60,35 @@ function createDeps(answers: {
     showInputBox: vi.fn(async () => inputQueue.shift()),
     showQuickPick: vi.fn(async () => quickPickQueue.shift()),
     showInformationMessage: vi.fn(),
-    showErrorMessage: vi.fn()
+    showErrorMessage: vi.fn(),
+    withProgress: vi.fn(async (_title: string, task: () => Promise<unknown>) => task()) as unknown as ReturnType<
+      typeof vi.fn
+    >,
+    showWarningMessage: vi.fn(async () => answers.warningChoice)
+  } as ConnectionCommandDeps & {
+    showInformationMessage: ReturnType<typeof vi.fn>;
+    showErrorMessage: ReturnType<typeof vi.fn>;
+    withProgress: ReturnType<typeof vi.fn>;
+    showWarningMessage: ReturnType<typeof vi.fn>;
   };
 }
 
+const VALID_ADD_INPUTS = {
+  inputBoxes: ["legacy-sql-prod", "db.example.internal", "1433", "CustomerDb", "parity_reader", "s3cr3t-password"],
+  quickPicks: ["sqlserver"]
+};
+
+function mockTestConnection(result: ConnectionTestResult | (() => Promise<ConnectionTestResult>)) {
+  return vi.spyOn(resolveConnectorModule, "resolveConnector").mockReturnValue({
+    testConnection: vi.fn(typeof result === "function" ? result : async () => result)
+  } as never);
+}
+
 describe("addConnectionCommand", () => {
-  it("prompts for name/platform/host/port/database/user/password and adds the resulting profile via the store", async () => {
+  it("prompts for name/platform/host/port/database/user/password, tests the connection, and adds the resulting profile via the store on success", async () => {
     const { store, secretStore } = createStore();
-    const deps = createDeps({
-      inputBoxes: ["legacy-sql-prod", "db.example.internal", "1433", "CustomerDb", "parity_reader", "s3cr3t-password"],
-      quickPicks: ["sqlserver"]
-    });
+    const deps = createDeps(VALID_ADD_INPUTS);
+    const testConnection = mockTestConnection({ success: true });
 
     const profile = await addConnectionCommand(store, deps);
 
@@ -88,7 +112,16 @@ describe("addConnectionCommand", () => {
     expect(store.get(profile!.id)).toEqual(profile);
     expect(await secretStore.get(secretKeyFor(profile!.id))).toBe("s3cr3t-password");
 
+    // The connection was tested (blocking progress notification) before persisting.
+    expect(deps.withProgress).toHaveBeenCalledTimes(1);
+    expect((deps.withProgress as ReturnType<typeof vi.fn>).mock.calls[0]?.[0]).toMatch(/testing connection/i);
+
+    // Success path: no failure choice offered, existing success message shown, no error.
+    expect(deps.showWarningMessage).not.toHaveBeenCalled();
+    expect(deps.showInformationMessage).toHaveBeenCalledWith('ParityLens: added connection "legacy-sql-prod"');
     expect(deps.showErrorMessage).not.toHaveBeenCalled();
+
+    testConnection.mockRestore();
   });
 
   it("returns undefined and adds nothing if the user cancels a prompt", async () => {
@@ -99,6 +132,103 @@ describe("addConnectionCommand", () => {
 
     expect(profile).toBeUndefined();
     expect(store.list()).toEqual([]);
+  });
+
+  it("shows the failure reason and, on 'Save Anyway', still persists the profile when testConnection resolves a failure", async () => {
+    const { store, secretStore } = createStore();
+    const deps = createDeps({ ...VALID_ADD_INPUTS, warningChoice: "Save Anyway" });
+    const testConnection = mockTestConnection({ success: false, message: "connect ETIMEDOUT db.example.internal:1433" });
+
+    const profile = await addConnectionCommand(store, deps);
+
+    expect(deps.showWarningMessage).toHaveBeenCalledTimes(1);
+    const warningArgs = (deps.showWarningMessage as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(String(warningArgs[0])).toContain("connect ETIMEDOUT db.example.internal:1433");
+
+    expect(profile).toBeDefined();
+    expect(store.get(profile!.id)).toEqual(profile);
+    expect(await secretStore.get(secretKeyFor(profile!.id))).toBe("s3cr3t-password");
+    expect(deps.showInformationMessage).toHaveBeenCalledWith('ParityLens: added connection "legacy-sql-prod"');
+
+    testConnection.mockRestore();
+  });
+
+  it("does not call store.add when testConnection fails and the user chooses 'Don't Save'", async () => {
+    const { store } = createStore();
+    const deps = createDeps({ ...VALID_ADD_INPUTS, warningChoice: "Don't Save" });
+    const testConnection = mockTestConnection({ success: false, message: "authentication failed" });
+
+    const profile = await addConnectionCommand(store, deps);
+
+    expect(profile).toBeUndefined();
+    expect(store.list()).toEqual([]);
+    expect(deps.showInformationMessage).not.toHaveBeenCalled();
+
+    testConnection.mockRestore();
+  });
+
+  it("does not call store.add when testConnection fails and the user dismisses the choice (undefined)", async () => {
+    const { store } = createStore();
+    const deps = createDeps({ ...VALID_ADD_INPUTS, warningChoice: undefined });
+    const testConnection = mockTestConnection({ success: false, message: "authentication failed" });
+
+    const profile = await addConnectionCommand(store, deps);
+
+    expect(profile).toBeUndefined();
+    expect(store.list()).toEqual([]);
+    expect(deps.showInformationMessage).not.toHaveBeenCalled();
+
+    testConnection.mockRestore();
+  });
+
+  it("handles testConnection throwing/rejecting the same as a failed result — offers the choice rather than falling into the generic catch's error message", async () => {
+    const { store, secretStore } = createStore();
+    const deps = createDeps({ ...VALID_ADD_INPUTS, warningChoice: "Save Anyway" });
+    const testConnection = mockTestConnection(async () => {
+      throw new Error("ECONNREFUSED 127.0.0.1:1433");
+    });
+
+    const profile = await addConnectionCommand(store, deps);
+
+    expect(deps.showWarningMessage).toHaveBeenCalledTimes(1);
+    const warningArgs = (deps.showWarningMessage as ReturnType<typeof vi.fn>).mock.calls[0] as unknown[];
+    expect(String(warningArgs[0])).toContain("ECONNREFUSED 127.0.0.1:1433");
+
+    // Save Anyway still persists, and the generic catch's "add connection failed" message never fires.
+    expect(profile).toBeDefined();
+    expect(store.get(profile!.id)).toEqual(profile);
+    expect(await secretStore.get(secretKeyFor(profile!.id))).toBe("s3cr3t-password");
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+
+    testConnection.mockRestore();
+  });
+
+  it("never includes the plaintext password in any progress/failure/success message", async () => {
+    const { store } = createStore();
+    const deps = createDeps({ ...VALID_ADD_INPUTS, warningChoice: "Don't Save" });
+    const testConnection = mockTestConnection({ success: false, message: "bad credentials" });
+
+    await addConnectionCommand(store, deps);
+
+    const allStrings: string[] = [];
+    for (const call of (deps.withProgress as ReturnType<typeof vi.fn>).mock.calls) {
+      allStrings.push(String(call[0]));
+    }
+    for (const call of (deps.showWarningMessage as ReturnType<typeof vi.fn>).mock.calls) {
+      allStrings.push(...call.map((arg: unknown) => String(arg)));
+    }
+    for (const call of (deps.showInformationMessage as ReturnType<typeof vi.fn>).mock.calls) {
+      allStrings.push(...call.map((arg: unknown) => String(arg)));
+    }
+    for (const call of (deps.showErrorMessage as ReturnType<typeof vi.fn>).mock.calls) {
+      allStrings.push(...call.map((arg: unknown) => String(arg)));
+    }
+
+    for (const message of allStrings) {
+      expect(message).not.toContain("s3cr3t-password");
+    }
+
+    testConnection.mockRestore();
   });
 
   it("surfaces an unexpected error via showErrorMessage rather than throwing", async () => {
