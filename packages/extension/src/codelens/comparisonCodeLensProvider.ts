@@ -170,8 +170,25 @@ export class ComparisonCodeLensProvider implements vscode.CodeLensProvider {
       return [];
     }
 
-    const runs = await this.deps.listRecentRuns();
-    const lastRun = findMostRecentRunForComparison(runs, definitionName);
-    return buildLensesForValidDocument(document.uri, lastRun);
+    // T-51 item 4: listRecentRuns (T-31) reads persisted extension-storage
+    // state and can reject (e.g. corrupted run-history state) independently
+    // of whether the document itself is a perfectly valid parity
+    // definition. This method's contract is "never throws" (see the doc
+    // comment above), so a rejection here must not propagate out of
+    // provideCodeLenses. Falling back to buildLensesForValidDocument(...,
+    // undefined) renders the four lenses as if no prior run exists --
+    // matching "Open Last Result"'s own pre-existing no-runs-yet fallback
+    // for the normal case -- rather than returning [], which would
+    // needlessly suppress "Run Profile"/"Run Schema Check"/"Run Full
+    // Comparison" for an otherwise-valid, parseable document just because
+    // run-history lookup failed.
+    try {
+      const runs = await this.deps.listRecentRuns();
+      const lastRun = findMostRecentRunForComparison(runs, definitionName);
+      return buildLensesForValidDocument(document.uri, lastRun);
+    } catch (err) {
+      console.error("[ComparisonCodeLensProvider] listRecentRuns failed; falling back to no-prior-run lenses:", err);
+      return buildLensesForValidDocument(document.uri, undefined);
+    }
   }
 }

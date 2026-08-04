@@ -268,6 +268,23 @@ describe("ComparisonCodeLensProvider", () => {
     expect(command.command).toBe(NO_RUNS_YET_COMMAND_ID);
   });
 
+  it("T-51 item 4: never throws/rejects when listRecentRuns rejects -- falls back to the no-prior-run form of 'Open Last Result' instead of propagating the rejection", async () => {
+    const provider = new ComparisonCodeLensProvider({
+      listRecentRuns: async () => {
+        throw new Error("extension-storage state is corrupted");
+      }
+    });
+
+    const lenses = await provider.provideCodeLenses(makeDocument(VALID_YAML), undefined as never);
+
+    expect(lenses).toHaveLength(4);
+    const titles = lenses.map((lens) => (lens.command as { title: string }).title);
+    expect(titles).toEqual(["Run Profile", "Run Schema Check", "Run Full Comparison", "Open Last Result"]);
+    const openLastResultLens = lenses.find((lens) => (lens.command as { title: string }).title === "Open Last Result");
+    const command = openLastResultLens!.command as { command: string };
+    expect(command.command).toBe(NO_RUNS_YET_COMMAND_ID);
+  });
+
   it("document text is unchanged after providing lenses (override is never written back)", async () => {
     const provider = new ComparisonCodeLensProvider({
       listRecentRuns: async () => []

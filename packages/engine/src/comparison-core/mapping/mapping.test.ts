@@ -62,31 +62,28 @@ describe("suggestMappings", () => {
       // named strategies are in scope, and ordinal is explicitly a
       // "last-resort fallback", not a confident match. Assert directly
       // that no exact/case-insensitive/snake-camel strategy fired.
-      if (match) {
-        expect(match.strategy).not.toBe("exact");
-        expect(match.strategy).not.toBe("case-insensitive");
-        expect(match.strategy).not.toBe("snake-camel");
-      }
+      expect(match).toBeDefined();
+      expect(match?.strategy).not.toBe("exact");
+      expect(match?.strategy).not.toBe("case-insensitive");
+      expect(match?.strategy).not.toBe("snake-camel");
     });
 
     it("does NOT suggest a confident match for created_dt -> CREATED_TIMESTAMP (abbreviation, out of scope)", () => {
       const suggestions = suggestMappings(source, target);
       const match = suggestions.find((s) => s.source === "created_dt");
-      if (match) {
-        expect(match.strategy).not.toBe("exact");
-        expect(match.strategy).not.toBe("case-insensitive");
-        expect(match.strategy).not.toBe("snake-camel");
-      }
+      expect(match).toBeDefined();
+      expect(match?.strategy).not.toBe("exact");
+      expect(match?.strategy).not.toBe("case-insensitive");
+      expect(match?.strategy).not.toBe("snake-camel");
     });
 
     it("does NOT suggest a confident match for active_ind -> IS_ACTIVE (abbreviation, out of scope)", () => {
       const suggestions = suggestMappings(source, target);
       const match = suggestions.find((s) => s.source === "active_ind");
-      if (match) {
-        expect(match.strategy).not.toBe("exact");
-        expect(match.strategy).not.toBe("case-insensitive");
-        expect(match.strategy).not.toBe("snake-camel");
-      }
+      expect(match).toBeDefined();
+      expect(match?.strategy).not.toBe("exact");
+      expect(match?.strategy).not.toBe("case-insensitive");
+      expect(match?.strategy).not.toBe("snake-camel");
     });
   });
 
