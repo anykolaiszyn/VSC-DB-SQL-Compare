@@ -132,7 +132,7 @@ is a 1-for-1 replacement, not a net addition — same test count in that file,
 
 ## Patch or commit identity
 
-- **Patch or commit:** to be recorded after `git commit` (see below).
+- **Patch or commit:** `9945663` (`task/T-44-fixture-fallback-confirmation`)
 - **Branch or workspace:** `task/T-44-fixture-fallback-confirmation`
 
 ## Recommended next step
