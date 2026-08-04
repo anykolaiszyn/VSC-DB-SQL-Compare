@@ -44,7 +44,8 @@
       },
       {
         "command": "paritylens.addConnection",
-        "title": "ParityLens: Add Connection"
+        "title": "ParityLens: Add Connection",
+        "icon": "$(add)"
       },
       {
         "command": "paritylens.editConnection",
@@ -56,9 +57,24 @@
       },
       {
         "command": "paritylens.newComparison",
-        "title": "ParityLens: New Comparison"
+        "title": "ParityLens: New Comparison",
+        "icon": "$(add)"
       }
     ],
+    "menus": {
+      "view/item/context": [
+        {
+          "command": "paritylens.addConnection",
+          "when": "view == paritylens.dataParityView && viewItem == paritylens.section.connections",
+          "group": "inline"
+        },
+        {
+          "command": "paritylens.newComparison",
+          "when": "view == paritylens.dataParityView && viewItem == paritylens.section.comparisons",
+          "group": "inline"
+        }
+      ]
+    },
     "customEditors": [
       {
         "viewType": "paritylens.comparisonEditor",
