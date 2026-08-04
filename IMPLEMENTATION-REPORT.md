@@ -1,148 +1,146 @@
-# ParityLens — Implementation Report T-43
+# ParityLens — Implementation Report T-44
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
-- **Objective:** Add a static, plain-language legend/glossary explaining
-  `Severity` values, and a short per-tab "what this tab shows and what to
-  do about a finding" caption to each of the 4 check-family tab panels
-  (Schema/Profile/Volume/Row-Level) in the results webview
-  (`packages/extension/src/webview/resultsWebview.ts`), per
-  `TASK-BRIEF.md` T-43. Addresses self-service gap-analysis Finding 7
-  (results not actionable for a non-engineer), which Phase 5's own
-  Non-goals section explicitly named as out of scope — this task exists
-  independently of T-36–T-39.
-
-## Premise correction (brief's own instruction, mirroring T-40's pattern)
-
-The task brief's own text names `Failure`/`Warning`/`Informational`
-"plus `Pass`/`Error`/`Skipped` — the full `Severity` union" and separately
-warns not to assume a `Compatible`/`Review`/`Risk` UI label exists. I read
-`packages/shared/src/result.ts` directly to confirm the authoritative
-union:
-
-```ts
-export type Severity = "Pass" | "Informational" | "Warning" | "Failure" | "Error" | "Skipped";
-```
-
-Six values, exactly as the brief's own text anticipated. I also confirmed
-by reading `resultsWebview.ts` in full that there is no separately
-rendered `Compatible`/`Review`/`Risk` label anywhere in this file —
-`TypeCompatibility`
-(`packages/engine/src/comparison-core/type-mapping/type-mapping.ts`) is an
-internal classification that `compareSchemas` folds into a
-`SchemaDifference`'s `severity`/`message` fields before this file ever
-sees it; the only literal severity-shaped UI label this file renders is
-the `Severity` tag via `severityTagClass`/the raw `escapeHtml(d.severity)`
-text next to it. The legend therefore explains all six real `Severity`
-values (not a 3-value illustrative subset), and no `Compatible`/`Review`/
-`Risk` label was added anywhere. This mirrors how T-40's implementer
-handled a similar premise correction for its own task, per the brief's
-explicit instruction to document this the same way.
+- **Objective:** Replace `runComparisonCommand`'s passive `MIXED_CONNECTION_NOTICE`/
+  `FIXTURE_ONLY_NOTICE` toast with a blocking confirmation requiring explicit
+  acknowledgment before `runComparison` executes, whenever at least one side
+  of the run is falling back to fixture data (Finding 9, silent
+  fixture-fallback ambiguity).
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/src/webview/resultsWebview.ts` | Added a `SEVERITY_LEGEND` const, `renderLegend()` (native `<details>`/`<summary>` disclosure, same script-free pattern the row-level expand/collapse already uses), `renderTabCaption()`, static caption copy for the 4 check-family tab panels, and legend/caption CSS in `renderStyles()`. Wired `renderLegend()` in between the stat band and the tab strip; wired a caption call at the top of each of the Schema/Profile/Volume/Row-Level `tab-panel` divs, above the existing table-render call. No change to any table-renderer's column set, `renderResultsHtml`'s signature, or `enableScripts`. | TASK-BRIEF.md T-43 Scope items 1-4 |
-| `packages/extension/src/webview/resultsWebview.test.ts` | Added a `T-43: legend/glossary and per-tab captions` describe block (9 new tests): legend-presence, full-`Severity`-union coverage (derived from the real `Severity` type, not a hardcoded literal list), per-tab caption presence/ordering (caption before the table) for all 4 check-family tabs, an explicit "SQL Preview gets no caption" negative test, a purity re-check, and an `enableScripts` re-check. Imported `Severity` type for the coverage test. | TASK-BRIEF.md T-43 Red/Green-state evidence requirements |
+| `packages/extension/src/activation/activate.ts` | Added optional `confirmFixtureFallback?: (notice: string) => Promise<boolean>` to `RunComparisonCommandDeps`; changed the `buildRunNotice` call site to branch on whether the returned notice is `MIXED_CONNECTION_NOTICE`/`FIXTURE_ONLY_NOTICE` — if so, block on `confirmFixtureFallback` (default "proceed" when absent) instead of the passive toast, aborting cleanly (no error, `runComparison` never called) if declined; otherwise (no code path exists for this today — see Assumptions) fall through to the pre-existing `showInformationMessage` call. Added `createConfirmFixtureFallback()`, a real `vscode.window.showWarningMessage(notice, "Continue", "Cancel")`-backed implementation, and wired it into `registerRunComparisonCommand`'s deps. | TASK-BRIEF.md Scope items 1–5 |
+| `packages/extension/src/activation/activate.test.ts` | Added a new `describe("runComparisonCommand (T-44 fixture-fallback confirmation)")` suite (8 tests) covering: blocking + no-`runComparison`-call on decline for both fixture-only and mixed cases; proceeding on confirm; the backward-compatible absent-dependency default; three composition tests with T-38's `confirmRun`; and a test documenting that both fixture-fallback variants positively trigger the gate (per Scope item 3's own allowance, since no all-real-profile case exists in `buildRunNotice` today to construct a negative test against). Also added a `showWarningMessage` mock to the file's `vi.mock("vscode", ...)` factory so the pre-existing T-39 end-to-end `registerRunComparisonCommand` suite (which invokes the real command callback, now wiring the real `createConfirmFixtureFallback`) keeps reaching its existing assertions. | TASK-BRIEF.md Red/Green-state evidence requirements |
+| `packages/extension/src/activation/runComparisonCommand.test.ts` | Updated one pre-existing test, `"discloses the fixture-only limitation to the user on every run"`, which asserted the now-superseded passive-toast behavior for the fixture-only case. Renamed and rewritten to assert the correct post-T-44 behavior (run still proceeds via the default-"proceed" gate; `showInformationMessage` is correctly never called for a fixture-fallback notice). See "Deviation from declared file list" below — this file is not in TASK-BRIEF.md's literal "Files owned" list. | Necessitated by Scope item 2 ("call the new injected confirmation dependency instead of ... the passive `showInformationMessage`") |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** The results webview now shows (1) a collapsed-by-default
-  `<details><summary>What do these mean?</summary>...</details>` legend
-  block right after the stat band, listing all six `Severity` values with
-  one plain-language sentence each (worst-first ordering: Failure, Error,
-  Warning, Pass, Informational, Skipped), each line prefixed by the same
-  colored severity tag used elsewhere in the document (via the existing
-  `severityTagClass` function, reused rather than duplicated); and (2) a
-  1-2 sentence plain-language caption at the top of each of the Schema,
-  Profile, Volume, and Row-Level tab panels (not the SQL Preview tab,
-  which isn't a findings tab), explaining what that tab shows and what a
-  non-engineer reader should do about a finding there.
-- **Interfaces consumed:** `ComparisonResult` and `Severity` from
-  `@paritylens/shared` (`packages/shared/src/result.ts`), read-only — no
-  changes to either. All new legend/caption text is a fixed string
-  literal; no `ComparisonResult` field is interpolated into any of it, so
-  none of the new copy is wrapped in `escapeHtml` (confirmed by grepping
-  the diff — see Verification evidence below).
-- **Interfaces produced:** None new. `renderResultsHtml(result:
-  ComparisonResult): string`'s exported signature, arity, and purity
-  contract are unchanged; `showResultsWebview` still passes `{
-  enableScripts: false }`.
+- **Behavior delivered:** Every run where `buildRunNotice(sourceProfile, targetProfile)`
+  would return `MIXED_CONNECTION_NOTICE` or `FIXTURE_ONLY_NOTICE` now blocks
+  on a `vscode.window.showWarningMessage` "Continue"/"Cancel" dialog before
+  `runComparison` is ever called. Declining aborts the run cleanly (matching
+  the pre-existing `confirmRun`/`proceed` cancellation pattern — no error
+  shown, `planQueries`/`runComparison` never invoked). This gate composes
+  independently with T-38's `confirmRun` SQL-preview gate — both fire in
+  sequence (fixture-fallback gate first, matching the order `buildRunNotice`'s
+  call site already precedes `planQueries`/`confirmRun`'s call site in the
+  function body) and declining either one aborts the run.
+- **Interfaces consumed:** `buildRunNotice`, `sourceProfile`/`targetProfile`
+  resolution via `findProfileByName` (both read-only, unmodified).
+- **Interfaces produced:** `RunComparisonCommandDeps.confirmFixtureFallback?:
+  (notice: string) => Promise<boolean>` — a new, optional, injected
+  dependency, distinct from T-38's `confirmRun`. Defaults to "proceed" (`true`)
+  when absent, matching `confirmRun`'s own established default-when-absent
+  convention.
+
+## Key finding verified against live code (per brief's explicit request)
+
+TASK-BRIEF.md asked the implementer to verify two premises before assuming
+them:
+
+1. **Is `buildRunNotice` called unconditionally, or only under some
+   condition?** Confirmed: `runComparisonCommand`'s body called
+   `deps.showInformationMessage(buildRunNotice(sourceProfile, targetProfile))`
+   unconditionally on every run (pre-change line 429) — there was no
+   surrounding `if`. So this task's trigger is "did `buildRunNotice` *return*
+   a fixture-fallback notice," not "was it called," exactly as the brief
+   anticipated as the fallback interpretation.
+2. **Does `buildRunNotice` ever represent an all-real-profile case?**
+   Confirmed: no. Its body is a straight binary —
+   `sourceProfile !== undefined || targetProfile !== undefined ?
+   MIXED_CONNECTION_NOTICE : FIXTURE_ONLY_NOTICE` — with no third branch.
+   Both of its two possible return values are fixture-fallback cases. There
+   is no code path today where an all-real-profile run reaches this call
+   site and gets a distinguishable "no fallback" notice from it. The
+   `isFixtureFallback` check at the call site is written explicitly
+   (`runNotice === MIXED_CONNECTION_NOTICE || runNotice ===
+   FIXTURE_ONLY_NOTICE`) rather than assumed to always be true, so a future
+   `buildRunNotice` extension with a genuine all-real branch is handled
+   correctly without further changes to this task's logic — but as of this
+   implementation, that branch is unreachable in practice. Per Scope item 3's
+   own allowance ("if today's code has no such case representable, the test
+   should instead confirm the fixture-only/mixed cases correctly trigger the
+   blocking gate ... per the brief's own 'your call' allowance"), the Green-state
+   evidence for item 3 is the "both the fixture-only and mixed cases
+   correctly trigger the blocking gate" test in `activate.test.ts`, which
+   documents this finding directly in its own name and header comment rather
+   than asserting an unreachable negative case.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | PASS — 650 tests passed, 27 skipped (677 total), 36 test files passed / 2 skipped | Terminal output, captured before any edit |
-| Red state | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts -t "T-43"` (run with the new T-43 assertions added to the test file, before any change to `resultsWebview.ts`) | FAIL as predicted — 6 of 9 new T-43 tests failed (legend text `"What do these mean?"` absent; all four `tab-caption` presence/ordering assertions returned `-1`/index-not-found). The 3 that passed (purity, coverage-list construction, `enableScripts` guard) passed because they don't assert on new markup and were already true of the unmodified file — expected. | Terminal output, captured before editing `resultsWebview.ts` |
-| Focused green state | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts` | PASS — all 30 tests passed (21 pre-existing + 9 new T-43 tests) | Terminal output, captured after the implementation edit |
-| Full verification | `npm run verify` (typecheck -> lint -> test, in that order) | PASS — typecheck clean (`tsc -b --force`), lint clean (`eslint .`), tests: **659 passed, 27 skipped (686 total)**, 36 test files passed / 2 skipped. No regression versus the 650/650 (650 passed / 27 skipped) baseline; the delta is exactly the 9 new T-43 tests. | Terminal output, captured after the implementation edit |
-| Static-copy escaping check | `git diff -- packages/extension/src/webview/resultsWebview.ts \| grep -n "^+" \| grep -i escapeHtml` | 3 matches, all inside doc-comment prose (notes on *why* `escapeHtml` was **not** used), zero occurrences of an actual `escapeHtml(...)` call wrapping new static copy | Terminal output |
-| Owned-files-only check | `git diff --stat` | Only `packages/extension/src/webview/resultsWebview.ts` (133 insertions) and `packages/extension/src/webview/resultsWebview.test.ts` (97 insertions) changed — matches the brief's Files owned list exactly | Terminal output |
+| Baseline (pre-change) | `npm run verify` | PASS — exit 0. 36 test files passed / 2 skipped (38); 659 tests passed / 27 skipped (686) | captured in this session's transcript before any edit |
+| Red state | `npx vitest run packages/extension/src/activation/activate.test.ts -t "T-44"` | FAIL as predicted — 7 of 8 new tests failed with `expected "spy" to be called 1 times, but got 0 times` (`confirmFixtureFallback` never invoked, since the dependency did not exist yet); 1 passed trivially (the backward-compatible-default test, which doesn't assert on the new spy) | captured in this session's transcript, immediately after adding the test suite and before touching `activate.ts` |
+| Focused green state | `npx vitest run packages/extension/src/activation/` | PASS — exit 0. 3 files, 52 tests passed (13 `hasNoContent.test.ts` + 8 `runComparisonCommand.test.ts` + 31 `activate.test.ts`, including the 8 new T-44 tests) | captured in this session's transcript, after implementing `activate.ts` and fixing the two pre-existing-test conflicts (one self-authored assertion error in the new suite, one genuine pre-existing-test update in `runComparisonCommand.test.ts`) |
+| Full verification | `npm run verify` | PASS — exit 0. `typecheck` (tsc -b --force) clean, `lint` (eslint .) clean, `test` (vitest run): 36 test files passed / 2 skipped (38); **667 tests passed / 27 skipped (694)** | captured in this session's transcript |
+
+**Before/after test count:** 659 → 667 passed (net +8: 8 new T-44 tests in
+`activate.test.ts`; the one test rewritten in `runComparisonCommand.test.ts`
+is a 1-for-1 replacement, not a net addition — same test count in that file,
+8 before and 8 after).
 
 ## Assumptions and risks
 
-- **Assumptions:**
-  - The legend's placement (a `<details>` disclosure between the stat band
-    and the tab strip, always visible regardless of active tab) was the
-    implementer's call per the brief's explicit "Implementer's call on
-    placement" language in Scope item 1. A persistently-open block was
-    considered and rejected in favor of collapsed-by-default, since the
-    legend is reference material a user consults occasionally rather than
-    primary content, and an always-open block would push the tab strip
-    further down on every load.
-  - Caption copy is deliberately generic/durable prose describing what
-    each check family *conceptually* does, not phrased against the
-    specific `SAMPLE_RESULT` fixture's contents — this matches the
-    brief's own "Example shape only (write accurate final copy per tab)"
-    framing and keeps the captions valid regardless of what a given run's
-    findings actually contain.
-  - `Error`'s legend wording ("The check itself could not run correctly...
-    not a data mismatch") is my own inference from the shared type's
-    doc-comment reference to "DESIGN-SPEC.md's severity model" and
-    general domain reasoning about what distinguishes `Error` from
-    `Failure` in a comparison-tool severity model; `result.ts` does not
-    itself define the semantic distinction beyond naming the six values.
-    This is a judgment call, flagged here for reviewer scrutiny per the
-    brief's explicit ask that the reviewer judge whether each line is
-    genuinely plain-language and accurate.
-- **Risks or limitations:**
-  - No fixture in the test suite currently produces a `Severity` value of
-    `Pass`, `Error`, or `Skipped` inside a rendered difference table (only
-    `Failure`/`Warning` appear in `SAMPLE_RESULT`/`SAMPLE_RESULT_WITH_PHASE2`),
-    so the coverage test only proves the legend text contains all six
-    values as glossary entries — it does not (and per this task's
-    static-copy scope, should not) prove any *table row* renders those
-    three values correctly, since that was already covered (or not) by
-    pre-existing `severityTagClass` behavior this task did not touch.
-  - The legend/caption text volume was not reviewed against a strict
-    reading-level rubric (e.g. Flesch-Kincaid) — I judged plain-language
-    quality by eye against the brief's own worked examples. The brief
-    itself asks the reviewer to independently re-judge this.
+- **Assumption (documented inline in `activate.ts`):** Because `buildRunNotice`
+  has no all-real-profile branch today, the `isFixtureFallback` check at the
+  call site is currently always `true` in practice — every run reaches the
+  blocking gate. This is not a bug in this implementation; it is a faithful
+  reflection of `buildRunNotice`'s own current logic (which this task is
+  explicitly prohibited from modifying). If a future task extends
+  `buildRunNotice` with a genuine all-real branch, this task's `===` check
+  already handles that correctly without further changes here.
+- **Deviation from declared file list — flagged explicitly, not folded in
+  silently:** TASK-BRIEF.md's "Files owned" list names `activate.ts` and
+  "`activate.test.ts` / the relevant `runComparisonCommand.test.ts`
+  (whichever file actually holds `runComparisonCommand`'s own tests — check
+  both, extend the correct one)" — phrasing that authorizes touching
+  whichever of the two test files actually holds the relevant assertions,
+  not necessarily excluding `runComparisonCommand.test.ts`. Implementing
+  Scope item 2 exactly as written ("call the new injected confirmation
+  dependency instead of ... the passive `showInformationMessage`") made the
+  passive toast never fire for a fixture-fallback notice, which broke one
+  pre-existing test in `runComparisonCommand.test.ts`:
+  `"discloses the fixture-only limitation to the user on every run"`
+  (asserted `showInformationMessage` was called with a string containing
+  "fixture" for every run, including the fixture-only case this task
+  changes). This test was renamed and rewritten in place (not deleted) to
+  assert the correct post-T-44 behavior — the run still proceeds
+  identically, only the notice-delivery mechanism changed for this deps
+  shape. This is the one edit in this task outside the literal two files
+  named for `activate.ts` itself; flagging it here per the "call it out
+  explicitly and separately" instruction rather than silently expanding
+  scope. A reviewer may reasonably judge this belonged in a revised brief
+  instead — the change is mechanically forced by Scope item 2 as written,
+  and is minimal (rename + reassert), but it is still outside the literal
+  file list.
+- **Judgment call — "instead of" vs. "in addition to":** Scope item 2 gave
+  the implementer discretion ("instead of (or in addition to — implementer's
+  call, but avoid double-prompting)"). Chose "instead of" — the passive
+  toast never fires when the blocking gate does — since showing both a toast
+  and a blocking warning with overlapping text for the same disclosure is
+  the double-prompting the brief explicitly warns against.
+- **Risks or limitations:** None identified beyond the documented assumption
+  above. The gate does not weaken or remove the fixture-fallback path itself
+  (declining just cancels the run, matching T-38's own decline behavior) —
+  Prohibited Changes item 4 is satisfied.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** committed together with this report in a single
-  commit on this branch (see branch history below for the exact hash).
-- **Branch or workspace:** `task/T-43-results-webview-legend`
-  (pre-existing branch, not created by this task, per the dispatch
-  instruction). Branched from `main` at commit
-  `5cdf16a3c5457b6631f73a0f7f9db59bde484613`.
+- **Patch or commit:** to be recorded after `git commit` (see below).
+- **Branch or workspace:** `task/T-44-fixture-fallback-confirmation`
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent, per this task's Handoff
-section: re-verify (1) the added copy is genuinely plain-language, not
-merely a restatement of the engineering term (read each line, including
-the `Error` wording flagged above as a judgment call); (2) no new
-escaping gap was introduced (zero new `escapeHtml` calls, confirmed
-above, but worth an independent grep); (3) the legend covers every real
-`Severity` value in `@paritylens/shared`, not a stale/assumed subset; (4)
-`renderResultsHtml`'s purity and `enableScripts:false` guarantees are
-genuinely unchanged (diff against `main`, re-run the purity/guard tests
-independently); (5) a fresh full `npm run verify` is green with the
-reported 659/27 (686 total) test count. This report does not constitute
-review or approval — only the implementer's own evidence.
+Independent review by a reviewer who did not author this change, per
+AGENTS.md's "every implementation task receives an independent review by a
+reviewer who did not author the task's change." The reviewer should
+specifically re-verify the five points TASK-BRIEF.md's Handoff section
+names, including the flagged `runComparisonCommand.test.ts` deviation above —
+whether that edit was the correct minimal necessary change or should instead
+have prompted a revised brief before proceeding.

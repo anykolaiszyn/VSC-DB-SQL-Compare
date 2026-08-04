@@ -125,12 +125,26 @@ describe("runComparisonCommand", () => {
     expect(deps.showErrorMessage).not.toHaveBeenCalled();
   });
 
-  it("discloses the fixture-only limitation to the user on every run", async () => {
+  // T-44: the fixture-fallback disclosure notice is now delivered through
+  // the blocking confirmFixtureFallback gate (activate.test.ts's own "T-44
+  // fixture-fallback confirmation" suite covers that gate directly), not
+  // through this passive showInformationMessage toast -- Scope item 2
+  // explicitly requires the new gate is called "instead of ... the passive
+  // showInformationMessage" for a fixture-fallback notice, to avoid
+  // double-prompting. This call (createDeps() supplies no
+  // confirmFixtureFallback, so the gate defaults to "proceed") still
+  // reaches runComparison/showResultsWebview exactly as before this task,
+  // it just no longer does so via a showInformationMessage call for this
+  // deps shape. Updated in place, rather than deleted, since disclosure
+  // still happens -- through confirmFixtureFallback's notice argument when
+  // that dependency is supplied, proven by activate.test.ts's own suite.
+  it("proceeds to runComparison/showResultsWebview without a passive showInformationMessage toast for the fixture-only case (disclosure now flows through confirmFixtureFallback, not this toast -- see activate.test.ts's T-44 suite)", async () => {
     const deps = createDeps();
 
-    await runComparisonCommand(VALID_YAML, deps as never);
+    const result = await runComparisonCommand(VALID_YAML, deps as never);
 
-    expect(deps.showInformationMessage).toHaveBeenCalledWith(expect.stringContaining("fixture"));
+    expect(result).toBeDefined();
+    expect(deps.showInformationMessage).not.toHaveBeenCalled();
   });
 
   it("surfaces InvalidDefinitionError as a clean showErrorMessage call, not an unhandled rejection", async () => {

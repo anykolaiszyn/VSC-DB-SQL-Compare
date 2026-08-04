@@ -73,6 +73,20 @@ vi.mock("vscode", () => {
   };
   const showOpenDialog = vi.fn(async () => undefined);
 
+  // T-44: the "registerRunComparisonCommand (T-39 uri argument)" suite below
+  // invokes the *real* registered command callback end-to-end, which now
+  // also wires the real `createConfirmFixtureFallback` (T-44) as
+  // `confirmFixtureFallback` -- that function calls
+  // `vscode.window.showWarningMessage`, which this mock previously had no
+  // surface for at all. Resolves "Continue" so those pre-existing tests
+  // (which assert on showOpenDialog/showErrorMessage/createWebviewPanel call
+  // counts, not on this gate's outcome) keep reaching the same call sites
+  // they did before this task -- every YAML those tests use resolves to
+  // fixture data (no connectionProfileStore is wired through that suite), so
+  // this gate would otherwise block every one of those runs before
+  // `createWebviewPanel` is ever reached.
+  const showWarningMessage = vi.fn(async () => "Continue");
+
   // T-30: the new `runComparisonCommand` (T-30 real-connector-wiring) test
   // suite below in this same file invokes `runComparisonCommand` directly
   // (mirroring `runComparisonCommand.test.ts`'s own vscode mock), so
@@ -174,7 +188,8 @@ vi.mock("vscode", () => {
       showErrorMessage,
       createStatusBarItem,
       registerCustomEditorProvider,
-      showOpenDialog
+      showOpenDialog,
+      showWarningMessage
     },
     commands: { registerCommand },
     workspace: { workspaceFolders: undefined, findFiles, applyEdit },
@@ -667,6 +682,217 @@ checks:
     expect(passedQueries).toHaveLength(2);
     expect(passedQueries[0]).toContain("SELECT COUNT(*)");
     expect(passedQueries[1]).toContain("SELECT COUNT(*)");
+  });
+});
+/**
+ * T-44: replaces the passive `MIXED_CONNECTION_NOTICE`/`FIXTURE_ONLY_NOTICE`
+ * toast with a blocking confirmation whenever `buildRunNotice` (activate.ts,
+ * read-only reused here, not modified) would return either fixture-fallback
+ * variant -- i.e. whenever at least one side of the run is falling back to
+ * fixture data. Per TASK-BRIEF.md's own required verification: `buildRunNotice`
+ * is called unconditionally on every run (activate.ts's `runComparisonCommand`
+ * body, ~line 429, calls it before any branch on the notice's return value),
+ * and it has exactly two possible return values today -- there is no third
+ * "all real" case it can represent, since its own body
+ * (`sourceProfile !== undefined || targetProfile !== undefined ? MIXED... :
+ * FIXTURE_ONLY...`) is a straight binary. So this task's trigger is "does the
+ * notice returned equal one of the two fixture-fallback strings," which is
+ * unconditionally true today for every possible sourceProfile/targetProfile
+ * combination -- confirmed directly against the live function rather than
+ * assumed. Per Scope item 3's own allowance, since no all-real case exists
+ * yet to construct a negative test against, the suite below documents this
+ * finding explicitly (see the last test) instead of fabricating an
+ * unreachable code path.
+ *
+ * Reuses the T-30 suite's `ConnectionProfileStore`/`SecretStore` in-memory
+ * mock pattern (mirrored, not imported -- each describe block in this file
+ * builds its own local mocks) to produce a "mixed" case (one saved profile
+ * matches) and a "fixture-only" case (neither matches / no store supplied at
+ * all).
+ */
+describe("runComparisonCommand (T-44 fixture-fallback confirmation)", () => {
+  function createMockSecretStorage() {
+    const store = new Map<string, string>();
+    return {
+      store: async (key: string, value: string) => {
+        store.set(key, value);
+      },
+      get: async (key: string) => store.get(key),
+      delete: async (key: string) => {
+        store.delete(key);
+      },
+      onDidChange: () => undefined
+    };
+  }
+
+  function createMockMemento() {
+    const store = new Map<string, unknown>();
+    return {
+      get: <T>(key: string, defaultValue?: T) => (store.has(key) ? (store.get(key) as T) : (defaultValue as T)),
+      update: async (key: string, value: unknown) => {
+        store.set(key, value);
+      }
+    };
+  }
+
+  const SQLSERVER_PROFILE: ConnectionProfile = {
+    id: "profile-sqlserver",
+    name: "legacy-sql-prod",
+    platform: "sqlserver",
+    host: "db.example.internal",
+    port: 1433,
+    database: "CustomerDb",
+    user: "parity_reader",
+    trustServerCertificate: true
+  };
+
+  function createDeps(overrides: Record<string, unknown> = {}) {
+    return {
+      createWebviewPanel: vscode.window.createWebviewPanel as unknown as (
+        ...args: unknown[]
+      ) => { webview: { html: string } },
+      viewColumn: vscode.ViewColumn.Active as unknown as number,
+      showInformationMessage: vscode.window.showInformationMessage as unknown as (message: string) => unknown,
+      showErrorMessage: vscode.window.showErrorMessage as unknown as (message: string) => unknown,
+      ...overrides
+    };
+  }
+
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("blocks on confirmFixtureFallback and never calls runComparison when the user declines, for a fixture-only run (no connectionProfileStore supplied at all)", async () => {
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => false);
+    const deps = createDeps({ confirmFixtureFallback });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(confirmFixtureFallback.mock.calls[0]?.[0]).toContain("fixture");
+    expect(result).toBeUndefined();
+    expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("blocks on confirmFixtureFallback and never calls runComparison when the user declines, for a mixed run (one side matches a saved profile)", async () => {
+    const secretStore = new SecretStore(createMockSecretStorage() as never);
+    const profileStore = new ConnectionProfileStore(createMockMemento() as never, secretStore);
+    await profileStore.add(SQLSERVER_PROFILE, "s3cr3t-password");
+
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => false);
+    const deps = createDeps({
+      connectionProfileStore: profileStore,
+      secretStore,
+      confirmFixtureFallback
+    });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(result).toBeUndefined();
+    expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+    expect(deps.showErrorMessage).not.toHaveBeenCalled();
+  });
+
+  it("proceeds to call runComparison when the user confirms the fixture-fallback warning", async () => {
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => true);
+    const deps = createDeps({ confirmFixtureFallback });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+    expect(result?.comparison).toBe("customer-migration-parity");
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
+  });
+
+  it("when confirmFixtureFallback is not supplied, the run proceeds exactly as before this task (backward-compatible default)", async () => {
+    const deps = createDeps();
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(result).toBeDefined();
+    expect(result?.comparison).toBe("customer-migration-parity");
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
+    // Per Scope item 2 ("call the new injected confirmation dependency
+    // instead of ... the passive showInformationMessage"), the toast is
+    // replaced, not shown alongside the gate, for a fixture-fallback notice
+    // -- so with confirmFixtureFallback absent (defaulting to "proceed"),
+    // the run still proceeds exactly as before this task's *outcome*, but
+    // showInformationMessage is correctly never called for this notice
+    // (avoiding the double-prompt Scope item 2 explicitly warns against).
+    expect(deps.showInformationMessage).not.toHaveBeenCalled();
+  });
+
+  it("composes with T-38's confirmRun gate: both fire independently for the same fixture-fallback run, and declining confirmRun after accepting confirmFixtureFallback still aborts before runComparison", async () => {
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => false);
+    const deps = createDeps({ confirmFixtureFallback, confirmRun });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    expect(result).toBeUndefined();
+    expect(deps.createWebviewPanel).not.toHaveBeenCalled();
+  });
+
+  it("composes with T-38's confirmRun gate: declining confirmFixtureFallback aborts before confirmRun is ever called", async () => {
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => false);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
+    const deps = createDeps({ confirmFixtureFallback, confirmRun });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(confirmRun).not.toHaveBeenCalled();
+    expect(result).toBeUndefined();
+  });
+
+  it("both gates accepting proceeds all the way to runComparison and the results webview", async () => {
+    const confirmFixtureFallback = vi.fn<(notice: string) => Promise<boolean>>(async () => true);
+    const confirmRun = vi.fn<(result: PlanQueriesResult) => Promise<boolean>>(async () => true);
+    const deps = createDeps({ confirmFixtureFallback, confirmRun });
+
+    const result = await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, deps as never);
+
+    expect(confirmFixtureFallback).toHaveBeenCalledTimes(1);
+    expect(confirmRun).toHaveBeenCalledTimes(1);
+    expect(result).toBeDefined();
+    expect(deps.createWebviewPanel).toHaveBeenCalledTimes(1);
+  });
+
+  // Documents the Scope item 3 finding directly (see this describe block's
+  // own header comment): buildRunNotice has no third "all real profile"
+  // return value today, so there is no code path in the live implementation
+  // where confirmFixtureFallback would be skipped for a *successfully
+  // resolved* run other than "no fallback dependency was supplied at all"
+  // (covered by the backward-compatible-default test above). This test
+  // instead confirms both fixture-fallback variants (fixture-only and mixed)
+  // positively trigger the gate, which is the actual guarantee available to
+  // verify against today's code -- the all-real-profile negative case has no
+  // real counterpart to assert against yet (both sides resolving to saved
+  // profiles is exactly the case runComparisonCommand.test.ts and this
+  // file's T-30 suite do not exercise, since buildRunNotice's own binary body
+  // never special-cases it).
+  it("both the fixture-only and mixed cases correctly trigger the blocking gate (documents: no all-real-profile case exists yet in buildRunNotice to test the negative against)", async () => {
+    const secretStore = new SecretStore(createMockSecretStorage() as never);
+    const profileStore = new ConnectionProfileStore(createMockMemento() as never, secretStore);
+    await profileStore.add(SQLSERVER_PROFILE, "s3cr3t-password");
+
+    const fixtureOnlyConfirm = vi.fn<(notice: string) => Promise<boolean>>(async () => true);
+    await runComparisonCommand(VALID_YAML_FOR_CONFIRMATION, createDeps({ confirmFixtureFallback: fixtureOnlyConfirm }) as never);
+    expect(fixtureOnlyConfirm).toHaveBeenCalledTimes(1);
+    expect(fixtureOnlyConfirm.mock.calls[0]?.[0]).toContain("fixture");
+
+    const mixedConfirm = vi.fn<(notice: string) => Promise<boolean>>(async () => true);
+    await runComparisonCommand(
+      VALID_YAML_FOR_CONFIRMATION,
+      createDeps({ connectionProfileStore: profileStore, secretStore, confirmFixtureFallback: mixedConfirm }) as never
+    );
+    expect(mixedConfirm).toHaveBeenCalledTimes(1);
+    expect(mixedConfirm.mock.calls[0]?.[0]).toContain("saved connection profile");
   });
 });
 
