@@ -360,9 +360,18 @@ describe("renderResultsHtml", () => {
     it("does not add a caption to the SQL Preview tab panel (not a findings tab)", () => {
       const html = renderResultsHtml(SAMPLE_RESULT);
 
+      // The SQL Preview panel is the last `tab-panel` in markup order
+      // (verified by the assertion below), so slicing from its opening tag
+      // to the end of the document is a sound way to isolate its content --
+      // unlike searching for a "next panel" marker, this doesn't silently
+      // pass if a future edit adds a caption without changing panel order.
       const panelIndex = html.indexOf('class="tab-panel tab-panel--sql"');
-      const nextPanelStart = html.indexOf('<div class="tab-panels"', panelIndex + 1);
-      const sqlPanelSlice = html.slice(panelIndex, nextPanelStart === -1 ? undefined : nextPanelStart);
+      expect(panelIndex).toBeGreaterThan(-1);
+      const otherPanelClasses = ["tab-panel--schema", "tab-panel--profile", "tab-panel--volume", "tab-panel--rows"];
+      for (const otherClass of otherPanelClasses) {
+        expect(html.indexOf(otherClass)).toBeLessThan(panelIndex);
+      }
+      const sqlPanelSlice = html.slice(panelIndex);
       expect(sqlPanelSlice).not.toContain("tab-caption");
     });
 

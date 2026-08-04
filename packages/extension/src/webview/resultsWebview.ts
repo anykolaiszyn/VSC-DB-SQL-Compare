@@ -157,7 +157,7 @@ const SEVERITY_LEGEND: Array<{ severity: Severity; explanation: string }> = [
   },
   {
     severity: "Error",
-    explanation: "The check itself could not run correctly (e.g. a connection or query problem), not a data mismatch. Investigate the run itself before trusting any result on this tab."
+    explanation: "This specific item couldn't be evaluated (for example, a value that couldn't be compared between source and target) — it's neither a confirmed match nor a confirmed mismatch. Look at the item's own message for what went wrong before drawing a conclusion about it."
   },
   {
     severity: "Warning",
