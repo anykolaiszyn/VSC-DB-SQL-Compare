@@ -1,145 +1,135 @@
-# TASK-BRIEF.md — T-52: LICENSE packaging fix
+# TASK-BRIEF.md — T-40: Onboarding welcome view
 
 ## Objective
 
-Resolve finding **T-26-02** (OPEN, accepted non-blocking, recorded in
-`PROGRESS-LEDGER.md`'s Open findings table): `vsce package` prints a
-"LICENSE, LICENSE.md, or LICENSE.txt not found" warning even though
-`LICENSE` exists at the repo root (added by T-24) — `vsce` only checks
-for a license file alongside the manifest it packages
-(`packages/extension/package.json`), never at the monorepo root, and no
-copy/symlink/equivalent exists inside `packages/extension/`.
-
-The finding's own recorded text (verbatim, from `PROGRESS-LEDGER.md`):
-
-> `vsce package` prints a "LICENSE, LICENSE.md, or LICENSE.txt not
-> found" warning even though `LICENSE` exists at the repo root (from
-> T-24) — `vsce` only checks alongside the manifest it packages
-> (`packages/extension/`). Confirmed accurate by the reviewer; correctly
-> disclosed by T-26's implementer as pre-existing and out of scope ...
-> candidate fix: copy/symlink `LICENSE` into `packages/extension/`, or
-> an equivalent `vsce` flag if one exists.
+Implement the `viewsWelcome` contribution named in `IMPLEMENTATION-PLAN.md`'s
+Phase 6 table for T-40: when the `paritylens.dataParityView` tree has no
+`.paritylens` files in the workspace and no saved connection profiles, show
+short guidance text with command-linked buttons for
+`paritylens.addConnection` and `paritylens.newComparison`. Addresses
+self-service gap-analysis Finding 1 (no onboarding surface) — today a brand
+new user opens the Data Parity view and sees three collapsed, permanently
+empty section nodes (Connections / Comparisons / Recent Runs) with zero
+guidance on what to do next.
 
 ## Scope
 
-1. Confirm the warning is still reproducible today: run the extension's
-   packaging script (see `packages/extension/package.json`'s
-   `scripts.package`, e.g. `npm run package --workspace=packages/extension`
-   or equivalent — read the actual script definition rather than
-   assuming) and capture the exact warning text/exit behavior before
-   making any change (red-state evidence).
-2. Fix by making `LICENSE`'s content available to `vsce` at
-   `packages/extension/LICENSE` (the location `vsce` actually checks).
-   A plain copy is the safer, simpler choice for this monorepo (no
-   platform-dependent symlink semantics to worry about across
-   Windows/macOS/Linux contributors, and no OS-level symlink-creation
-   privilege concerns on Windows specifically) — **prefer a copy over a
-   symlink** unless you find during Scope item 1's investigation that a
-   `vsce` CLI flag exists that points it at an out-of-tree license file
-   without needing either a copy or a symlink (check `vsce package --help`
-   / the installed `@vscode/vsce` version's documented flags first; if no
-   such flag exists, proceed with the copy).
-3. The copied `packages/extension/LICENSE` must be kept in sync with the
-   canonical root `LICENSE` going forward without relying on a human to
-   remember to update both — the two most defensible options are: (a) a
-   small `prepackage`-style npm script step in `packages/extension/package.json`
-   that copies the root file fresh immediately before `vsce package` runs
-   every time (so the packaged copy can never silently drift stale even
-   if the root file is edited later), or (b) committing the copy directly
-   to git alongside a comment/README note that it must be kept in sync
-   manually. **Prefer option (a)** (a copy step wired into the existing
-   packaging script, e.g. as an added step before the `vsce package`
-   invocation) since it removes the human-memory dependency entirely;
-   only fall back to (b) if wiring an extra script step turns out to
-   conflict with how `scripts.package` is currently structured (read it
-   first before deciding).
-4. Whichever option is chosen, `packages/extension/LICENSE`'s content
-   must be byte-identical to the root `LICENSE` immediately after
-   packaging — verify this directly (e.g. `diff`/hash comparison) as
-   part of your own testing, not just visually.
-5. Re-run the packaging script and confirm the "LICENSE ... not found"
-   warning is gone (green-state evidence). Also spot-check that the
-   packaged `.vsix`'s content listing now includes a `LICENSE` file
-   (unzip/list the produced `.vsix` — `vsce ls` or an actual unzip, your
-   choice, whichever the existing `.gitignore`d local workflow already
-   supports) — do not just trust the absence of the warning text alone.
+1. Confirm the red state: read `packages/extension/package.json`'s current
+   `contributes` block and confirm no `viewsWelcome` key exists today (it
+   does not, as of this brief).
+2. Add a `contributes.viewsWelcome` entry to
+   `packages/extension/package.json` targeting view id
+   `paritylens.dataParityView`. Content should be short guidance text plus
+   two command links, using VS Code's standard Markdown-command-link syntax
+   inside `contents`, e.g.:
+   ```
+   [Add a Connection](command:paritylens.addConnection)
+   [Create a Comparison](command:paritylens.newComparison)
+   ```
+   with a one-line explanatory sentence above the links (VS Code renders
+   `contents` as Markdown; each `[label](command:id)` on its own line
+   renders as a button).
+3. Decide the correct `when` clause. VS Code's `viewsWelcome` shows its
+   content automatically whenever the target view's `TreeDataProvider`
+   returns zero root-level children for a given collapsed state — **but
+   this view's `getChildren()` with no `element` always returns the three
+   fixed section nodes** (`ParityTreeDataProvider.getChildren`, in
+   `packages/extension/src/views/parityTreeDataProvider.ts`), so the view is
+   never "empty" at the top level even when Comparisons/Recent Runs have no
+   children underneath. Read `parityTreeDataProvider.ts` in full (already in
+   context if you have prior session history; otherwise read it fresh) to
+   confirm this before proceeding — `viewsWelcome`'s automatic empty-tree
+   behavior will **not** fire for this view's current structure.
+   Since VS Code's `viewsWelcome` has no way to key off "the two dynamic
+   sections are both empty" without a context-key, you must:
+   a. Introduce a VS Code context key (e.g.
+      `paritylens.hasNoContent`) set via
+      `vscode.commands.executeCommand("setContext", "paritylens.hasNoContent", true|false)`
+      from the extension activation/wiring code, computed by checking
+      whether `findComparisonFiles()` returns zero URIs AND the connection
+      profile store (T-29) has zero saved profiles.
+   b. Use that context key as the `viewsWelcome` entry's `when` clause:
+      `"view == paritylens.dataParityView && paritylens.hasNoContent"`.
+   c. Wire the context key to be (re)computed at activation and whenever the
+      tree is refreshed (`ParityTreeDataProvider.refresh()` is already
+      called after add/edit/delete-connection and after scaffold/run
+      commands elsewhere in the codebase — read `activate.ts` to find every
+      existing `refresh()` call site and add the context-key recomputation
+      alongside each one, not just at startup).
+4. Both linked commands (`paritylens.addConnection`, `paritylens.newComparison`)
+   already exist and are already registered (T-29, T-32) — do not
+   register new commands, just reference their existing IDs.
 
 ## Files owned
 
-- `packages/extension/package.json` (`scripts.package`, or an added
-  adjacent npm script it invokes, only — no other field)
-- `packages/extension/LICENSE` (new file — a copy of the root
-  `LICENSE`'s content; if option 3(a) is chosen, this file need not be
-  committed to git at all if it's purely a build-time-generated
-  artifact — your call, document which you chose and why)
-- `packages/extension/.gitignore` or the root `.gitignore` (only if
-  option 3(a) generates `packages/extension/LICENSE` at package time and
-  you decide it should not be committed — a one-line addition at most)
-- `packages/extension/.vscodeignore` (only if the new file needs an
-  explicit inclusion/exclusion rule — read its current content first;
-  it currently excludes `src/**` and various dev-only files, so a root-
-  level `LICENSE` copy should NOT be excluded, but confirm no existing
-  glob accidentally catches it before assuming no edit is needed)
+- `packages/extension/package.json` (`contributes.viewsWelcome` and, if
+  needed, a `when`-clause-relevant addition to `contributes.commands` is
+  NOT expected — only `viewsWelcome`)
+- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/
+  T-30/T-32/T-33 — only the context-key `setContext` calls, added alongside
+  existing `refresh()` call sites; no unrelated changes)
+- New test file(s) under `packages/extension/src/activation/` or
+  `packages/extension/src/views/` covering the context-key computation
+  logic, your call on exact filename/location — keep it colocated with
+  whichever module actually owns the computation function
 
 ## Interfaces consumed
 
-None new. `@vscode/vsce` (already a devDependency, installed by T-25) —
-read-only usage, no version change.
+- `findComparisonFiles` (existing injected dependency, read-only)
+- Connection profile store's list/count accessor (T-29, read-only — read
+  `packages/extension/src/connections/**` to find the exact existing
+  function name; do not invent a new one)
+- `paritylens.addConnection` / `paritylens.newComparison` command IDs
+  (T-29/T-32, read-only reference)
 
 ## Prohibited changes
 
-- Do not touch the root `LICENSE` file's content — it is the canonical
-  source; this task only makes its content reachable to `vsce`.
-- Do not add a new devDependency or change any existing dependency
-  version (this is a packaging-config fix, not a tooling upgrade).
-- Do not touch `packages/extension/esbuild.config.mjs`, `native/**`
-  staging logic, or any other packaging concern unrelated to the license
-  file specifically (T-27's DuckDB native-binary staging work is
-  out of scope and must not be touched).
-- Do not modify `package.json`'s `license` field in any workspace
-  package (T-24 already set these; this task is about the packaged
-  `.vsix`'s file contents, not manifest metadata).
+- Do not modify `ParityTreeDataProvider.getChildren`'s existing return
+  shape/behavior (its "three fixed section nodes at top level" contract is
+  relied on by existing T-10/T-33 tests — this task adds a `viewsWelcome`
+  overlay, it does not change the tree provider's own children).
+- Do not touch `packages/extension/src/connections/**`'s CRUD logic itself
+  (T-29) beyond reading its existing list/count accessor.
+- Do not add a new npm dependency.
 
 ## Red-state evidence required
 
-The exact warning text/output from running the packaging script against
-today's unmodified `packages/extension/` (no `LICENSE` file present
-there yet) — captured directly, not paraphrased from the original T-26
-finding's own (now slightly dated) recollection.
+Confirmation (via reading `package.json`) that no `viewsWelcome` contribution
+exists today, plus a failing/absent test demonstrating the context-key
+computation function doesn't exist yet.
 
 ## Green-state evidence required
 
 1. The scoped diff across the owned files.
-2. The same packaging script re-run, showing the "LICENSE ... not found"
-   warning no longer appears.
-3. Direct confirmation (diff/hash) that `packages/extension/LICENSE`'s
-   content is byte-identical to the root `LICENSE` at the moment of
-   packaging.
-4. Confirmation the produced `.vsix`'s content listing includes a
-   `LICENSE` file.
-5. A full fresh `npm run verify` passing with no regression versus the
-   current baseline (this task touches no test-relevant code, so the
-   test count itself should be unchanged — confirm this, since an
-   unchanged count is itself evidence nothing unrelated broke).
+2. A test proving the context-key computation function returns `true` when
+   both zero `.paritylens` files and zero saved profiles are present, and
+   `false` when either is non-zero.
+3. A `package.json`-shape test (or documented manual VS Code Extension
+   Development Host check, since `viewsWelcome` rendering itself is
+   declarative JSON with no unit-testable runtime behavior — disclose which
+   approach was used, consistent with how the brief for this exact
+   situation is described in `IMPLEMENTATION-PLAN.md`'s T-40 row) confirming
+   the `viewsWelcome` JSON key exists with the correct `view`/`contents`/
+   `when` fields and that both command IDs referenced in `contents` are real,
+   already-registered command IDs (no typo'd `command:` URI).
+4. A full fresh `npm run verify` passing with no regression versus the
+   current baseline; report the before/after test count.
 
 ## Handoff
 
 - Write `IMPLEMENTATION-REPORT.md` using
   `multi-agent-idea-to-app/templates/IMPLEMENTATION-REPORT.md`.
-- Commit on branch `task/T-52-license-packaging-fix`.
+- Commit on branch `task/T-40-onboarding-welcome-view`.
 - Recommend independent review as the next step.
-- Reviewer should specifically re-verify: (1) independently reproduce
-  the packaging script run and confirm the warning is genuinely gone,
-  not just trust the report's pasted output; (2) independently diff/hash
-  `packages/extension/LICENSE` against the root `LICENSE` to confirm
-  byte-identical content; (3) independently unzip/list the produced
-  `.vsix` and confirm a `LICENSE` file is actually present inside it —
-  the true test of this fix, since the warning disappearing and the file
-  actually being packaged are two different claims; (4) if option 3(a)
-  (copy-on-package) was chosen, confirm the copy step genuinely re-runs
-  every time `scripts.package` is invoked (not a stale one-time copy
-  that would silently drift if the root `LICENSE` is ever edited) —
-  e.g. by modifying the root `LICENSE`'s content temporarily, re-running
-  the packaging script, and confirming the packaged copy picked up the
-  change, then reverting; (5) a fresh full `npm run verify` is green
-  with an unchanged test count.
+- Reviewer should specifically re-verify: (1) the `when` clause genuinely
+  gates on emptiness — adversarially probe by constructing a case with one
+  `.paritylens` file and zero profiles (should NOT show welcome content) and
+  a case with zero files and one profile (should NOT show welcome content),
+  confirming the AND logic is correct, not accidentally OR; (2) both
+  `command:` URIs reference real, already-registered command IDs (grep
+  `package.json`'s `contributes.commands` list); (3) the context-key
+  recomputation genuinely fires after every relevant mutation (add/edit/
+  delete connection, scaffold a new comparison, run a comparison that
+  creates the first `.paritylens` file) — not just at activation, which
+  would leave a stale welcome view showing after a user's first action;
+  (4) a fresh full `npm run verify` is green with the reported test count.

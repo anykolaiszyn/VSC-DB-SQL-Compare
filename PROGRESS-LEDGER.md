@@ -44,7 +44,9 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE
+- **Exactly one task may be active:** T-40 (onboarding `viewsWelcome`
+  contribution) — owner confirmed 2026-08-03 to proceed into Phase 6
+  immediately following the backlog-cleanup sweep's close.
 - **Backlog cleanup sweep (owner-directed 2026-08-03):** owner asked to
   complete all open backlog items except T-18 (blocked, no trial account)
   before proceeding to Phase 6. Scope: all 27 `OPEN` rows in this
@@ -81,7 +83,7 @@
   growth, not scope creep). **The backlog-cleanup sweep is now fully
   closed.** Phase 6 (T-40–T-44) is unblocked and ready to start whenever
   the owner confirms.
-- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — backlog-cleanup sweep fully closed (final reconfirmation pass complete)
+- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — Phase 6 started, T-40 active
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
 ## Task register
