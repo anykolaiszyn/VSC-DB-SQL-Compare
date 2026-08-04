@@ -30,6 +30,13 @@
         }
       ]
     },
+    "viewsWelcome": [
+      {
+        "view": "paritylens.dataParityView",
+        "contents": "Get started by adding a connection or creating your first comparison.\n[Add a Connection](command:paritylens.addConnection)\n[Create a Comparison](command:paritylens.newComparison)",
+        "when": "view == paritylens.dataParityView && paritylens.hasNoContent"
+      }
+    ],
     "commands": [
       {
         "command": "paritylens.runComparison",
