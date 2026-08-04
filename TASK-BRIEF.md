@@ -1,164 +1,154 @@
-# TASK-BRIEF.md — T-42: Connection-test-on-add feedback
+# TASK-BRIEF.md — T-43: Results webview legend/glossary
 
 ## Objective
 
-Extend `paritylens.addConnection`'s flow (`addConnectionCommand` in
-`packages/extension/src/connections/connectionCommands.ts`) to call the
-resolved connector's `testConnection()` (`DataPlatformConnector`, already
-defined in `@paritylens/shared`, already usable via `resolveConnector` in
-`packages/extension/src/connections/resolveConnector.ts`) after collecting
-profile fields and before persisting, showing a blocking "Testing
-connection..." progress notification, then either persisting on success or
-showing the failure reason with an explicit choice: re-enter fields (do not
-persist a profile confirmed broken) or save anyway (some environments are
-legitimately unreachable at add-time — VPN-gated hosts, etc. — so this must
-not become a hard block). Addresses self-service gap-analysis Finding 3 (no
-connection-test feedback at add-time) — today `addConnectionCommand`
-persists unconditionally and reports success regardless of whether the
-connection actually works, so a typo'd host/port isn't discovered until the
-user tries to run a comparison much later.
+Add a static legend/glossary to the results webview (`resultsWebview.ts`)
+explaining `Severity` values (`Failure`/`Warning`/`Informational`, plus
+`Pass`/`Error`/`Skipped` — the full `Severity` union from
+`@paritylens/shared`) in plain-language terms, and a short "what this tab
+shows and what to do about a finding" caption per tab (Schema/Profile/
+Volume/Row-Level). Addresses self-service gap-analysis Finding 7 (results
+not actionable for a non-engineer) — explicitly the one item Phase 5's own
+Non-goals section named as out of its scope, so this task exists
+independently of T-36–T-39.
 
 ## Current state (read before starting)
 
-`addConnectionCommand` (`connectionCommands.ts` lines 119-138) currently:
-1. Calls `promptForProfileFields(deps)` to collect name/platform/host/port/
-   database/user/password.
-2. Builds a `ConnectionProfile` with a fresh `id`.
-3. Calls `store.add(profile, prompted.password)` unconditionally.
-4. Shows a success `showInformationMessage`.
+Read `packages/extension/src/webview/resultsWebview.ts` in full before
+starting — it is large and has an established purity contract that must not
+be broken (see its own header comment). Key facts already confirmed:
 
-`resolveConnector(profile: ConnectionProfile, password: string): SqlServerConnector | PostgresConnector`
-(`resolveConnector.ts`) already exists and constructs a real, ready-to-use
-connector instance from a profile + password — this task's `testConnection()`
-call is `resolveConnector(profile, prompted.password).testConnection()`
-(the `DataPlatformConnector` interface's `testConnection(): Promise<ConnectionTestResult>`
-or equivalent — read `@paritylens/shared`'s `connector.ts` for the exact
-return shape before writing any success/failure branching logic).
-
-`ConnectionCommandDeps` (lines 15-28) is the existing injected-dependency
-interface `addConnectionCommand` receives; it currently has no
-progress-notification or confirmation-choice method.
+- `renderResultsHtml(result: ComparisonResult): string` (line ~633) is the
+  pure entry point. It builds a tab strip (`tab-schema`/`tab-profile`/
+  `tab-volume`/`tab-rows`/`tab-sql`, lines ~667-679) and 5 corresponding
+  `tab-panel` divs (lines ~681-698), using the CSS-only radio-button +
+  `:checked` sibling-selector tab-switching technique T-34 established.
+  `enableScripts` stays `false` — see `showResultsWebview` and the file's
+  own header comment. Do not introduce any JS.
+- `severityTagClass(severity: Severity)` (line ~80) maps `Severity` (from
+  `@paritylens/shared`) to a CSS class for the colored tag already shown
+  next to every finding row. The full `Severity` union (check
+  `@paritylens/shared`'s `result.ts` for the authoritative list; do not
+  assume it matches only the four values named in the plan row) is what
+  actually appears in the UI today — there is no separate, directly
+  rendered "Compatible/Review/Risk" label anywhere in this file (that
+  `TypeCompatibility` classification, from
+  `packages/engine/src/comparison-core/type-mapping/type-mapping.ts`, is an
+  internal input that `compareSchemas` folds into a `SchemaDifference`'s
+  `severity`/`message` — it is not surfaced as its own literal UI label).
+  **Correct the plan row's premise accordingly**: the legend should explain
+  the `Severity` values that actually appear as colored tags in the UI
+  (confirm the exact union and every value's real meaning by reading
+  `result.ts` and `severityTagClass`/`statusTag`), not a `Compatible`/
+  `Review`/`Risk` label that isn't rendered. Document this correction in
+  `IMPLEMENTATION-REPORT.md`, mirroring how T-40 handled its own premise
+  correction.
+- `renderSchemaDifferencesTable`/`renderProfileDifferencesTable`/
+  `renderAggregateDifferencesTable`/`renderRowDifferencesTable` are the four
+  table-renderers behind the Schema/Profile/Volume/Row-Level tabs
+  respectively (read each briefly to see what columns/fields it renders,
+  so your caption text is accurate to what's actually on that tab).
 
 ## Scope
 
-1. Extend `ConnectionCommandDeps` with whatever new injected methods are
-   needed:
-   - A progress-notification method (VS Code's real API is
-     `vscode.window.withProgress`; inject a narrow function type covering
-     only what this task needs — a title string and an async callback to
-     run while the notification shows — rather than the full
-     `withProgress` signature, matching this file's existing
-     narrow-injected-dependency style).
-   - A choice/confirmation method for the failure case (VS Code's real API
-     is `vscode.window.showWarningMessage(message, ...items)` resolving to
-     the clicked item's label or `undefined`; inject similarly narrowly).
-2. After `promptForProfileFields` resolves successfully (before
-   `store.add`), construct the connector via `resolveConnector` and call
-   `testConnection()`, wrapped in the injected progress-notification
-   dependency with a title like `"Testing connection..."`.
-3. On a successful test result: proceed to `store.add` and the existing
-   success message, unchanged.
-4. On a failed test result: show the failure reason (from
-   `ConnectionTestResult` or whatever `@paritylens/shared` actually calls
-   it — read the real shape, do not assume a field name) via the injected
-   confirmation dependency, offering exactly two choices: something like
-   "Save Anyway" and "Don't Save" (exact wording your call, keep it clear).
-   - "Save Anyway" (or equivalent): proceeds to `store.add` and a success
-     message, same as today's unconditional behavior — this preserves the
-     current always-succeeds-eventually behavior as an explicit opt-in,
-     not a removed capability.
-   - "Don't Save" (or equivalent), or dismissing the prompt (`undefined`):
-     aborts without calling `store.add` — the typed profile fields and
-     password are discarded, matching how a cancelled `showInputBox` prompt
-     already behaves elsewhere in this same file.
-5. `testConnection()` itself throwing (vs. resolving a failure result) must
-   be handled the same as a failed test result, not let the outer
-   try/catch's generic "add connection failed" error message swallow it
-   without offering the save-anyway choice — read `DataPlatformConnector`'s
-   documented contract for `testConnection()` to confirm whether it's
-   expected to throw or always resolve (implement to match whichever the
-   interface documents; if ambiguous, handle both defensively).
+1. Add a static legend/glossary panel. Implementer's call on placement
+   within the CSS-only/`enableScripts:false` constraint — e.g. a small
+   `<details><summary>What do these mean?</summary>...</details>` block
+   near the header or stat band (native disclosure widget, same
+   script-free pattern the row-level expand/collapse already uses,
+   per this file's header comment), or a persistently visible compact
+   block. Content: one short plain-language sentence per `Severity` value
+   actually used in the UI (read the real union first), e.g. (illustrative
+   only — write accurate final copy against the real enum, and phrase each
+   line so a junior analyst unfamiliar with data engineering jargon
+   understands what to do next):
+   - `Failure` — "A meaningful mismatch was found; investigate before
+     trusting these two datasets are equivalent."
+   - `Warning` — "A difference exists but may be expected or low-risk;
+     review to confirm."
+   - `Informational` — "For awareness only; not necessarily a problem."
+   - (cover every other real `Severity` value the same way, e.g. `Pass`/
+     `Error`/`Skipped` if present in the shared union)
+2. Add a short caption (1-2 sentences, plain language) to each of the 4
+   check-family tab panels (Schema/Profile/Volume/Row-Level — not the SQL
+   Preview tab, which isn't a findings tab) explaining what that tab shows
+   and what a non-engineer should do about a finding there. Place each
+   caption at the top of its `tab-panel` div, above the existing table
+   render call. Example shape only (write accurate final copy per tab):
+   "Schema differences show column-level mismatches between source and
+   target (missing columns, type changes, etc.) — a Failure here usually
+   means the two tables aren't structurally compatible yet."
+3. Preserve `renderResultsHtml`'s pure-function contract exactly: same
+   signature, same `ComparisonResult`-only input, deterministic output for
+   the same input, no new `vscode` API usage, `enableScripts` unchanged
+   (`false`).
+4. All new static copy requires **no** `escapeHtml` calls, since it is
+   fixed text, not derived from `ComparisonResult` fields — if you find
+   yourself interpolating any `result.*` field into the new legend/caption
+   text, stop and reconsider (the brief's scope is static copy only).
 
 ## Files owned
 
-- `packages/extension/src/connections/connectionCommands.ts`
-  (`addConnectionCommand`'s flow, plus `ConnectionCommandDeps`'s
-  extension — `editConnectionCommand`/`deleteConnectionCommand` and
-  `promptForProfileFields` must remain byte-for-byte unchanged except for
-  whatever `ConnectionCommandDeps` type extension is shared by all three
-  functions' signature)
-- `packages/extension/src/connections/connectionCommands.test.ts`
-  (new/extended tests for `addConnectionCommand`'s new behavior)
-- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/
-  T-30/T-32/T-33/T-40, **only** `buildConnectionCommandDeps`'s (or
-  equivalent) real-`vscode`-backed implementation of the new injected
-  dependencies added to `ConnectionCommandDeps` — no other change to this
-  file)
+- `packages/extension/src/webview/resultsWebview.ts` (extends T-11/T-16/
+  T-16b/T-34, visual/copy-only)
+- `packages/extension/src/webview/resultsWebview.test.ts` (extends
+  existing test coverage)
 
 ## Interfaces consumed
 
-- `resolveConnector` (`connections/resolveConnector.ts`, T-29, read-only —
-  do not modify)
-- `DataPlatformConnector.testConnection()` (`@paritylens/shared`, already
-  defined, read-only usage)
-- `ConnectionProfileStore.add` (T-29, read-only — do not modify)
+- `ComparisonResult` and `Severity` (`@paritylens/shared`, read-only — read
+  the authoritative `Severity` union before writing legend copy)
 
 ## Prohibited changes
 
-- Do not modify `editConnectionCommand` or `deleteConnectionCommand`'s own
-  flow/behavior (only a shared `ConnectionCommandDeps` type extension may
-  touch code near them, and only if TypeScript requires it — verify with a
-  diff that their actual runtime behavior is untouched).
-- Do not modify `resolveConnector.ts`.
-- Do not modify `ConnectionProfile`'s shape (`connectionProfile.ts`) or
-  `ConnectionProfileStore`'s persistence logic (`connectionProfileStore.ts`).
-- Do not add a new npm dependency.
-- Do not log or display the plaintext password anywhere in the
-  progress/failure/success messaging.
+- Do not change `renderResultsHtml`'s exported signature.
+- Do not add any new `vscode` API usage or flip `enableScripts` to `true`.
+- Do not modify any existing table-renderer function's column set or
+  underlying data logic — captions are additive text only, not changes to
+  what data is shown.
+- Do not modify `parityTreeDataProvider.ts` or any file outside
+  `resultsWebview.ts`/its test file.
 
 ## Red-state evidence required
 
-A test asserting `addConnectionCommand` with a mocked `testConnection()`
-returning a failure, expecting the user to see the failure reason and be
-offered a choice — fails today (current flow calls `store.add`
-unconditionally and never calls `testConnection`).
+A test asserting legend/explanatory text is absent from today's rendered
+`renderResultsHtml` output (run against the current, pre-change file).
 
 ## Green-state evidence required
 
 1. The scoped diff across the owned files.
-2. A test proving a successful `testConnection()` result persists the
-   profile and shows the existing success message, unchanged from today's
-   behavior.
-3. A test proving a failed `testConnection()` result shows the failure
-   reason and, on "Save Anyway", still persists the profile (preserving
-   today's always-succeeds-eventually behavior as an explicit opt-in).
-4. A test proving a failed `testConnection()` result with "Don't Save" (or
-   dismissal) does NOT call `store.add` — no credential or profile
-   persisted for a confirmed-broken connection unless explicitly chosen.
-5. A test proving `testConnection()` throwing is handled the same as a
-   failed result (offers the same choice), not swallowed by the generic
-   catch block's error message.
-6. A diff-based confirmation that `editConnectionCommand`/
-   `deleteConnectionCommand`'s actual behavior is unchanged (their own
-   existing tests must continue passing unmodified).
-7. Confirmation that no credential/password ever appears in any of the new
-   progress/failure/success message strings (read every new
-   template-string literal touching `password`/`prompted.password`).
-8. A full fresh `npm run verify` passing with no regression versus the
-   645/645 baseline; report the before/after test count.
+2. A test confirming the legend/glossary content is present in
+   `renderResultsHtml`'s output and covers every real `Severity` value
+   (cross-reference against `@paritylens/shared`'s actual union, not a
+   hardcoded assumed list).
+3. A test confirming each of the 4 check-family tab panels contains its new
+   caption text.
+4. A test confirming `renderResultsHtml` purity is unchanged: same input
+   twice produces identical output (byte-for-byte).
+5. A test confirming `enableScripts` stays `false` (same guard-test pattern
+   T-34 established — locate and reuse/extend it if it already exists,
+   otherwise add one).
+6. Confirmation that no `escapeHtml` call was added for the new static
+   copy (grep the diff — new lines should contain plain string literals,
+   not `escapeHtml(...)` wrapping a static string).
+7. A full fresh `npm run verify` passing with no regression versus the
+   650/650 baseline; report the before/after test count.
 
 ## Handoff
 
 - Write `IMPLEMENTATION-REPORT.md` using
   `multi-agent-idea-to-app/templates/IMPLEMENTATION-REPORT.md`.
-- Commit on branch `task/T-42-connection-test-on-add`.
+- Commit on branch `task/T-43-results-webview-legend`.
 - Recommend independent review as the next step.
-- Reviewer should specifically re-verify: (1) `testConnection()` failures
-  never silently discard a user's typed input — the "Save Anyway" path
-  must still work; (2) no credential is logged/displayed anywhere in the
-  new messaging (grep every new string literal); (3)
-  `editConnectionCommand`/`deleteConnectionCommand` remain genuinely
-  untouched (diff against `main`); (4) the thrown-vs-resolved-failure
-  handling for `testConnection()` is adversarially probed with both shapes
-  (a mocked rejection AND a mocked resolved-failure result), not just one;
-  (5) a fresh full `npm run verify` is green with the reported test count.
+- Reviewer should specifically re-verify: (1) the added copy is genuinely
+  plain-language (not just restating the engineering term differently —
+  read each line and judge whether a junior analyst with no data-engineering
+  background would understand it); (2) no new escaping gap was introduced
+  by the added static text (should require zero new `escapeHtml` calls,
+  since it's static copy, not `ComparisonResult`-derived — flag if any
+  interpolation was used where it shouldn't have been); (3) the legend
+  actually covers every real `Severity` value in `@paritylens/shared`, not
+  a stale/assumed subset; (4) `renderResultsHtml`'s purity and
+  `enableScripts:false` guarantees are genuinely unchanged (diff against
+  `main`, re-run the purity/guard tests independently); (5) a fresh full
+  `npm run verify` is green with the reported test count.

@@ -44,8 +44,8 @@
   feedback, results-webview actionability, and fixture-fallback
   disambiguation. No file-ownership overlap with Phase 5; may run in
   parallel or be sequenced after, orchestrator's call.
-- **Exactly one task may be active:** NONE (T-40, T-41, T-42 COMPLETE
-  and merged; T-43 next in Phase 6's dependency order)
+- **Exactly one task may be active:** T-43 (results webview legend/
+  glossary)
 - **Phase 6 progress:** T-40 (onboarding `viewsWelcome`), T-41 (tree view
   title command buttons), and T-42 (connection-test-on-add feedback)
   COMPLETE and merged, 2026-08-03 — see Task register and Open findings
@@ -87,7 +87,7 @@
   growth, not scope creep). **The backlog-cleanup sweep is now fully
   closed.** Phase 6 (T-40–T-44) is unblocked and ready to start whenever
   the owner confirms.
-- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — T-42 COMPLETE and merged (Phase 6, 3 of 5 tasks done)
+- **Last updated:** 2026-08-03, Claude Code (Lead Orchestrator) — T-43 active (Phase 6, 3 of 5 tasks done)
 - **Current decision maker:** alex.nykolaiszyn@gmail.com
 
 ## Task register
