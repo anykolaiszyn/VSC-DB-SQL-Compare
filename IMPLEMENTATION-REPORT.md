@@ -105,8 +105,8 @@
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see follow-up commit message
-  below; branch tip at time of writing this report)
+- **Patch or commit:** `67ab448b519c98055acd6509fa9c3c7cdea439a5` ("T-42:
+  connection-test-on-add feedback for paritylens.addConnection")
 - **Branch or workspace:** `task/T-42-connection-test-on-add`
 
 ## Recommended next step
