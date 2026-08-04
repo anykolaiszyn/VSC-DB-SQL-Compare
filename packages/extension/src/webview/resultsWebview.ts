@@ -56,6 +56,26 @@ import type {
  *    click-to-toggle disclosure widget, per the brief's explicit
  *    preference for `<details>`/`<summary>` over a second radio/checkbox
  *    hack unless it conflicts with the visual spec (it doesn't here).
+ *
+ * T-43 adds a static plain-language legend/glossary (via a native
+ * `<details>`/`<summary>` disclosure, the same script-free pattern the
+ * row-level expand/collapse above already established) explaining every
+ * `Severity` value from `@paritylens/shared` that actually appears as a
+ * colored tag in this UI, plus a short static caption at the top of each
+ * of the 4 check-family tab panels (Schema/Profile/Volume/Row-Level — not
+ * SQL Preview, which isn't a findings tab). Premise correction from the
+ * plan row (documented in IMPLEMENTATION-REPORT.md): the legend explains
+ * the real `Severity` union (`Pass`/`Informational`/`Warning`/`Failure`/
+ * `Error`/`Skipped`, six values per `packages/shared/src/result.ts`, not
+ * the three illustrative values named in the task brief's own example),
+ * since there is no separately-rendered `Compatible`/`Review`/`Risk` label
+ * anywhere in this file — that classification
+ * (`packages/engine/src/comparison-core/type-mapping/type-mapping.ts`) is
+ * an internal input `compareSchemas` folds into a `SchemaDifference`'s
+ * `severity`/`message`, never surfaced as its own literal UI label. All
+ * new copy is a fixed string with no `ComparisonResult` field
+ * interpolated into it, so none of it is passed through `escapeHtml` —
+ * only dynamic, result-derived values need escaping.
  */
 
 /** Escapes a value for safe inclusion in the webview's HTML body. */
@@ -120,6 +140,75 @@ const CATEGORY_LABELS: Record<RowDifferenceCategory, string> = {
   "unable-to-compare": "Unable to compare",
   "ignored-by-rule": "Ignored by rule"
 };
+
+/**
+ * T-43: plain-language explanation for every `Severity` value (the real
+ * union from `packages/shared/src/result.ts`: `Pass` | `Informational` |
+ * `Warning` | `Failure` | `Error` | `Skipped`), phrased so a junior
+ * analyst with no data-engineering background understands what to do next
+ * on seeing that colored tag. Order matches the rough severity-to-attention
+ * ordering a reader scans top to bottom: worst-first, ending with the two
+ * non-outcome states (Skipped/Informational).
+ */
+const SEVERITY_LEGEND: Array<{ severity: Severity; explanation: string }> = [
+  {
+    severity: "Failure",
+    explanation: "A meaningful mismatch was found. Investigate before trusting that source and target are equivalent."
+  },
+  {
+    severity: "Error",
+    explanation: "This specific item couldn't be evaluated (for example, a value that couldn't be compared between source and target) — it's neither a confirmed match nor a confirmed mismatch. Look at the item's own message for what went wrong before drawing a conclusion about it."
+  },
+  {
+    severity: "Warning",
+    explanation: "A difference exists but may be expected or low-risk. Review it to confirm it's not a problem."
+  },
+  {
+    severity: "Pass",
+    explanation: "This check found no meaningful difference. No action needed."
+  },
+  {
+    severity: "Informational",
+    explanation: "Shown for awareness only. Not necessarily a problem."
+  },
+  {
+    severity: "Skipped",
+    explanation: "This check did not run for this item (for example, it was disabled or not applicable). It was not evaluated either way."
+  }
+];
+
+/**
+ * T-43: renders the static plain-language legend/glossary as a native
+ * `<details>`/`<summary>` disclosure (script-free, matching the row-level
+ * expand/collapse pattern already established in this file), explaining
+ * every real `Severity` value that appears as a colored tag elsewhere in
+ * this document. Every string here is a fixed literal — no
+ * `ComparisonResult` field is interpolated — so nothing here needs
+ * `escapeHtml`.
+ */
+function renderLegend(): string {
+  const items = SEVERITY_LEGEND.map(
+    ({ severity, explanation }) => `<li><span class="${severityTagClass(severity)}">${severity}</span><span>${explanation}</span></li>`
+  ).join("\n");
+
+  return `<details class="card legend">
+    <summary>What do these mean?</summary>
+    <ul class="legend-list">
+      ${items}
+    </ul>
+  </details>`;
+}
+
+/**
+ * T-43: short, plain-language "what this tab shows and what to do about a
+ * finding" caption for each of the 4 check-family tab panels (Schema/
+ * Profile/Volume/Row-Level — not SQL Preview, which isn't a findings tab).
+ * Fixed static copy, not derived from `ComparisonResult`, so it needs no
+ * `escapeHtml`.
+ */
+function renderTabCaption(text: string): string {
+  return `<p class="tab-caption">${text}</p>`;
+}
 
 /**
  * The webview-wide `<style>` block, using VS Code webview theme CSS
@@ -324,6 +413,36 @@ function renderStyles(): string {
     }
     details.row-detail[open] summary .row-caret { transform: rotate(90deg); }
     .empty-state { color: var(--vscode-descriptionForeground); }
+    .legend {
+      margin-top: 14px;
+      padding: 10px 14px;
+    }
+    .legend summary {
+      cursor: pointer;
+      font-size: 12.5px;
+      font-weight: 500;
+      color: var(--vscode-foreground);
+    }
+    .legend-list {
+      margin: 10px 0 0;
+      padding: 0;
+      list-style: none;
+      display: grid;
+      gap: 6px;
+    }
+    .legend-list li {
+      font-size: 12.5px;
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .legend-list .severity-tag { flex-shrink: 0; }
+    .tab-caption {
+      margin: 0 0 12px;
+      color: var(--vscode-descriptionForeground);
+      font-size: 12.5px;
+      line-height: 1.5;
+    }
     .sql-card { padding: 0; overflow: hidden; margin-bottom: 12px; }
     .sql-card-header {
       padding: 8px 14px;
@@ -664,6 +783,8 @@ export function renderResultsHtml(result: ComparisonResult): string {
 
     ${renderStatBand(result)}
 
+    ${renderLegend()}
+
     <input type="radio" name="paritylens-tab" id="tab-schema" class="tab-strip-input" checked />
     <input type="radio" name="paritylens-tab" id="tab-profile" class="tab-strip-input" />
     <input type="radio" name="paritylens-tab" id="tab-volume" class="tab-strip-input" />
@@ -680,15 +801,27 @@ export function renderResultsHtml(result: ComparisonResult): string {
 
     <div class="tab-panels">
       <div class="tab-panel tab-panel--schema">
+        ${renderTabCaption(
+          "Schema differences show column-level mismatches between source and target (missing columns, type changes, length/precision/scale/nullability changes, or column order). A Failure here usually means the two tables aren't structurally compatible yet and should be fixed before trusting other checks; a Warning is worth a quick look to confirm it's expected."
+        )}
         ${renderSchemaDifferencesTable(result.schemaDifferences)}
       </div>
       <div class="tab-panel tab-panel--profile">
+        ${renderTabCaption(
+          "Profile differences show meaningful changes in the shape of the data itself for a column (how many distinct values it has, what percent are blank, its most common value, or new/missing categories) — not every field is compared, only changes considered notable. A finding here suggests the data may have changed in a way worth understanding, even if the schema matches."
+        )}
         ${renderProfileDifferencesTable(result.profileDifferences)}
       </div>
       <div class="tab-panel tab-panel--volume">
+        ${renderTabCaption(
+          "Volume differences compare how many rows exist on each side against an allowed tolerance. A finding here means the row counts don't line up as expected — check whether rows are missing, duplicated, or filtered differently before assuming source and target hold the same data."
+        )}
         ${renderAggregateDifferencesTable(result.aggregateDifferences)}
       </div>
       <div class="tab-panel tab-panel--rows">
+        ${renderTabCaption(
+          "Row-Level differences compare individual matched rows between source and target (missing rows, duplicate rows, or rows whose values differ). Expand a row marked \"Matched key, differing values\" to see exactly which column(s) differ and their source/target values."
+        )}
         ${renderRowDifferencesTable(result.rowDifferences)}
       </div>
       <div class="tab-panel tab-panel--sql">
