@@ -9,3 +9,10 @@ coverage/
 *.tsbuildinfo
 .vscode-test/
 *.vsix
+
+# T-52: packages/extension/LICENSE is generated fresh by the `copy-license`
+# npm script immediately before `vsce package` runs (see
+# packages/extension/package.json's scripts.package) -- it is a byte-for-
+# byte copy of the root LICENSE, regenerated every packaging run so it can
+# never silently drift stale. Not committed; root LICENSE stays canonical.
+packages/extension/LICENSE
