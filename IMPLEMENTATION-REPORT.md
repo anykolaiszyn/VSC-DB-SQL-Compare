@@ -151,9 +151,8 @@ modified — read-only reference only, as the brief requires.
 
 ## Patch or commit identity
 
-- **Patch or commit:** (recorded after commit — see below; this report is
-  committed together with the change per the brief's Handoff instruction
-  to "Commit your work before finishing.")
+- **Patch or commit:** `54b7077dee4354aa07136dd870e1643d2afc391e` ("T-41:
+  inline add-item buttons on Connections/Comparisons tree sections")
 - **Branch or workspace:** `task/T-41-tree-view-title-buttons`
 
 ## Recommended next step
