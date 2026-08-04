@@ -405,6 +405,41 @@ export async function runComparisonCommand(
      * used exactly as before this parameter existed.
      */
     checksOverride?: ParityChecks;
+    /**
+     * T-44: a new, separate blocking confirmation gate for the
+     * fixture-fallback disambiguation problem (self-service gap-analysis
+     * Finding 9) -- distinct from T-38's `confirmRun` above, which is a
+     * content-based SQL-preview confirmation shown for every real run.
+     * Called instead of (not in addition to) the passive
+     * `showInformationMessage(buildRunNotice(...))` toast, but only when
+     * `buildRunNotice` actually returned a fixture-fallback notice (today,
+     * per `buildRunNotice`'s own binary body, that is every call --
+     * `buildRunNotice` has no third "all real profile" return value to
+     * represent the low-friction case with, so this gate fires on every
+     * current invocation; the `notice === MIXED_CONNECTION_NOTICE ||
+     * notice === FIXTURE_ONLY_NOTICE` check at the call site below stays
+     * explicit so a future all-real case, if `buildRunNotice` ever grows one,
+     * correctly skips this gate without further changes here).
+     *
+     * Resolving `true` proceeds to `planQueries`/`confirmRun` below
+     * unchanged; resolving `false` (or the promise's default when this dep
+     * is unsupplied) cancels the run cleanly before `planQueries` or
+     * `runComparison` are ever called -- same "cancellation is not a
+     * failure, no error shown" pattern `confirmRun`'s own `proceed` check a
+     * few lines below already uses, for consistency.
+     *
+     * Typed optional, defaulting to "proceed" (`true`) when absent -- the
+     * same documented pattern `confirmRun`/`resolveRunHistoryRoot`/
+     * `statusBarItem` above already use: `runComparisonCommand.test.ts`
+     * (T-22's pre-existing file, outside this task's declared "Files owned"
+     * list per TASK-BRIEF.md, so not touchable by this task) calls this
+     * function without this field at all, and its existing assertions
+     * depend on `runComparison` actually being reached. The real
+     * `registerRunComparisonCommand` wiring below always supplies a real
+     * `vscode.window.showWarningMessage`-backed implementation (see
+     * `confirmFixtureFallback` below).
+     */
+    confirmFixtureFallback?: (notice: string) => Promise<boolean>;
   }
 ): Promise<ComparisonResult | undefined> {
   try {
@@ -426,7 +461,31 @@ export async function runComparisonCommand(
       deps.connectionProfileStore !== undefined
         ? findProfileByName(deps.connectionProfileStore, definition.target.connection)
         : undefined;
-    deps.showInformationMessage(buildRunNotice(sourceProfile, targetProfile));
+    // T-44: buildRunNotice's return value determines whether this run is
+    // (at least partly) falling back to fixture data -- both of its two
+    // possible return values (MIXED_CONNECTION_NOTICE, FIXTURE_ONLY_NOTICE)
+    // are fixture-fallback cases; there is no third "all real" value it can
+    // return today (see buildRunNotice's own body above), so this check
+    // stays explicit rather than assuming "always blocks" so a future
+    // all-real case (if buildRunNotice ever grows one) is handled correctly
+    // without further changes here. The passive showInformationMessage
+    // toast is replaced by the blocking confirmFixtureFallback gate for a
+    // fixture-fallback notice, not shown in addition to it, to avoid
+    // double-prompting for the same disclosure.
+    const runNotice = buildRunNotice(sourceProfile, targetProfile);
+    const isFixtureFallback = runNotice === MIXED_CONNECTION_NOTICE || runNotice === FIXTURE_ONLY_NOTICE;
+    if (isFixtureFallback) {
+      const proceedWithFixtureFallback =
+        deps.confirmFixtureFallback !== undefined ? await deps.confirmFixtureFallback(runNotice) : true;
+      if (!proceedWithFixtureFallback) {
+        // Cancellation is not a failure -- exit cleanly, no error shown,
+        // planQueries/runComparison never called. Same pattern confirmRun's
+        // own proceed check below uses.
+        return undefined;
+      }
+    } else {
+      deps.showInformationMessage(runNotice);
+    }
 
     const registry =
       deps.connectionProfileStore !== undefined && deps.secretStore !== undefined
@@ -583,6 +642,7 @@ function registerRunComparisonCommand(
       resolveRunHistoryRoot: () => resolveRunHistoryRoot(vscode.workspace.workspaceFolders),
       statusBarItem,
       confirmRun: createWebviewConfirmRun(),
+      confirmFixtureFallback: createConfirmFixtureFallback(),
       ...(checksOverride !== undefined ? { checksOverride } : {})
     });
   });
@@ -650,6 +710,29 @@ function createWebviewConfirmRun(): (result: PlanQueriesResult) => Promise<boole
         resolveOnce(false);
       });
     });
+}
+
+/**
+ * T-44: builds the real, `vscode`-backed `confirmFixtureFallback` callback
+ * `runComparisonCommand` blocks on whenever `buildRunNotice` returns a
+ * fixture-fallback notice (`MIXED_CONNECTION_NOTICE`/`FIXTURE_ONLY_NOTICE`),
+ * replacing the passive `showInformationMessage` toast that notice used to
+ * be shown through unconditionally. Mirrors T-42's narrow-injected-
+ * `showWarningMessage` style in `connectionCommands.ts`
+ * (`ConnectionCommandDeps.showWarningMessage`) as a reference for the
+ * awaited-`showWarningMessage`-resolving-to-a-clicked-item-label shape, but
+ * is this file's own independent binding -- not imported from
+ * `connectionCommands.ts`, per TASK-BRIEF.md Scope item 1. Resolves `true`
+ * only if the user clicks "Continue"; any other outcome (clicking "Cancel",
+ * or dismissing the warning without choosing) resolves `false`, aborting the
+ * run before `runComparison` is ever called -- same as declining T-38's
+ * `confirmRun` webview.
+ */
+function createConfirmFixtureFallback(): (notice: string) => Promise<boolean> {
+  return async (notice: string) => {
+    const choice = await vscode.window.showWarningMessage(notice, "Continue", "Cancel");
+    return choice === "Continue";
+  };
 }
 
 /**
