@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import type { ComparisonResult } from "@paritylens/shared";
+import type { ComparisonResult, Severity } from "@paritylens/shared";
 import { renderResultsHtml, showResultsWebview } from "./resultsWebview";
 
 /**
@@ -289,6 +289,101 @@ describe("renderResultsHtml", () => {
       const html = renderResultsHtml(SAMPLE_RESULT);
 
       expect(html).not.toContain("undefined");
+    });
+  });
+
+  // T-43: plain-language legend/glossary + per-tab captions. These
+  // assertions must fail against unmodified rendering code (no legend or
+  // caption markup exists yet) -- this is this task's red-state evidence.
+  describe("T-43: legend/glossary and per-tab captions", () => {
+    it("renders a legend/glossary block explaining what a colored severity tag means", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      expect(html).toContain("What do these mean?");
+    });
+
+    it("covers every real Severity value from @paritylens/shared in the legend, not a hardcoded assumed subset", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      // The full Severity union: "Pass" | "Informational" | "Warning" |
+      // "Failure" | "Error" | "Skipped" (packages/shared/src/result.ts).
+      const severityValues: Severity[] = ["Pass", "Informational", "Warning", "Failure", "Error", "Skipped"];
+      for (const value of severityValues) {
+        expect(html).toContain(`>${value}<`);
+      }
+    });
+
+    it("renders a caption at the top of the Schema tab panel, above the table", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      const panelIndex = html.indexOf('class="tab-panel tab-panel--schema"');
+      const captionIndex = html.indexOf("tab-caption", panelIndex);
+      const tableIndex = html.indexOf("<table", panelIndex);
+      expect(panelIndex).toBeGreaterThan(-1);
+      expect(captionIndex).toBeGreaterThan(panelIndex);
+      expect(captionIndex).toBeLessThan(tableIndex);
+    });
+
+    it("renders a caption at the top of the Profile tab panel, above the table", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      const panelIndex = html.indexOf('class="tab-panel tab-panel--profile"');
+      const captionIndex = html.indexOf("tab-caption", panelIndex);
+      const tableIndex = html.indexOf("<table", panelIndex);
+      expect(panelIndex).toBeGreaterThan(-1);
+      expect(captionIndex).toBeGreaterThan(panelIndex);
+      expect(captionIndex).toBeLessThan(tableIndex);
+    });
+
+    it("renders a caption at the top of the Volume tab panel, above the table", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+
+      const panelIndex = html.indexOf('class="tab-panel tab-panel--volume"');
+      const captionIndex = html.indexOf("tab-caption", panelIndex);
+      const tableIndex = html.indexOf("<table", panelIndex);
+      expect(panelIndex).toBeGreaterThan(-1);
+      expect(captionIndex).toBeGreaterThan(panelIndex);
+      expect(captionIndex).toBeLessThan(tableIndex);
+    });
+
+    it("renders a caption at the top of the Row-Level tab panel, above the table", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+
+      const panelIndex = html.indexOf('class="tab-panel tab-panel--rows"');
+      const captionIndex = html.indexOf("tab-caption", panelIndex);
+      const tableIndex = html.indexOf("<table", panelIndex);
+      expect(panelIndex).toBeGreaterThan(-1);
+      expect(captionIndex).toBeGreaterThan(panelIndex);
+      expect(captionIndex).toBeLessThan(tableIndex);
+    });
+
+    it("does not add a caption to the SQL Preview tab panel (not a findings tab)", () => {
+      const html = renderResultsHtml(SAMPLE_RESULT);
+
+      const panelIndex = html.indexOf('class="tab-panel tab-panel--sql"');
+      const nextPanelStart = html.indexOf('<div class="tab-panels"', panelIndex + 1);
+      const sqlPanelSlice = html.slice(panelIndex, nextPanelStart === -1 ? undefined : nextPanelStart);
+      expect(sqlPanelSlice).not.toContain("tab-caption");
+    });
+
+    it("remains a pure function with the new legend/caption markup included: same input twice produces identical output", () => {
+      const first = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+      const second = renderResultsHtml(SAMPLE_RESULT_WITH_PHASE2);
+
+      expect(first).toBe(second);
+    });
+
+    it("does not flip enableScripts to true after adding the legend/caption content", () => {
+      const fakePanel = { webview: { html: "" } };
+      type CreateWebviewPanel = Parameters<typeof showResultsWebview>[0];
+      const createWebviewPanel = vi.fn<CreateWebviewPanel>(
+        () => fakePanel as unknown as ReturnType<CreateWebviewPanel>
+      );
+
+      showResultsWebview(createWebviewPanel, 1 as never, SAMPLE_RESULT);
+
+      const optionsArg = createWebviewPanel.mock.calls[0]?.[3];
+      expect(optionsArg).toEqual({ enableScripts: false });
     });
   });
 });

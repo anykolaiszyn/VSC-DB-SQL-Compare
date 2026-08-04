@@ -1,131 +1,148 @@
-# ParityLens — Implementation Report T-42
+# ParityLens — Implementation Report T-43
 
 ## Status and objective
 
 - **Status:** COMPLETE (implementation and evidence only — not reviewed or approved)
-- **Objective:** Extend `paritylens.addConnection`'s flow
-  (`addConnectionCommand` in
-  `packages/extension/src/connections/connectionCommands.ts`) to call the
-  resolved connector's `testConnection()` after collecting profile fields and
-  before persisting, showing a blocking "Testing connection..." progress
-  notification, then either persisting on success or showing the failure
-  reason with an explicit choice to re-enter (don't save) or save anyway —
-  addressing self-service gap-analysis Finding 3 (no connection-test
-  feedback at add-time).
+- **Objective:** Add a static, plain-language legend/glossary explaining
+  `Severity` values, and a short per-tab "what this tab shows and what to
+  do about a finding" caption to each of the 4 check-family tab panels
+  (Schema/Profile/Volume/Row-Level) in the results webview
+  (`packages/extension/src/webview/resultsWebview.ts`), per
+  `TASK-BRIEF.md` T-43. Addresses self-service gap-analysis Finding 7
+  (results not actionable for a non-engineer), which Phase 5's own
+  Non-goals section explicitly named as out of scope — this task exists
+  independently of T-36–T-39.
+
+## Premise correction (brief's own instruction, mirroring T-40's pattern)
+
+The task brief's own text names `Failure`/`Warning`/`Informational`
+"plus `Pass`/`Error`/`Skipped` — the full `Severity` union" and separately
+warns not to assume a `Compatible`/`Review`/`Risk` UI label exists. I read
+`packages/shared/src/result.ts` directly to confirm the authoritative
+union:
+
+```ts
+export type Severity = "Pass" | "Informational" | "Warning" | "Failure" | "Error" | "Skipped";
+```
+
+Six values, exactly as the brief's own text anticipated. I also confirmed
+by reading `resultsWebview.ts` in full that there is no separately
+rendered `Compatible`/`Review`/`Risk` label anywhere in this file —
+`TypeCompatibility`
+(`packages/engine/src/comparison-core/type-mapping/type-mapping.ts`) is an
+internal classification that `compareSchemas` folds into a
+`SchemaDifference`'s `severity`/`message` fields before this file ever
+sees it; the only literal severity-shaped UI label this file renders is
+the `Severity` tag via `severityTagClass`/the raw `escapeHtml(d.severity)`
+text next to it. The legend therefore explains all six real `Severity`
+values (not a 3-value illustrative subset), and no `Compatible`/`Review`/
+`Risk` label was added anywhere. This mirrors how T-40's implementer
+handled a similar premise correction for its own task, per the brief's
+explicit instruction to document this the same way.
 
 ## Changed files
 
 | File | Change | Reason |
 | --- | --- | --- |
-| `packages/extension/src/connections/connectionCommands.ts` | Added `withProgress`/`showWarningMessage` to `ConnectionCommandDeps`; added a `testConnectionProfile()` helper; extended `addConnectionCommand` to call `resolveConnector(profile, prompted.password).testConnection()` under `withProgress`, and on failure (resolved-`{success:false}` or thrown) offer "Save Anyway"/"Don't Save" via `showWarningMessage` before persisting. `editConnectionCommand`/`deleteConnectionCommand` bodies unchanged (confirmed by diff against `main` — see Verification evidence). | TASK-BRIEF.md Scope items 1–5 |
-| `packages/extension/src/connections/connectionCommands.test.ts` | Extended the existing success-path test to mock a successful `testConnection()`; added 5 new tests: failed-resolved + "Save Anyway" persists; failed-resolved + "Don't Save" does not persist; failed-resolved + dismissal (`undefined`) does not persist; thrown/rejected `testConnection()` handled the same as a resolved failure (not swallowed by the generic catch); no plaintext password in any new progress/failure/success message string. Added a `mockTestConnection()` helper spying on `resolveConnector`. | TASK-BRIEF.md Red/Green-state evidence requirements |
-| `packages/extension/src/activation/activate.ts` | `buildConnectionCommandDeps()` only: added real-`vscode`-backed `withProgress` (via `vscode.window.withProgress` with `ProgressLocation.Notification`) and `showWarningMessage` (via `vscode.window.showWarningMessage`, wrapped in `Promise.resolve` to match the injected `Promise<string \| undefined>` return type). No other function in this file touched. | TASK-BRIEF.md Files owned — "only `buildConnectionCommandDeps`'s ... implementation of the new injected dependencies" |
+| `packages/extension/src/webview/resultsWebview.ts` | Added a `SEVERITY_LEGEND` const, `renderLegend()` (native `<details>`/`<summary>` disclosure, same script-free pattern the row-level expand/collapse already uses), `renderTabCaption()`, static caption copy for the 4 check-family tab panels, and legend/caption CSS in `renderStyles()`. Wired `renderLegend()` in between the stat band and the tab strip; wired a caption call at the top of each of the Schema/Profile/Volume/Row-Level `tab-panel` divs, above the existing table-render call. No change to any table-renderer's column set, `renderResultsHtml`'s signature, or `enableScripts`. | TASK-BRIEF.md T-43 Scope items 1-4 |
+| `packages/extension/src/webview/resultsWebview.test.ts` | Added a `T-43: legend/glossary and per-tab captions` describe block (9 new tests): legend-presence, full-`Severity`-union coverage (derived from the real `Severity` type, not a hardcoded literal list), per-tab caption presence/ordering (caption before the table) for all 4 check-family tabs, an explicit "SQL Preview gets no caption" negative test, a purity re-check, and an `enableScripts` re-check. Imported `Severity` type for the coverage test. | TASK-BRIEF.md T-43 Red/Green-state evidence requirements |
 
 ## Behavior and interfaces
 
-- **Behavior delivered:** After the user finishes the profile-field prompts
-  in `paritylens.addConnection`, ParityLens now resolves a real connector
-  (`resolveConnector`) and calls its `testConnection()` under a blocking
-  "Testing connection..." notification before persisting anything. On
-  success, behavior is unchanged from before this task (persist + success
-  message). On failure — whether `testConnection()` resolves
-  `{ success: false }` or throws/rejects — the user sees the failure reason
-  and is offered "Save Anyway" (persists, same as today's prior
-  unconditional behavior, now an explicit opt-in) or "Don't Save" (aborts,
-  nothing persisted; dismissing the prompt behaves the same as "Don't
-  Save").
-- **Interfaces consumed:** `resolveConnector`
-  (`connections/resolveConnector.ts`, read-only, unmodified),
-  `DataPlatformConnector.testConnection(): Promise<ConnectionTestResult>`
-  (`@paritylens/shared`, read-only usage), `ConnectionProfileStore.add`
-  (read-only, unmodified).
-- **Interfaces produced:** `ConnectionCommandDeps` gains two new members:
-  `withProgress: <T>(title: string, task: () => Promise<T>) => Promise<T>`
-  and `showWarningMessage: (message: string, ...items: string[]) => Promise<string | undefined>`.
-  Both are narrow projections of `vscode.window.withProgress` /
-  `vscode.window.showWarningMessage`, matching this file's existing
-  narrow-injected-dependency style (only the shape this task needs, not the
-  full VS Code signatures).
+- **Behavior delivered:** The results webview now shows (1) a collapsed-by-default
+  `<details><summary>What do these mean?</summary>...</details>` legend
+  block right after the stat band, listing all six `Severity` values with
+  one plain-language sentence each (worst-first ordering: Failure, Error,
+  Warning, Pass, Informational, Skipped), each line prefixed by the same
+  colored severity tag used elsewhere in the document (via the existing
+  `severityTagClass` function, reused rather than duplicated); and (2) a
+  1-2 sentence plain-language caption at the top of each of the Schema,
+  Profile, Volume, and Row-Level tab panels (not the SQL Preview tab,
+  which isn't a findings tab), explaining what that tab shows and what a
+  non-engineer reader should do about a finding there.
+- **Interfaces consumed:** `ComparisonResult` and `Severity` from
+  `@paritylens/shared` (`packages/shared/src/result.ts`), read-only — no
+  changes to either. All new legend/caption text is a fixed string
+  literal; no `ComparisonResult` field is interpolated into any of it, so
+  none of the new copy is wrapped in `escapeHtml` (confirmed by grepping
+  the diff — see Verification evidence below).
+- **Interfaces produced:** None new. `renderResultsHtml(result:
+  ComparisonResult): string`'s exported signature, arity, and purity
+  contract are unchanged; `showResultsWebview` still passes `{
+  enableScripts: false }`.
 
 ## Verification evidence
 
 | Check | Exact command | Result | Evidence location |
 | --- | --- | --- | --- |
-| Baseline (pre-change) | `npm run verify` | Exit 0. 645 passed \| 27 skipped (672 total), 36 test files passed \| 2 skipped (38). | Captured in this session before any edit. |
-| Red state | `npx vitest run packages/extension/src/connections/connectionCommands.test.ts` (new/extended tests written against the pre-change implementation) | Exit 1. 5 of 13 tests failed for the predicted reasons: `expected "spy" to be called 1 times, but got 0 times` on `withProgress` (success test, thrown-error test) and on `showWarningMessage` (both failed-resolved-result tests); `expected {…profile…} to be undefined` on both "Don't Save"/dismiss tests (`store.add` was still called unconditionally, so a profile was returned instead of `undefined`). 8 of 13 passed (the 3 pre-existing untouched tests plus incidental early assertions). | Captured in this session's transcript. |
-| Focused green state | `npx vitest run packages/extension/src/connections/connectionCommands.test.ts` (after the implementation edit) | Exit 0. 13 of 13 tests passed. | Captured in this session's transcript. |
-| Full verification | `npm run verify` (`tsc -b --force` && `eslint .` && `vitest run`, in that order) | Exit 0. Typecheck clean, lint clean, tests: 36 test files passed \| 2 skipped (38 total); 650 tests passed \| 27 skipped (677 total). Net gain of exactly 5 tests over the 645/645 baseline (13 tests in `connectionCommands.test.ts`, up from 8), zero shrinkage or change elsewhere. | Captured in this session's transcript. |
+| Baseline (pre-change) | `npm run verify` | PASS — 650 tests passed, 27 skipped (677 total), 36 test files passed / 2 skipped | Terminal output, captured before any edit |
+| Red state | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts -t "T-43"` (run with the new T-43 assertions added to the test file, before any change to `resultsWebview.ts`) | FAIL as predicted — 6 of 9 new T-43 tests failed (legend text `"What do these mean?"` absent; all four `tab-caption` presence/ordering assertions returned `-1`/index-not-found). The 3 that passed (purity, coverage-list construction, `enableScripts` guard) passed because they don't assert on new markup and were already true of the unmodified file — expected. | Terminal output, captured before editing `resultsWebview.ts` |
+| Focused green state | `npx vitest run packages/extension/src/webview/resultsWebview.test.ts` | PASS — all 30 tests passed (21 pre-existing + 9 new T-43 tests) | Terminal output, captured after the implementation edit |
+| Full verification | `npm run verify` (typecheck -> lint -> test, in that order) | PASS — typecheck clean (`tsc -b --force`), lint clean (`eslint .`), tests: **659 passed, 27 skipped (686 total)**, 36 test files passed / 2 skipped. No regression versus the 650/650 (650 passed / 27 skipped) baseline; the delta is exactly the 9 new T-43 tests. | Terminal output, captured after the implementation edit |
+| Static-copy escaping check | `git diff -- packages/extension/src/webview/resultsWebview.ts \| grep -n "^+" \| grep -i escapeHtml` | 3 matches, all inside doc-comment prose (notes on *why* `escapeHtml` was **not** used), zero occurrences of an actual `escapeHtml(...)` call wrapping new static copy | Terminal output |
+| Owned-files-only check | `git diff --stat` | Only `packages/extension/src/webview/resultsWebview.ts` (133 insertions) and `packages/extension/src/webview/resultsWebview.test.ts` (97 insertions) changed — matches the brief's Files owned list exactly | Terminal output |
 
 ## Assumptions and risks
 
 - **Assumptions:**
-  - `DataPlatformConnector.testConnection()`'s doc comment
-    (`packages/shared/src/connector.ts` line 6: "Result of
-    `DataPlatformConnector.testConnection()`") documents only its resolved
-    shape (`ConnectionTestResult { success: boolean; message?: string;
-    latencyMs?: number }`) and gives no explicit throw-vs-always-resolve
-    guarantee. Per TASK-BRIEF.md Scope item 5 ("if ambiguous, handle both
-    defensively"), `testConnectionProfile()` catches a thrown/rejected
-    `testConnection()` call and normalizes it into the same
-    `{ success: false, message }` shape a resolved failure would produce, so
-    both paths reach the identical "Save Anyway"/"Don't Save" branch. This
-    is a judgment call under genuine interface ambiguity, documented inline
-    in `testConnectionProfile()`'s header comment and flagged here for
-    reviewer attention.
-  - Button labels "Save Anyway" / "Don't Save" were left to my judgment per
-    TASK-BRIEF.md Scope item 4 ("exact wording your call, keep it clear").
-  - `withProgress`'s real-`vscode` implementation in `activate.ts` uses
-    `vscode.ProgressLocation.Notification` (a blocking, dismissable
-    notification) as the closest real-API match to the brief's "blocking
-    'Testing connection...' progress notification" — `vscode.window.withProgress`
-    has no simpler single-location signature to choose from.
+  - The legend's placement (a `<details>` disclosure between the stat band
+    and the tab strip, always visible regardless of active tab) was the
+    implementer's call per the brief's explicit "Implementer's call on
+    placement" language in Scope item 1. A persistently-open block was
+    considered and rejected in favor of collapsed-by-default, since the
+    legend is reference material a user consults occasionally rather than
+    primary content, and an always-open block would push the tab strip
+    further down on every load.
+  - Caption copy is deliberately generic/durable prose describing what
+    each check family *conceptually* does, not phrased against the
+    specific `SAMPLE_RESULT` fixture's contents — this matches the
+    brief's own "Example shape only (write accurate final copy per tab)"
+    framing and keeps the captions valid regardless of what a given run's
+    findings actually contain.
+  - `Error`'s legend wording ("The check itself could not run correctly...
+    not a data mismatch") is my own inference from the shared type's
+    doc-comment reference to "DESIGN-SPEC.md's severity model" and
+    general domain reasoning about what distinguishes `Error` from
+    `Failure` in a comparison-tool severity model; `result.ts` does not
+    itself define the semantic distinction beyond naming the six values.
+    This is a judgment call, flagged here for reviewer scrutiny per the
+    brief's explicit ask that the reviewer judge whether each line is
+    genuinely plain-language and accurate.
 - **Risks or limitations:**
-  - `testConnectionProfile()` constructs a connector via `resolveConnector`
-    before the user has confirmed anything about network reachability. This
-    reuses the existing `resolveConnector` machinery unchanged and
-    introduces no new credential-handling path — the password is passed
-    through exactly as it already flows into `store.add`/`SecretStore`
-    elsewhere in this file, never logged.
-  - Verified by reading every new template-string literal in the diff that
-    none interpolates `password`/`prompted.password`. The only new literals
-    are the progress title (`"Testing connection..."`) and the warning
-    message (`` ParityLens: connection test failed for "${profile.name}" — ${reason} ``,
-    where `reason` comes from `ConnectionTestResult.message` or the caught
-    error's `.message`, never from `prompted.password`). A dedicated test
-    ("never includes the plaintext password in any progress/failure/success
-    message") asserts this against the literal password fixture value
-    `s3cr3t-password` across every injected message-producing mock's call
-    arguments.
-  - No manual Extension Development Host check was performed to visually
-    confirm the progress notification/warning dialog render as expected in
-    a live VS Code window — consistent with this repo's established
-    disclosed-limitation pattern (T-40/T-41) for UI surface with no
-    unit-testable runtime rendering hook in the plain Vitest suite.
+  - No fixture in the test suite currently produces a `Severity` value of
+    `Pass`, `Error`, or `Skipped` inside a rendered difference table (only
+    `Failure`/`Warning` appear in `SAMPLE_RESULT`/`SAMPLE_RESULT_WITH_PHASE2`),
+    so the coverage test only proves the legend text contains all six
+    values as glossary entries — it does not (and per this task's
+    static-copy scope, should not) prove any *table row* renders those
+    three values correctly, since that was already covered (or not) by
+    pre-existing `severityTagClass` behavior this task did not touch.
+  - The legend/caption text volume was not reviewed against a strict
+    reading-level rubric (e.g. Flesch-Kincaid) — I judged plain-language
+    quality by eye against the brief's own worked examples. The brief
+    itself asks the reviewer to independently re-judge this.
 - **Blockers:** None.
 
 ## Patch or commit identity
 
-- **Patch or commit:** `67ab448b519c98055acd6509fa9c3c7cdea439a5` ("T-42:
-  connection-test-on-add feedback for paritylens.addConnection")
-- **Branch or workspace:** `task/T-42-connection-test-on-add`
+- **Patch or commit:** committed together with this report in a single
+  commit on this branch (see branch history below for the exact hash).
+- **Branch or workspace:** `task/T-43-results-webview-legend`
+  (pre-existing branch, not created by this task, per the dispatch
+  instruction). Branched from `main` at commit
+  `5cdf16a3c5457b6631f73a0f7f9db59bde484613`.
 
 ## Recommended next step
 
-Independent review by a separate reviewer agent, per the brief's Handoff
-section, specifically re-verifying:
-
-1. `testConnection()` failures never silently discard a user's typed
-   input — the "Save Anyway" path must still persist the profile and
-   credential correctly.
-2. No credential is logged/displayed anywhere in the new messaging (grep
-   every new string literal touching `password`/`prompted.password`).
-3. `editConnectionCommand`/`deleteConnectionCommand` remain genuinely
-   untouched (diff against `main`).
-4. The thrown-vs-resolved-failure handling for `testConnection()` is
-   adversarially probed with both shapes — a mocked rejection AND a mocked
-   resolved-failure result — not just one.
-5. A fresh full `npm run verify` is green with the reported 650/650 test
-   count.
-
-This report does not itself constitute review, approval, or a claim that
-the task is complete beyond implementation-and-evidence scope.
+Independent review by a separate reviewer agent, per this task's Handoff
+section: re-verify (1) the added copy is genuinely plain-language, not
+merely a restatement of the engineering term (read each line, including
+the `Error` wording flagged above as a judgment call); (2) no new
+escaping gap was introduced (zero new `escapeHtml` calls, confirmed
+above, but worth an independent grep); (3) the legend covers every real
+`Severity` value in `@paritylens/shared`, not a stale/assumed subset; (4)
+`renderResultsHtml`'s purity and `enableScripts:false` guarantees are
+genuinely unchanged (diff against `main`, re-run the purity/guard tests
+independently); (5) a fresh full `npm run verify` is green with the
+reported 659/27 (686 total) test count. This report does not constitute
+review or approval — only the implementer's own evidence.
