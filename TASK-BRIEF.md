@@ -1,135 +1,134 @@
-# TASK-BRIEF.md — T-40: Onboarding welcome view
+# TASK-BRIEF.md — T-41: Tree view title command buttons
 
 ## Objective
 
-Implement the `viewsWelcome` contribution named in `IMPLEMENTATION-PLAN.md`'s
-Phase 6 table for T-40: when the `paritylens.dataParityView` tree has no
-`.paritylens` files in the workspace and no saved connection profiles, show
-short guidance text with command-linked buttons for
-`paritylens.addConnection` and `paritylens.newComparison`. Addresses
-self-service gap-analysis Finding 1 (no onboarding surface) — today a brand
-new user opens the Data Parity view and sees three collapsed, permanently
-empty section nodes (Connections / Comparisons / Recent Runs) with zero
-guidance on what to do next.
+Implement the `contributes.menus` entries named in `IMPLEMENTATION-PLAN.md`'s
+Phase 6 table for T-41: `view/title` navigation buttons (a `+`-style icon,
+using a built-in codicon) on the "Connections" and "Comparisons" tree
+sections, invoking `paritylens.addConnection` and `paritylens.newComparison`
+respectively. Addresses self-service gap-analysis Finding 2
+(command-palette-only discovery) — today the only way to discover these two
+commands is `Ctrl+Shift+P` and typing "ParityLens", with zero in-tree
+affordance.
 
 ## Scope
 
 1. Confirm the red state: read `packages/extension/package.json`'s current
-   `contributes` block and confirm no `viewsWelcome` key exists today (it
-   does not, as of this brief).
-2. Add a `contributes.viewsWelcome` entry to
-   `packages/extension/package.json` targeting view id
-   `paritylens.dataParityView`. Content should be short guidance text plus
-   two command links, using VS Code's standard Markdown-command-link syntax
-   inside `contents`, e.g.:
-   ```
-   [Add a Connection](command:paritylens.addConnection)
-   [Create a Comparison](command:paritylens.newComparison)
-   ```
-   with a one-line explanatory sentence above the links (VS Code renders
-   `contents` as Markdown; each `[label](command:id)` on its own line
-   renders as a button).
-3. Decide the correct `when` clause. VS Code's `viewsWelcome` shows its
-   content automatically whenever the target view's `TreeDataProvider`
-   returns zero root-level children for a given collapsed state — **but
-   this view's `getChildren()` with no `element` always returns the three
-   fixed section nodes** (`ParityTreeDataProvider.getChildren`, in
-   `packages/extension/src/views/parityTreeDataProvider.ts`), so the view is
-   never "empty" at the top level even when Comparisons/Recent Runs have no
-   children underneath. Read `parityTreeDataProvider.ts` in full (already in
-   context if you have prior session history; otherwise read it fresh) to
-   confirm this before proceeding — `viewsWelcome`'s automatic empty-tree
-   behavior will **not** fire for this view's current structure.
-   Since VS Code's `viewsWelcome` has no way to key off "the two dynamic
-   sections are both empty" without a context-key, you must:
-   a. Introduce a VS Code context key (e.g.
-      `paritylens.hasNoContent`) set via
-      `vscode.commands.executeCommand("setContext", "paritylens.hasNoContent", true|false)`
-      from the extension activation/wiring code, computed by checking
-      whether `findComparisonFiles()` returns zero URIs AND the connection
-      profile store (T-29) has zero saved profiles.
-   b. Use that context key as the `viewsWelcome` entry's `when` clause:
-      `"view == paritylens.dataParityView && paritylens.hasNoContent"`.
-   c. Wire the context key to be (re)computed at activation and whenever the
-      tree is refreshed (`ParityTreeDataProvider.refresh()` is already
-      called after add/edit/delete-connection and after scaffold/run
-      commands elsewhere in the codebase — read `activate.ts` to find every
-      existing `refresh()` call site and add the context-key recomputation
-      alongside each one, not just at startup).
-4. Both linked commands (`paritylens.addConnection`, `paritylens.newComparison`)
-   already exist and are already registered (T-29, T-32) — do not
-   register new commands, just reference their existing IDs.
+   `contributes` block and confirm no `contributes.menus` key exists today
+   (it does not, as of this brief; T-40 added `viewsWelcome` but not
+   `menus`).
+2. Read `packages/extension/src/views/parityTreeDataProvider.ts` in full to
+   confirm the exact section `id`s the "Connections" and "Comparisons"
+   `ParityTreeItem` nodes carry (`section.id`, via `PARITY_SECTIONS`) and
+   their `contextValue` (`paritylens.section.${section.id}`) — VS Code
+   `view/item/context` menu contributions key off an item's `contextValue`
+   via a `viewItem ==` `when` clause, but `view/title` contributions
+   (the scope of this task, per the brief's "navigation button" framing —
+   a `+`-style icon shown in the view's title bar, not per-row) key off the
+   *view* id (`paritylens.dataParityView`) only, since VS Code's `view/title`
+   menu group is view-scoped, not per-tree-item-scoped. Confirm which of the
+   two (`view/title` vs. per-item `view/item/context`) actually matches
+   "navigation buttons on the Connections/Comparisons tree sections" as
+   literally describable in `package.json` — VS Code does not support a
+   title-bar-style icon button scoped to one specific top-level tree item
+   inside a single view; only `view/item/context`
+   (right-click-context-menu, or inline via `"group": "inline"`) can target
+   a specific item. Since the brief calls for "navigation buttons on the
+   Connections/Comparisons sections" (not the whole view), use
+   `view/item/context` with `"group": "inline"` (renders as an inline
+   icon button on the specific tree row, VS Code's standard pattern for
+   "add" affordances on tree sections — e.g. how the built-in Source
+   Control view adds inline `+` buttons per repository row) and a `when`
+   clause matching each section's exact `contextValue`
+   (`viewItem == paritylens.section.connections` /
+   `viewItem == paritylens.section.comparisons`), not a whole-view
+   `view/title` entry. Document this reasoning in
+   `IMPLEMENTATION-REPORT.md` since it's a deliberate interpretation of the
+   brief's "navigation button" language against VS Code's actual menu
+   contribution points.
+3. Add two `contributes.menus["view/item/context"]` entries:
+   - `paritylens.addConnection`, `when: "view == paritylens.dataParityView && viewItem == paritylens.section.connections"`, `group: "inline"`, using codicon `add` (a real, published VS Code codicon id) as the command's `icon` field in `contributes.commands`.
+   - `paritylens.newComparison`, `when: "view == paritylens.dataParityView && viewItem == paritylens.section.comparisons"`, `group: "inline"`, same `add` codicon.
+4. Add an `icon` field (VS Code's `{ "light": ..., "dark": ... }` object
+   form is unnecessary here — a bare codicon reference via
+   `"icon": "$(add)"` inside the menu contribution itself, or an `icon`
+   field on the command definition, per VS Code's documented two supported
+   forms; read the VS Code extension manifest schema reference if unsure
+   which form `contributes.menus` entries actually use — menu-contribution
+   icons are set via the menu item's own `when`-adjacent fields, not
+   necessarily the command's `contributes.commands` entry; verify the
+   correct field before writing it, do not guess) to both new menu entries.
+   Do not invent a codicon name — `add` is confirmed real and commonly used
+   for exactly this "add new item" affordance.
 
 ## Files owned
 
-- `packages/extension/package.json` (`contributes.viewsWelcome` and, if
-  needed, a `when`-clause-relevant addition to `contributes.commands` is
-  NOT expected — only `viewsWelcome`)
-- `packages/extension/src/activation/activate.ts` (extends T-10/T-22/T-29/
-  T-30/T-32/T-33 — only the context-key `setContext` calls, added alongside
-  existing `refresh()` call sites; no unrelated changes)
-- New test file(s) under `packages/extension/src/activation/` or
-  `packages/extension/src/views/` covering the context-key computation
-  logic, your call on exact filename/location — keep it colocated with
-  whichever module actually owns the computation function
+- `packages/extension/package.json` (`contributes.menus`, and if the
+  codicon must be declared on the command entry rather than the menu
+  entry, the relevant `icon` field under `contributes.commands` for
+  `paritylens.addConnection`/`paritylens.newComparison` only — no other
+  command's `icon` field)
 
 ## Interfaces consumed
 
-- `findComparisonFiles` (existing injected dependency, read-only)
-- Connection profile store's list/count accessor (T-29, read-only — read
-  `packages/extension/src/connections/**` to find the exact existing
-  function name; do not invent a new one)
 - `paritylens.addConnection` / `paritylens.newComparison` command IDs
-  (T-29/T-32, read-only reference)
+  (T-29/T-32, read-only reference — do not modify their registration)
+- `ParitySectionId`/`PARITY_SECTIONS`/`contextValue` shape from
+  `parityTreeDataProvider.ts` (T-10/T-33, read-only reference — do not
+  modify this file)
 
 ## Prohibited changes
 
-- Do not modify `ParityTreeDataProvider.getChildren`'s existing return
-  shape/behavior (its "three fixed section nodes at top level" contract is
-  relied on by existing T-10/T-33 tests — this task adds a `viewsWelcome`
-  overlay, it does not change the tree provider's own children).
-- Do not touch `packages/extension/src/connections/**`'s CRUD logic itself
-  (T-29) beyond reading its existing list/count accessor.
-- Do not add a new npm dependency.
+- Do not modify `parityTreeDataProvider.ts` (read-only reference only).
+- Do not modify T-40's `viewsWelcome` entry.
+- Do not register any new command or change any existing command's
+  behavior — this task is a declarative `package.json` menu-contribution
+  addition only.
+- Do not add a new npm dependency or new icon asset — built-in codicons
+  only.
 
 ## Red-state evidence required
 
-Confirmation (via reading `package.json`) that no `viewsWelcome` contribution
-exists today, plus a failing/absent test demonstrating the context-key
-computation function doesn't exist yet.
+Confirmation (via reading `package.json`) that no `contributes.menus` key
+exists today.
 
 ## Green-state evidence required
 
 1. The scoped diff across the owned files.
-2. A test proving the context-key computation function returns `true` when
-   both zero `.paritylens` files and zero saved profiles are present, and
-   `false` when either is non-zero.
-3. A `package.json`-shape test (or documented manual VS Code Extension
-   Development Host check, since `viewsWelcome` rendering itself is
-   declarative JSON with no unit-testable runtime behavior — disclose which
-   approach was used, consistent with how the brief for this exact
-   situation is described in `IMPLEMENTATION-PLAN.md`'s T-40 row) confirming
-   the `viewsWelcome` JSON key exists with the correct `view`/`contents`/
-   `when` fields and that both command IDs referenced in `contents` are real,
-   already-registered command IDs (no typo'd `command:` URI).
-4. A full fresh `npm run verify` passing with no regression versus the
-   current baseline; report the before/after test count.
+2. A test (`package.json`-shape test, same disclosed-approach pattern T-40
+   used for `viewsWelcome`, since `contributes.menus` is likewise
+   declarative JSON with no unit-testable runtime rendering hook) confirming:
+   - exactly two `view/item/context` entries exist, each referencing a real,
+     already-registered command ID;
+   - each entry's `when` clause correctly scopes to
+     `paritylens.dataParityView` AND the correct section's `contextValue`
+     (not the whole view, not the wrong section);
+   - each entry's `group` is `"inline"`;
+   - the codicon reference used (`add`) is applied consistently and
+     correctly per whichever field VS Code's schema actually requires.
+3. A full fresh `npm run verify` passing with no regression versus the
+   637/637 (T-40-inclusive) baseline; report the before/after test count
+   (this task adds no new runtime logic, so the count should grow only by
+   the new shape-test cases, not shrink or otherwise change).
 
 ## Handoff
 
 - Write `IMPLEMENTATION-REPORT.md` using
   `multi-agent-idea-to-app/templates/IMPLEMENTATION-REPORT.md`.
-- Commit on branch `task/T-40-onboarding-welcome-view`.
+- Commit on branch `task/T-41-tree-view-title-buttons`.
 - Recommend independent review as the next step.
-- Reviewer should specifically re-verify: (1) the `when` clause genuinely
-  gates on emptiness — adversarially probe by constructing a case with one
-  `.paritylens` file and zero profiles (should NOT show welcome content) and
-  a case with zero files and one profile (should NOT show welcome content),
-  confirming the AND logic is correct, not accidentally OR; (2) both
-  `command:` URIs reference real, already-registered command IDs (grep
-  `package.json`'s `contributes.commands` list); (3) the context-key
-  recomputation genuinely fires after every relevant mutation (add/edit/
-  delete connection, scaffold a new comparison, run a comparison that
-  creates the first `.paritylens` file) — not just at activation, which
-  would leave a stale welcome view showing after a user's first action;
-  (4) a fresh full `npm run verify` is green with the reported test count.
+- Reviewer should specifically re-verify: (1) every referenced codicon name
+  is a real, published VS Code codicon (spot-check against the codicon
+  reference, same discipline T-34's review applied to `ThemeIcon`/
+  `ThemeColor` ids); (2) the `when` clauses genuinely scope to the correct
+  section and don't accidentally show both buttons on both sections or on
+  every tree row (adversarially reason through the `viewItem` matching,
+  e.g. would a `ParityComparisonTreeItem` child row under "Comparisons"
+  ever match `viewItem == paritylens.section.comparisons` — it must not,
+  since its own `contextValue` is `paritylens.comparisonFile`, a different
+  string); (3) the `when` clauses don't clash with T-40's `viewsWelcome`
+  state (both should coexist correctly — a `view/item/context` inline
+  button is scoped per-row and is orthogonal to `viewsWelcome`'s
+  whole-view-empty overlay, so there should be no real conflict, but
+  confirm this reasoning rather than assuming it); (4) a fresh full
+  `npm run verify` is green with the reported test count.
